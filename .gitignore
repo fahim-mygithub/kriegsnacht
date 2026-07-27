@@ -1,0 +1,9 @@
+# Godot
+.godot/
+*.bak
+export_presets.cfg.bak
+
+# Godot MCP Pro is a paid product — not redistributable.
+godot-mcp-pro-v1.15.1/
+addons/godot_mcp/
+.mcp.json
