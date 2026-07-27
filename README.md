@@ -88,6 +88,30 @@ their first two walk frames as the attack swing, as the original did.
 - **Audio is baked, not streamed.** Web Audio synthesis was reimplemented as
   procedural PCM generated once at startup into `AudioStreamWAV` buffers.
 
+## Benchmarking
+
+`scripts/perf_probe.gd` is a self-contained frame-rate benchmark. It ramps the
+horde through 0 / 6 / 12 / 18 / 24 live zombies, samples five seconds of frame
+times at each step, and POSTs the result as JSON to `http://127.0.0.1:8970/result`.
+
+It is **not referenced by any shipped code** — nothing in `main.gd` or the scene
+loads it. It only runs when registered as an autoload, which the perf export
+does and the normal export does not:
+
+```bash
+# add PerfProbe="*res://scripts/perf_probe.gd" under [autoload], then:
+Godot_v4.7-stable_win64_console.exe --headless --path . --export-release "WebPerf" <out>/index.html
+```
+
+Serve `<out>` and open it in a normal browser window with the collector
+listening on 8970. Note the browser tab must be **visible and focused** —
+Chrome fully suspends `requestAnimationFrame` in background tabs, so a hidden
+tab reports nothing at all rather than reporting slow numbers.
+
+Measured natively (RTX 5090, 1280x720, V-Sync on) the game never misses a
+frame: 6.06 ms flat at every horde size, physics 0.26 ms → 1.22 ms from 0 to 24
+zombies, 16 → 28 draw calls, ~1,300 primitives, 47 MB VRAM.
+
 ## Known gaps
 
 - No weapon viewmodel — the browser build drew guns from a 2D part list
