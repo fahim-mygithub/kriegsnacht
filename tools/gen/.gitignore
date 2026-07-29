@@ -1,0 +1,7 @@
+# 37 MB of prebuilt Skia binaries; `npm install` in this folder restores them.
+node_modules/
+
+# Written by extract.js on every run: the ancestor's own drawing code, sliced
+# out of kriegsnacht.html with the font patches applied. Regenerated, never
+# authored, and committing it is exactly the drift this package exists to stop.
+ancestor.generated.js

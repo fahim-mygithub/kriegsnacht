@@ -1,0 +1,20 @@
+{
+  "name": "kriegsnacht-gen",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Regenerates the game's sprite and prop PNGs by replaying kriegsnacht.html's own Canvas 2D drawing code under Node.",
+  "license": "UNLICENSED",
+  "type": "commonjs",
+  "main": "gen.js",
+  "scripts": {
+    "list": "node gen.js --list",
+    "check": "node gen.js --all --check",
+    "provenance": "node extract.js --report"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "dependencies": {
+    "@napi-rs/canvas": "1.0.2"
+  }
+}

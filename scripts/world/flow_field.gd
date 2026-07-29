@@ -27,6 +27,15 @@ func update(target: Vector2) -> void:
 	solve(tt)
 
 
+## Forces the next update() to re-solve even if the player has not moved.
+## Required whenever the grid itself changes: buying a door turns a wall into
+## floor, but the early-return above keys only on the player's tile, so a player
+## who opens a door and stands still leaves every zombie steering on a graph in
+## which that door is still solid.
+func invalidate() -> void:
+	_origin = Vector2i(-999, -999)
+
+
 func solve(target: Vector2i) -> void:
 	dist.fill(-1)
 	if map.is_blocked(target.x, target.y):

@@ -16,17 +16,28 @@ data, the same art, and the same balance tables.
 It is exported with **thread support off** on purpose. Godot's threaded web
 export needs `SharedArrayBuffer`, which requires `Cross-Origin-Opener-Policy`
 and `Cross-Origin-Embedder-Policy` response headers — and GitHub Pages cannot
-set custom headers. The single-threaded template boots without them. Re-export
-with:
+set custom headers. The single-threaded template boots without them.
+
+Build with:
 
 ```
-Godot_v4.7-stable_win64_console.exe --headless --path . --export-release "Web" "docs/index.html"
+pwsh tools/build.ps1
 ```
 
-Note that the Godot MCP Pro plugin registers three autoloads
-(`MCPScreenshot`, `MCPInputService`, `MCPGameInspector`). Disable the plugin
-before exporting, or they ship into the build and try to open localhost
-WebSockets in the browser.
+That script is the only supported way to export. It runs the assertion suite as
+a gate, strips the Godot MCP plugin's three autoloads (`MCPScreenshot`,
+`MCPInputService`, `MCPGameInspector`) — which would otherwise ship and try to
+open localhost WebSockets for every visitor — exports, and restores
+`project.godot` even if the export fails. Doing it by hand is what let the
+committed config drift from what actually shipped.
+
+**The renderer is pinned to `gl_compatibility` on every platform.** The web
+export is hard-locked to it by the engine, so authoring against Forward+ in the
+editor meant authoring against a renderer that never ships. Consequences worth
+knowing before designing an effect: no `Decal`, no volumetric fog, no
+SSR/SSIL/SDFGI, MSAA is the only anti-aliasing, and **no `AudioEffect` of any
+kind executes** — no reverb, no compressor, no Doppler, no attenuation filter.
+They all work in the editor and vanish in the browser.
 
 ## Running the source
 
@@ -42,9 +53,43 @@ Headless soak test (skips the title screen and prints round state every 2s):
 Godot_v4.7-stable_win64_console.exe --headless --path . --autostart --quit-after 2400
 ```
 
+Assertion suite — canon numbers, the collision masks that make the game
+losable, per-attacker damage gating, the speed-class mixture, RNG determinism
+and flow-field invalidation. Exits non-zero on failure, and `tools/build.ps1`
+refuses to export if it fails:
+
+```
+Godot_v4.7-stable_win64_console.exe --headless --path . --verify
+```
+
+Render one frame to a PNG and quit — the only way to check culling, winding,
+lighting and glow without a human at the keyboard. Optional second argument is
+a yaw in degrees:
+
+```
+Godot_v4.7-stable_win64_console.exe --path . --shot out.png 200 --resolution 960x540
+```
+
+> A parse error in `main.gd` makes Godot **hang** rather than exit, because the
+> main scene fails to load and the process waits. If a headless run produces the
+> banner and nothing else, check stderr for a parse error before assuming a
+> deadlock.
+
 Controls: **WASD** move · **Shift** sprint · **Mouse** look · **LMB** fire ·
 **R** reload · **F** interact · **V** knife · **Q** swap weapon ·
-**L** toggle mouse capture · **Esc** pause.
+**L** toggle mouse capture · **P** pause (**Esc** secondary).
+
+**Pausing is the pointer lock, not a key.** Losing the mouse — alt-tabbing, the
+browser taking it back, pressing Escape — *is* the pause, and a **click**
+resumes. That reads as a bug until you know the obvious version is impossible:
+the HTML spec excludes Escape from the input events that grant transient
+activation, so a `requestPointerLock()` made from an Escape press is rejected by
+every browser. "Press Escape to resume" cannot be built. Escape is also
+swallowed by the user agent while the pointer is locked, which is why pausing on
+Escape alone takes two presses and why `P` is the primary binding. `L` is the
+other route back: it releases the mouse and pauses, then takes it back and
+resumes. Alt-tab pausing is web-only — `DisplayServerWindows` reports the mouse
+mode the game asked for whether or not the window still has focus.
 
 ## Where the art came from
 
@@ -57,7 +102,18 @@ dark rim that `outlineSprite()` stamped so silhouettes read in the dark.
 |---|---|
 | `assets/sprites/` | 17 strips — zombie walk/attack/death × 3 palettes, crawler walk/death × 3, hound walk/death |
 | `assets/textures/` | 21 tiles — 7 wall, 4 floor, 4 ceiling, 7 window barricade states (6 boards → 0) |
-| `assets/props/` | 18 props — perk machines lit/unlit × 4, Mystery Box closed/open/teddy, generator off/on, 5 power-ups |
+| `assets/props/` | 28 props — perk machines lit/unlit × 4, Mystery Box closed/open/teddy, generator off/on, 5 power-ups, 8 chalk wall-buy plaques, Pack-a-Punch off/on |
+
+**`tools/gen/` is now that replay, committed.** It reads `kriegsnacht.html` at run
+time rather than keeping a copy, resolves five line ranges by anchor, and hashes
+the extraction so any edit to the ancestor fails loudly instead of silently
+producing different art. It also replaces the ancestor's `ui-monospace` and
+`Haettenschweiler` text with a hand-rolled 5x7 bitmap font — those five drawing
+sites resolved to a different typeface on every machine, which is why ten of the
+committed props could not be reproduced anywhere but the machine that made them.
+The Pack-a-Punch machine had no art at all for a simpler reason: `makePaP` sits at
+`html:1986-2012`, seven hundred lines outside the range the original export pass
+replayed. That was never an art decision.
 
 Frame counts match the source exactly: zombie walk 6 / attack 2 / death 4;
 crawler walk 4 / death 3; hound walk 4 / death 3. Crawlers and hounds reuse
@@ -82,44 +138,114 @@ their first two walk frames as the attack swing, as the original did.
 - **Headshots are a real 3D test.** The browser build could only ask whether
   screen-centre fell inside the top band of a billboard; here the hit point's
   height is compared against the actual head region.
-- **Mouse capture is one line.** `Input.set_mouse_mode(MOUSE_MODE_CAPTURED)`
-  replaces the capture chip, pointer-lock error path and idle-cursor timer that
-  the sandboxed artifact iframe forced.
+- **Mouse capture is one call; the lock underneath is still the browser's.**
+  `Input.set_mouse_mode(MOUSE_MODE_CAPTURED)` replaces the capture chip,
+  pointer-lock error path and idle-cursor timer that the sandboxed artifact
+  iframe forced. What it requests is still asynchronous and still revocable
+  without warning, so the HUD watches `Input.mouse_mode` and treats losing it as
+  the pause — see the controls note above.
 - **Audio is baked, not streamed.** Web Audio synthesis was reimplemented as
   procedural PCM generated once at startup into `AudioStreamWAV` buffers.
+- **The best round survives the tab.** Three integers — best round, best points,
+  runs — saved at every round boundary as well as on death, and shown on the
+  title card. The browser build kept nothing at all. On web they live in
+  `localStorage` under `kriegsnacht/profile` rather than `user://`, because a
+  `FileAccess` close only flags an IndexedDB sync for the *next* main-loop
+  iteration and a backgrounded tab has no main loop — so the commonest way a
+  player leaves, write then switch tab then close it, loses the write.
+  `localStorage` is committed before `setItem()` returns. Desktop writes
+  `user://profile.json`. Every failure path — incognito, blocked third-party
+  storage, a hand-edited blob, a truncated file — degrades to "no save" and
+  never to a crash or a half-read profile.
+- **Render scale governs itself.** The browser build counted frames over a 1.4 s
+  window and gave up one of its three internal resolutions whenever the average
+  fell below 38 fps. The same window and the same threshold now drive
+  `Viewport.scaling_3d_scale` across 0.5 / 0.75 / 1.0, so only the 3D render
+  target moves — HUD, window and pointer are untouched. It may also climb back,
+  which the ancestor never did, because the opening seconds of a web session are
+  dominated by uncached shader compiles that would otherwise pin a healthy
+  machine at half resolution for the rest of the run. Climbing is deliberately
+  asymmetric: a 20 fps dead band, three good windows against one bad, and two
+  promotions per session. The verdict is held in a `static`, so it outlives the
+  scene reload that a death performs and a slow machine learns once per page
+  load instead of once per life. Inert under `--shot` and `--verify`, where a
+  moving render target would corrupt the thing being measured.
+- **Zombies have eyes.** The browser build painted a lit `#F3E4A8` core into
+  every walker and crawler frame and `#FF7A18` into the hound's; in a real 3D
+  scene the sprite is shaded and the map is dark, so those pixels came out
+  black. They are back as one additive billboarded quad per zombie, placed from
+  the sprite's own eye pixels so they follow the art rather than a hand-tuned
+  offset, and driven past the glow threshold — an unlit corner reads as a pair
+  of eyes before it reads as a silhouette. One shared material and seven meshes
+  serve the whole game, and the quads go dark the moment a zombie starts dying,
+  so a corpse does not glow for the second and a half before it despawns.
 
 ## Benchmarking
 
-`scripts/perf_probe.gd` is a self-contained frame-rate benchmark. It ramps the
-horde through 0 / 6 / 12 / 18 / 24 live zombies, samples five seconds of frame
-times at each step, and POSTs the result as JSON to `http://127.0.0.1:8970/result`.
+`scripts/perf_probe.gd` is a self-contained benchmark with three modes, selected
+by `?mode=` on web or `--perf-mode` natively: `base` ramps the horde through
+0 / 6 / 12 / 18 / 24, `phys` runs that ladder again with zombie↔zombie contact
+on and off, and `audio` holds the horde at 24 and ramps concurrent 3D voices.
+Results POST to a collector that also serves the build, so there is no CORS
+preflight to get wrong.
 
 It is **not referenced by any shipped code** — nothing in `main.gd` or the scene
-loads it. It only runs when registered as an autoload, which the perf export
-does and the normal export does not:
+loads it, and the normal export does not register it. `-Perf` adds the autoload
+for the duration of one export and takes it out again:
 
-```bash
-# add PerfProbe="*res://scripts/perf_probe.gd" under [autoload], then:
-Godot_v4.7-stable_win64_console.exe --headless --path . --export-release "WebPerf" <out>/index.html
+```
+pwsh tools/build.ps1 -Perf
+python tools/perf_collector.py build/perf
+#   http://127.0.0.1:8970/index.html?mode=base   (and ?mode=audio)
 ```
 
-Serve `<out>` and open it in a normal browser window with the collector
-listening on 8970. Note the browser tab must be **visible and focused** —
-Chrome fully suspends `requestAnimationFrame` in background tabs, so a hidden
-tab reports nothing at all rather than reporting slow numbers.
+The browser tab must be **visible and focused**. Chrome suspends
+`requestAnimationFrame` in a background tab, so a hidden tab reports *nothing at
+all* rather than reporting slow numbers — a run from one is an absent
+measurement, not a pessimistic one. This is why the web numbers are still open.
 
-Measured natively (RTX 5090, 1280x720, V-Sync on) the game never misses a
-frame: 6.06 ms flat at every horde size, physics 0.26 ms → 1.22 ms from 0 to 24
-zombies, 16 → 28 draw calls, ~1,300 primitives, 47 MB VRAM.
+Backend questions do not need a browser, and are better off without one:
+
+```
+pwsh tools/perf_native.ps1        # headless, both physics engines
+```
+
+Findings live in `notes/perf/`. The one that changed the project: at 24 zombies
+**Jolt costs 1.26 ms of physics against GodotPhysics3D's 2.52**, so
+`physics/3d/physics_engine` is now `"Jolt Physics"` — with the space, because
+`"JoltPhysics3D"` is not a name the setting accepts and **falls back to
+GodotPhysics3D silently**. Neither backend shows the collapse that older reports
+predicted for 24 mutually-colliding `CharacterBody3D`, and collision pairs grow
+linearly rather than quadratically, so the boid separation and the broadphase
+are not fighting.
+
+Measured natively (RTX 5090, 1280x720, V-Sync on) the game never misses a frame:
+6.06 ms flat at every horde size, 16 → 28 draw calls, ~1,300 primitives, 47 MB
+VRAM. Note that a **headless** run's frame times are a low-processor sleep
+target rather than work — only `physics_ms` means anything there.
 
 ## Known gaps
 
-- No weapon viewmodel — the browser build drew guns from a 2D part list
-  (`GUNART`), which needs real meshes here.
-- Wall-buy chalk plaques are text prompts rather than the drawn outlines.
+- The viewmodel has no ADS, no shell ejection and no downed pose, and the
+  Pack-a-Punch look is the ancestor's flat tint rather than anything richer.
 - Projectile weapons (Ray Gun, China Lake) currently fire as hitscan; splash
   damage is not yet wired.
+- The fire-rate fix is a straight buff against everything that shipped before it
+  — MP40 +22%, AK-74u +18% — and the round curve was last tuned against the
+  broken, tick-quantised rates. Rounds 1-5 are easier than they were, and nothing
+  in this repo can yet answer by how much.
 - The world is still flat — no height variation anywhere, including the stairwell.
+- No settings menu. The browser build had three quality buttons; here the render
+  scale is automatic and there is no way to ask for a different one, and no
+  mouse-sensitivity or key-rebinding UI either.
+- The low-health edge glow rides the same baked vignette ramp as the damage wash,
+  so it reads softer and further into the frame than the browser build's
+  `inset 0 0 140px 40px` shadow — right direction, wrong sharpness. A second
+  baked ramp at a higher exponent fixes it without costing a shader compile, but
+  that exponent would be invented rather than read off the ancestor.
+- Pausing is a game state, not `get_tree().paused`. The world stops, but the HUD
+  timers behind the overlay — the toast, the damage wash, the hit marker — keep
+  decaying while the pause screen is up.
 
 ## Naming
 

@@ -2,8 +2,14 @@
 .godot/
 *.bak
 export_presets.cfg.bak
+project.godot.buildbak
+
+# Scratch export target used by tools/build.ps1 when testing the pipeline.
+# docs/ is the real, published output and stays tracked.
+build/
 
 # Godot MCP Pro is a paid product — not redistributable.
 godot-mcp-pro-v1.15.1/
 addons/godot_mcp/
 .mcp.json
+project.godot.perfbak

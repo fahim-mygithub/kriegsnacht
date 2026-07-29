@@ -78,6 +78,19 @@ const WINDOWS := [
 	{"x": 39, "y": 23, "ix": 38, "iy": 23}, {"x": 39, "y": 29, "ix": 38, "iy": 29}, {"x": 30, "y": 32, "ix": 30, "iy": 31},
 ]
 
+## What a barricade's exterior pocket is floored and roofed with.
+##
+## The ancestor drew the space beyond every window as night sky: `#080B10` filled
+## the cell (html:807), `#0E1420` the opening inside it (html:808), and eighteen
+## stars were stippled over that at `rgba(180,190,210, 0.15-0.6)` (html:809-810).
+## The night ceiling is the
+## same decision one level up, and it is already unshaded (see
+## `world_builder._night_sky`) so the torch cannot light it — which is what stops a
+## pocket reading as a cupboard with a painted roof. Cobble is the outdoor floor
+## the Alley already uses.
+const POCKET_FLOOR := FL_COBBLE
+const POCKET_CEIL := CE_NIGHT
+
 const WALLBUYS := [
 	{"gun": "olympia", "tile": [15, 5], "face": [-1, 0], "cost": 500},
 	{"gun": "m14", "tile": [12, 14], "face": [0, -1], "cost": 500},
@@ -110,12 +123,24 @@ var ftex := PackedByteArray()
 var ctex := PackedByteArray()
 var door_at := PackedInt32Array()
 var win_at := PackedInt32Array()
+## Tile -> the window whose exterior pocket it is, or -1. The pockets are open
+## floor that the player must never be able to stand on, which is the whole reason
+## this grid exists separately from `solid`.
+var pocket_at := PackedInt32Array()
 var reach := PackedByteArray()
 ## Fixed per-tile brightness jitter so a 64px texture stops reading as wallpaper.
 var tile_shade := PackedFloat32Array()
 
-## Mutable per-window state: boards remaining.
+## Mutable per-window state: boards remaining, and how many zombies are working
+## the window right now.
+##
+## Both are run state on the map for the same reason: they are read from three
+## unrelated places — the round director when it picks a spawn window, the
+## interaction prompt when it decides whether to offer a rebuild, and the barricade
+## itself — and a value copied into any one of those goes stale the first time one
+## of the others moves it. `barricade.gd` is the only writer of either.
 var window_boards := PackedInt32Array()
+var window_workers := PackedInt32Array()
 var door_open := PackedByteArray()
 
 
@@ -131,6 +156,7 @@ func build() -> void:
 	ctex.resize(n); ctex.fill(0)
 	door_at.resize(n); door_at.fill(-1)
 	win_at.resize(n); win_at.fill(-1)
+	pocket_at.resize(n); pocket_at.fill(-1)
 	reach.resize(n)
 	tile_shade.resize(n)
 
@@ -173,12 +199,30 @@ func build() -> void:
 			ctex[i] = DOORS[di].c
 
 	window_boards.resize(WINDOWS.size()); window_boards.fill(6)
+	window_workers.resize(WINDOWS.size()); window_workers.fill(0)
 	for wi in WINDOWS.size():
 		var w: Dictionary = WINDOWS[wi]
 		var i := ix(w.x, w.y)
 		solid[i] = 1
 		wtex[i] = TX_WINDOW
 		win_at[i] = wi
+		# Nothing renders a solid tile's floor texture, but `fx.gd` decides which
+		# debris a round throws by quantising the hit point to the grid and reading
+		# these arrays — and a barricade now has a real aperture with a real stone
+		# sill a bullet can land on top of. Without this the sill sprayed carpet,
+		# which is only what `ftex.fill(0)` happened to leave there.
+		ftex[i] = POCKET_FLOOR
+
+	# Carved last, and deliberately after the room wall-texture pass: a pocket sits
+	# outside every room's rectangle, so the tiles around it keep the default
+	# concrete — which is also the closest thing in the wall set to the `#4A4740`
+	# masonry the ancestor drew around every window opening (html:812).
+	for wi in WINDOWS.size():
+		var p := window_pocket(wi)
+		if p.x < 0 or p.y < 0 or p.x >= MAPW or p.y >= MAPH:
+			continue
+		_carve(p.x, p.y, POCKET_FLOOR, POCKET_CEIL)
+		pocket_at[ix(p.x, p.y)] = wi
 
 	compute_reach()
 
@@ -190,15 +234,35 @@ func _carve(x: int, y: int, f: int, c: int) -> void:
 	ctex[i] = c
 
 
-## Where a zombie stands to work a window's boards. In the browser build this
-## had to sit on the *room* side of the wall plane or the depth buffer swallowed
-## the sprite. In real 3D that is no longer a constraint, but keeping it means
-## the attackers line up with the opening exactly as they did before.
+## The exterior pocket behind a barricade: the window tile mirrored through itself,
+## one step further from the room.
+##
+## Zombies have to have somewhere to *be* while they work the boards, and a
+## barricade you can shoot through has to have something behind it other than the
+## inside of a wall. The pocket is standable and it is never reachable by the
+## player: the window tile stays solid, so `move_and_slide` and the flow field both
+## treat a stripped barricade as a wall, and only the barricade's own vault path
+## crosses it.
+func window_pocket(wi: int) -> Vector2i:
+	var w: Dictionary = WINDOWS[wi]
+	return Vector2i(2 * int(w.x) - int(w.ix), 2 * int(w.y) - int(w.iy))
+
+
+## Where a zombie stands to work a window's boards — now outside, in the pocket.
+##
+## In the browser build this had to sit on the *room* side of the wall plane or the
+## depth buffer swallowed the sprite (html:1600-1603), so a zombie "at a window"
+## was already standing in the room and the boards were a number ticking down
+## beside it. In real 3D that constraint is gone and there is somewhere outside to
+## stand, so the attacker is where the fiction always said it was. The 0.33 bias
+## toward the wall is the ancestor's own, kept so the body still reads as pressed
+## up against the barricade rather than loitering in the middle of the pocket.
 func window_stand_pos(wi: int) -> Vector2:
 	var w: Dictionary = WINDOWS[wi]
+	var p := window_pocket(wi)
 	return Vector2(
-		w.ix + 0.5 + (w.x - w.ix) * 0.33,
-		w.iy + 0.5 + (w.y - w.iy) * 0.33
+		p.x + 0.5 + (int(w.x) - p.x) * 0.33,
+		p.y + 0.5 + (int(w.y) - p.y) * 0.33
 	)
 
 
@@ -222,6 +286,17 @@ func compute_reach() -> void:
 				continue
 			var ni := ix(nx, ny)
 			if reach[ni] == 1:
+				continue
+			# The exterior pockets are open tiles the player must never reach, and
+			# `live_windows()` and every door purchase are decided by this fill. The
+			# fill already stops at a barricade — a window tile is marked reachable
+			# but never enqueued, because it is solid — so on today's fourteen
+			# windows this line changes nothing. It is here because that is an
+			# accident of where the windows happen to sit: one moved to a tile whose
+			# pocket touches open ground would silently turn the outside of the
+			# building into somewhere the player can walk to, with no symptom but a
+			# door that has stopped gating anything.
+			if pocket_at[ni] >= 0:
 				continue
 			# Windows count as reachable edges — that is how zombies get in.
 			if solid[ni] == 1 and win_at[ni] < 0:

@@ -4,6 +4,16 @@ extends RefCounted
 ## Weapon table ported verbatim from kriegsnacht.html section 4.
 ## Every number is engine-independent design data, so it transfers unchanged.
 
+## The state machine that reads all of this. preload rather than the class name: a
+## freshly added script is not in the class registry until the editor rescans, and a
+## headless run has no editor. Nothing flows back the other way — weapon.gd knows
+## about gun dictionaries and about nothing else — so there is no cycle here.
+const WEAPON := preload("res://scripts/entities/weapon.gd")
+
+## `shells` finally does something. It has been declared here and in the ancestor
+## (kriegsnacht.html:1460, :1465) since the beginning and read by nothing in either;
+## it now selects a shell-by-shell reload that firing can interrupt, which is the
+## behaviour the flag was always named for. See Weapon.begin_reload.
 const DEFAULTS := {
 	"mag": 8, "res": 80, "dmg": 60, "rpm": 400, "auto": false, "pellets": 1,
 	"spread": 1.0, "reload": 1.8, "kick": 1.0, "range": 26.0,
@@ -69,6 +79,11 @@ static func papify(w: Dictionary) -> Dictionary:
 	return u
 
 
+## The gun a player actually carries: the immutable spec above, plus the mutable
+## counters, plus the state machine's own fields. Everything from `reloading`
+## downward belongs to scripts/entities/weapon.gd and nothing else may assign it —
+## `reloading` included, which survives as the reload clock's public face only
+## because hud.gd binds to it.
 static func make_gun(key: String, pap: bool) -> Dictionary:
 	var def := spec(key)
 	if pap:
@@ -77,6 +92,7 @@ static func make_gun(key: String, pap: bool) -> Dictionary:
 		"def": def, "key": key, "pap": pap,
 		"mag": int(def.mag), "res": int(def.res),
 		"reloading": 0.0, "next_shot": 0.0,
+		"state": WEAPON.State.IDLE, "state_t": 0.0, "state_len": 0.0,
 	}
 
 
