@@ -212,8 +212,29 @@ func record_run() -> void:
 		push_warning("profile save unavailable — storage refused the write")
 
 
+## The one place the run's state moves, and therefore the one writer of
+## `get_tree().paused`. Pause used to be a flag every `_process` re-read and
+## early-returned on, which leaked by construction: the HUD's timers kept
+## decaying, and Milestone 2's tweens, particle emitters and hand-sampled curves
+## had no early return to add one to. A node that must keep running while paused
+## says so with its own `process_mode` (the HUD, the player's input, Sfx) instead
+## of every other node in the game having to remember it might not be running.
+##
+## STATE_TITLE does NOT pause: the shader warm-up pass runs behind the title card
+## and is the only free moment it has, and `--shot` and `--autostart` both start
+## from there.
+##
+## STATE_OVER does. Nothing behind the death screen is worth simulating — the
+## overlay is 92% opaque — and it is the one state a player can leave running for
+## an hour by walking away from the tab, which is exactly when a still-emitting
+## particle pool costs the most. `restart()` clears the flag itself, because the
+## incoming scene's `_ready` is what would otherwise have to.
+##
+## Set before the signal so every listener sees a tree that already agrees with
+## the state it is being told about.
 func set_state(s: int) -> void:
 	state = s
+	get_tree().paused = s == STATE_PAUSE or s == STATE_OVER
 	state_changed.emit(["title", "play", "pause", "over"][s])
 
 
@@ -354,6 +375,36 @@ func check_points_drop() -> bool:
 	drop_index += 1
 	next_drop_at += int(2000.0 * pow(1.14, drop_index))
 	return true
+
+
+## The per-round power-up cap, and the whole drop decision, in one place.
+##
+## This is here rather than inline in the round director because the rule was
+## written out twice — once in the director and once again in the balance sim — and
+## the copies drifted the instant one of them was fixed. The missing per-round reset
+## (html:2862, `G.dropsThisRound=0` inside startRound) was corrected in the director
+## and the sim went on faithfully modelling four drops a RUN while the game paid four
+## a ROUND. A sim that disagrees with the game is worse than no sim, so the rule the
+## two have to agree about lives where both of them read it.
+const DROP_CAP := 4
+
+
+## Called at the top of every round. The cap is meaningless without it.
+func begin_round_drops() -> void:
+	drop_count = 0
+
+
+## `lucky` is the flat per-death roll, made by the caller and passed in already
+## resolved — deliberately, because the caller owns the Rng stream and that draw has
+## to happen on every death whether or not it is used. Folding it in here as a
+## short-circuited `or` would skip the draw whenever the points threshold had already
+## fired, and a skipped draw desynchronises every seeded run after it.
+func try_drop(lucky: bool) -> bool:
+	var earned := check_points_drop()
+	if (earned or lucky) and drop_count < DROP_CAP:
+		drop_count += 1
+		return true
+	return false
 
 
 func tick_timers(dt: float) -> void:

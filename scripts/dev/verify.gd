@@ -28,6 +28,15 @@ const QUALITY := preload("res://scripts/world/quality_governor.gd")
 const WEAPON := preload("res://scripts/entities/weapon.gd")
 const VIEWMODEL := preload("res://scripts/entities/viewmodel.gd")
 const GUNART := preload("res://scripts/data/gunart.gd")
+const CHECK_SYSTEMS := preload("res://scripts/dev/checks/systems.gd")
+## The canon round curves, pinned with their sources. Split out because they are
+## the one part of this suite a designer rather than an engineer has to read.
+const CURVES := preload("res://scripts/dev/checks/curves.gd")
+
+## The number of assertions this suite is known to run, minus a small margin for
+## the ones that are conditional on a resource being present. See the floor check
+## at the end of run() for why a count is worth asserting at all.
+const ASSERTION_FLOOR := 175
 
 var _pass := 0
 var _fail := 0
@@ -67,6 +76,25 @@ func run(main: Node3D) -> int:
 	_quality(main)
 	_probe_contract(main)
 	_viewmodel(main)
+	# These two are last because each leaves state behind, and they are in this
+	# order because only one of them cares what the other leaves. CHECK_SYSTEMS
+	# spawns and kills 24 real zombies and leaves the director's spawn queue drawn
+	# down; CURVES sweeps 300 seeds, re-seeds Rng and drives reset_run(). CURVES
+	# reads nothing but the curves on Game, so it survives a mangled director —
+	# CHECK_SYSTEMS would not survive a reset_run() underneath it.
+	CHECK_SYSTEMS.run(self, main)
+	CURVES.run(self, main)
+
+	# A floor on the total, not a target. A runtime error inside any check function
+	# above unwinds only that function: run() carries on, the suite prints a smaller
+	# number and STILL EXITS 0. That is how a rename silently deleted the "every
+	# material is reachable from the warm-up" assertion and left the build gate
+	# green. Nothing else reads this count, so nothing else would have noticed.
+	# Raise it when sections are added; never lower it to make a run pass.
+	check("no assertion section was silently dropped",
+		_pass + _fail >= ASSERTION_FLOOR,
+		"ran %d, floor is %d — a check function probably errored out" % [
+			_pass + _fail, ASSERTION_FLOOR])
 
 	print("\n=== verify ===")
 	for l in _lines:
@@ -738,7 +766,7 @@ func _impacts(main: Node3D) -> void:
 	# added, which is exactly when it should still be useful.
 	var missing := ""
 	var wanted: Array = main.world.materials()
-	wanted.append(main._muzzle_mat)
+	wanted.append_array(main.atmos.materials())
 	wanted.append(Zombie.eye_material())
 	wanted.append_array(Zombie.rim_materials())
 	wanted.append_array(fx.materials())

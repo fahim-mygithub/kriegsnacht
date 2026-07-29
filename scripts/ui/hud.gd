@@ -152,6 +152,15 @@ var _lock_seen := false
 var _resume_armed := false
 
 
+## PROCESS_MODE_ALWAYS, and it has to be ALWAYS rather than WHEN_PAUSED: this
+## `_process` is the pause overlay's watchdog *and* the whole HUD's clock, so
+## WHEN_PAUSED would leave the bars, the marker and the toast frozen during play —
+## the failure mode looks like the HUD being broken rather than like a pause bug.
+## The gameplay clocks inside it are gated on the state instead; see `_process`.
+func _ready() -> void:
+	process_mode = Node.PROCESS_MODE_ALWAYS
+
+
 func bind(p: Player, g: Node3D) -> void:
 	player = p
 	game = g
@@ -585,44 +594,54 @@ func _draw_tally() -> void:
 func _process(dt: float) -> void:
 	var playing := Game.state == Game.STATE_PLAY
 
-	if _toast_time > 0.0:
-		_toast_time -= dt
-		_toast.modulate.a = clampf(_toast_time, 0.0, 1.0)
-
-	# The wash decays on its own clock and is refreshed only by an actual damage
-	# event. It used to be recomputed from the current health fraction on every
-	# health_changed emission — including the per-frame regen ticks — so it sat
-	# on screen continuously the whole time you were hurt instead of flashing.
-	if _flash > 0.0:
-		_flash = maxf(0.0, _flash - dt * DMG_DECAY)
-	if _deny > 0.0:
-		_deny = maxf(0.0, _deny - dt * 3.8)
-	# A17: because the shared ramp is zero at the crosshair and peaks in the
-	# corners, the wash is strongest exactly where the vignette is darkest and
-	# never touches the centre of the screen — `k = (dmg*(255-v))>>8`.
-	_dmg.modulate.a = _flash
-	_dmg.visible = _flash > 0.0
-	_deny_rect.modulate.a = _deny * 0.42
-	_deny_rect.visible = _deny > 0.0
-
-	if _marker_t > 0.0:
-		_marker_t = maxf(0.0, _marker_t - dt)
-		_marker.queue_redraw()
-
-	if player and is_instance_valid(player):
-		_stam_bar.size.x = 220.0 * player.stamina()
-		_stam_back.visible = player.stamina() < 0.999
-		_stam_bar.visible = _stam_back.visible
-
-	# Everything below runs off the play clock. `_process` still ticks while
-	# paused — that is Milestone 2's `get_tree().paused` refactor, not this
-	# change — so the new timers are gated rather than added to the leak.
+	# EVERY CLOCK ON THIS SCREEN IS THE PLAY CLOCK, and this node is one of the
+	# three that keep processing while the tree is paused — so the gate below is
+	# what stops the pause overlay eating the toast, the hit marker and the damage
+	# wash that were on screen when the player hit P. The ancestor's frame loop
+	# does exactly this: `G.dmgFlash`, `G.shake` and `G.t` all decay inside
+	# `if(G.state==='play')` (kriegsnacht.html:3350-3369) while the renderer keeps
+	# drawing the frozen frame (:3393).
+	#
+	# The rects are left showing whatever they were showing. That is what frozen
+	# means, and re-asserting values that cannot have changed would be work.
 	if playing:
+		if _toast_time > 0.0:
+			_toast_time -= dt
+			_toast.modulate.a = clampf(_toast_time, 0.0, 1.0)
+
+		# The wash decays on its own clock and is refreshed only by an actual damage
+		# event. It used to be recomputed from the current health fraction on every
+		# health_changed emission — including the per-frame regen ticks — so it sat
+		# on screen continuously the whole time you were hurt instead of flashing.
+		if _flash > 0.0:
+			_flash = maxf(0.0, _flash - dt * DMG_DECAY)
+		if _deny > 0.0:
+			_deny = maxf(0.0, _deny - dt * 3.8)
+		# A17: because the shared ramp is zero at the crosshair and peaks in the
+		# corners, the wash is strongest exactly where the vignette is darkest and
+		# never touches the centre of the screen — `k = (dmg*(255-v))>>8`.
+		_dmg.modulate.a = _flash
+		_dmg.visible = _flash > 0.0
+		_deny_rect.modulate.a = _deny * 0.42
+		_deny_rect.visible = _deny > 0.0
+
+		if _marker_t > 0.0:
+			_marker_t = maxf(0.0, _marker_t - dt)
+			_marker.queue_redraw()
+
 		_pulse_t += dt
 		_blink_t += dt
 		_pop_t = maxf(0.0, _pop_t - dt)
 		_float_t = maxf(0.0, _float_t - dt)
 		_title_t = maxf(0.0, _title_t - dt)
+
+	# Not a clock: the stamina bar is a readout of a value that simply cannot move
+	# while the player's own physics step is frozen, so gating it would only mean
+	# it could be stale after a state change rather than merely idle.
+	if player and is_instance_valid(player):
+		_stam_bar.size.x = 220.0 * player.stamina()
+		_stam_back.visible = player.stamina() < 0.999
+		_stam_bar.visible = _stam_back.visible
 
 	# A16: an edge-weighted ~1.1 Hz pulse under a third health.
 	var pulse := 0.0
@@ -682,12 +701,23 @@ func _process(dt: float) -> void:
 	# queries the browser live in 4.7 — the 4.4-era desync was fixed by PR
 	# #102719 — so polling Input.mouse_mode is a reliable detector.
 	if Game.state == Game.STATE_PLAY:
-		if Input.mouse_mode == Input.MOUSE_MODE_CAPTURED:
-			_lock_seen = true
-		if Input.is_action_just_pressed("pause"):
-			_pause()
-		elif _lock_seen and Input.mouse_mode != Input.MOUSE_MODE_CAPTURED:
-			_pause()
+		# ...unless something outside the state machine is holding the tree. The two
+		# move together — Game.set_state is the only writer of both — so a paused
+		# tree during play can only be an external holder, and the debug console is
+		# one: it takes `get_tree().paused` and releases the pointer so its LineEdit
+		# can be typed into. Without this the watchdog reads that release as an
+		# alt-tab and pauses the run, and closing the console restores the tree to
+		# a state machine now stuck in STATE_PAUSE with a pointer it never lost —
+		# neither branch below can resume from that, so the overlay stays up until
+		# the player clicks. Standing down keeps `_lock_seen` unarmed through the
+		# hold too, which is what makes the first frame after it re-arm correctly.
+		if not get_tree().paused:
+			if Input.mouse_mode == Input.MOUSE_MODE_CAPTURED:
+				_lock_seen = true
+			if Input.is_action_just_pressed("pause"):
+				_pause()
+			elif _lock_seen and Input.mouse_mode != Input.MOUSE_MODE_CAPTURED:
+				_pause()
 	elif Game.state == Game.STATE_PAUSE:
 		# Whoever wins the mouse back is the resume: the click path lives in the
 		# player, and toggle_capture (L) has to land somewhere coherent too —

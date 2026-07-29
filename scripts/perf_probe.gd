@@ -480,7 +480,7 @@ func _next_stage() -> void:
 func _clear() -> void:
 	for z in get_tree().get_nodes_in_group("zombies"):
 		z.free()
-	_main._alive.clear()
+	_main.rounds.alive().clear()
 
 
 ## `pile` packs the horde into one small disc rather than scattering it across
@@ -533,7 +533,7 @@ func _spawn_at(at: Vector3, pal: int) -> Zombie:
 	z.add_to_group("zombies")
 	_main.add_child(z)
 	z.global_position = at
-	_main._alive.append(z)
+	_main.rounds.alive().append(z)
 	return z
 
 
@@ -1308,7 +1308,7 @@ var _sep_clamped := 0
 ## once. There is a `verify.gd` assertion proposed alongside this file that pins
 ## the three constants and the clamp behaviour, so the rot is loud, not silent.
 func _sample_separation() -> void:
-	var alive: Array = _main._alive
+	var alive: Array = _main.rounds.alive()
 	var radius: float = Zombie.SEPARATION_RADIUS
 	var limit: float = Zombie.SEPARATION_LIMIT
 	for a in alive:

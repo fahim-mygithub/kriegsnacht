@@ -50,8 +50,21 @@ Godot_v4.7-stable_win64.exe --path .
 Headless soak test (skips the title screen and prints round state every 2s):
 
 ```
-Godot_v4.7-stable_win64_console.exe --headless --path . --autostart --quit-after 2400
+Godot_v4.7-stable_win64_console.exe --headless --path . --autostart --fixed-fps 60 --quit-after 5400
 ```
+
+`--quit-after` is Godot's own flag and it counts **frames, not seconds** — 5400 is
+90 s at 60 fps, and the `2400` this line used to carry was 40 s rather than the 40
+minutes it looked like. `--fixed-fps` is what makes a soak comparable to another
+soak: without it the frame deltas are wall-clock and two runs of the same build
+diverge. With it, and with the run seed pinned, two builds produce byte-identical
+`[soak]` output — which is how the Milestone 3 systems split was shown to be
+behaviour-preserving.
+
+The useful window is shorter than it looks: nothing shoots back, so the player is
+dead at about 14 s and `STATE_OVER` swallows the rest. A soak fingerprints spawn
+cadence, window weighting, barricade teardown and round 1 — it exercises no later
+round, no box, no power-up and no interactable.
 
 Assertion suite — canon numbers, the collision masks that make the game
 losable, per-attacker damage gating, the speed-class mixture, RNG determinism

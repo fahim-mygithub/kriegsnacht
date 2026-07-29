@@ -635,10 +635,14 @@ func cue_point() -> Vector3:
 
 ## The traversal path: outside, up over the sill, down onto the room tile.
 ##
-## A `Curve3D` sampled by hand rather than a `Tween` driving one. Pause in this
-## project is a game state that every `_physics_process` early-returns on, not
-## `get_tree().paused` — a Tween runs off the scene tree and would keep hauling a
-## zombie through a window while the pause screen was up.
+## A `Curve3D` sampled by hand rather than a `Tween` driving one. The original
+## reason was pause — a Tween ran off the scene tree while pause here was a game
+## state each `_physics_process` early-returned on — and that reason expired in
+## Milestone 3, when `get_tree().paused` became real and a tween bound to this node
+## started stopping with it. What keeps the hand-sampled curve is cost and control:
+## one `Tween` object per body per traversal against one `sample_baked()` off a
+## curve that is already built, and a traversal that has to stay resumable from a
+## state machine a shot can interrupt mid-vault.
 func _build_vault(iw: int, ih: int) -> void:
 	var from := stand_point(0)
 	var to := Vector3(float(iw) + 0.5, 0.0, float(ih) + 0.5)

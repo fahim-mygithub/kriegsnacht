@@ -130,6 +130,15 @@ var world: Node3D
 
 
 func _ready() -> void:
+	# PROCESS_MODE_ALWAYS, on this node only. The resume click has to reach
+	# `_unhandled_input`, and Godot gates input propagation on `can_process()`
+	# exactly as it gates `_process` — a pausable player never sees the one event
+	# that can leave the pause, because pointer lock needs transient activation and
+	# so the answer has to come from inside the event. `_physics_process` below
+	# early-returns on the state instead, which it has to do anyway for the title
+	# screen, where the tree is deliberately not paused.
+	process_mode = Node.PROCESS_MODE_ALWAYS
+
 	collision_layer = 2
 	# Walls and enemies. Zombies could previously be walked through, so no
 	# amount of horde pressure could ever corner the player.
@@ -147,6 +156,12 @@ func _ready() -> void:
 	_head = Node3D.new()
 	_head.name = "Head"
 	_head.position.y = EYE
+	# ...and everything below the player is pausable again. `process_mode` is
+	# inherited, so ALWAYS on the player alone would hand it to the whole camera
+	# chain and to the viewmodel hanging off the end of it — which would go on
+	# swaying, bobbing and decaying its recoil spring behind the pause overlay.
+	# Nothing under here needs to run while paused; only the input does.
+	_head.process_mode = Node.PROCESS_MODE_PAUSABLE
 	add_child(_head)
 
 	_recoil_pivot = Node3D.new()
@@ -289,6 +304,10 @@ static func set_capture(on: bool) -> void:
 # --- movement ----------------------------------------------------------------
 
 func _physics_process(dt: float) -> void:
+	# Not redundant with `get_tree().paused`, and this node is the one place in the
+	# game where it is not: the player processes while paused so the resume click
+	# can land, and the title screen does not pause the tree at all — the warm-up
+	# pass runs there. Both are states in which nothing below may move.
 	if Game.state != Game.STATE_PLAY:
 		return
 
