@@ -90,6 +90,39 @@ const PERKDEF := {
 # more constants to the balance surface would have split one perk's definition
 # across two files for no reader's benefit. If a later wave moves the roster's
 # mechanics onto Game wholesale, these go with them.
+#
+# NEITHER OF THESE TWO CAN BE MEASURED WITH `--sim`, AND THAT IS A PROPERTY OF THE
+# SIM RATHER THAN AN OVERSIGHT — recorded here because a balance number with no
+# measurement behind it should say so out loud rather than be quietly missing.
+#
+# The sim models a STATIONARY player holding ONE gun: `--sim-gun` takes a single
+# key, there is no position, no movement and no stamina anywhere in it, and its
+# "walk / run / sprint" columns are the ZOMBIE speed classes, not the player's.
+# Stamin-Up moves the player's legs and Mule Kick adds a third slot, so both are
+# invisible to it by construction. Measured rather than assumed, 20 rounds, mp40,
+# seed 20260729, `--sim-perks` set four ways:
+#
+#   perks          clear_s    contact z·s   points    damage taken
+#   (none)        2163.28        32755.8    168750         1852032
+#   stamin        2163.28        32755.8    168750         1852032
+#   mule          2163.28        32755.8    168750         1852032
+#   stamin,mule   2163.28        32755.8    168750         1852032
+#
+# Bit-identical in every column. A `--sim-perks stamin` run is not weak evidence
+# that the perk is balanced; it is no evidence at all, and shipping one as though
+# it were would be worse than having none.
+#
+# What IS measured is the opportunity cost of the slot they compete for, which the
+# sim can see because the four older perks are all things it models:
+# notes/balance/sim-m4perk-{none,speed,dtap,dtap-speed}. Against 32,756 contact z·s
+# unperked, Speed Cola alone is 21,930 (-33%), Double Tap alone 24,006 (-27%) and
+# the pair 14,528 (-56%). That is the bar a fifth perk is asking a player to give
+# up, and it is the honest framing of PERK_CAP: what Stamin-Up costs is a third of
+# a run's contact time, not 2000 points.
+#
+# Closing this properly needs a player-position term in the sim — the same term the
+# `--sim-trap` share is currently standing in for — which is a change to
+# balance_sim.gd and not to this package.
 
 ## Stamin-Up. ONLY MEANINGFUL SINCE MILESTONE 1: sprint became a finite resource
 ## then (player.gd's SPRINT_DRAIN / SPRINT_RECOVER / SPRINT_FLOOR), and before that

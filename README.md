@@ -97,6 +97,16 @@ a yaw in degrees:
 Godot_v4.7-stable_win64_console.exe --path . --shot out.png 200 --resolution 960x540
 ```
 
+**No `--headless` on this one** — note it is absent above and that is deliberate.
+Headless has no rendering device, so `await RenderingServer.frame_post_draw` never
+returns and the run hangs forever with no output. Windowed it finishes in about
+3.6 s. This is the exact opposite of every other flag here, which is why it is worth
+stating: `--verify` and `--sim` want `--headless`, `--shot` cannot have it.
+
+There is no way to photograph a state that needs input — an armed trap needs power,
+1000 points and an F press — without a temporary hook in `_tick_shot`. A permanent
+`--shot-setup` would be worth having rather than each person re-inventing one.
+
 > A parse error in `main.gd` makes Godot **hang** rather than exit, because the
 > main scene fails to load and the process waits. If a headless run produces the
 > banner and nothing else, check stderr for a parse error before assuming a

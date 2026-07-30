@@ -106,7 +106,7 @@ const CHECK_MODULES := {
 ##
 ## The floor cannot see a section that never ran at all — a total it was never set
 ## from cannot shrink. That is `_registered()`'s job, and the two are complementary.
-const ASSERTION_FLOOR := 470
+const ASSERTION_FLOOR := 475
 
 var _pass := 0
 var _fail := 0
