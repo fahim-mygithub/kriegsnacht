@@ -56,12 +56,68 @@ const BOX_WEIGHT := {"raygun": 0.5, "thundergun": 0.32, "rpk": 0.8, "chinalake":
 ## overwritten because it is the price the machine costs in the mode the port does
 ## not have, and deleting it would make the special case look like an arbitrary
 ## discount. Anything that prices a perk machine must read Game first.
+## THE ROSTER IS LONGER THAN THE CAP, and that is the whole point of adding to it.
+## `Game.PERK_CAP` has been 4 since Milestone 1 and has never bound: the map
+## offered exactly four machines, so "four at once" described the inventory rather
+## than constraining it, and `scripts/dev/checks/curves.gd::_perks` says so in as
+## many words — "the cap only starts doing work the day a fifth is added. That is
+## precisely when it will be forgotten." Six rows is that day. A player now gives
+## something up, and the two new rows are chosen so that the thing given up is a
+## real question rather than an obvious one: Mule Kick's third gun against
+## Juggernog's third melee hit, Stamin-Up's legs against Speed Cola's reload.
+##
+## The four above are the ancestor's, verbatim (kriegsnacht.html:1265-1270,
+## including the hex values and the one-line blurbs). THE TWO BELOW ARE NOT IN THE
+## ANCESTOR AT ALL — `grep -i "stamin\|mule"` over kriegsnacht.html returns
+## nothing — so they are designed against Black Ops rather than restored, and
+## every number attached to them is the port's own.
 const PERKDEF := {
 	"jug": {"name": "Juggernog", "cost": 2500, "col": Color("b4302c"), "col2": Color("5e1412"), "letter": "J", "blurb": "you can take much more"},
 	"speed": {"name": "Speed Cola", "cost": 3000, "col": Color("6bae3e"), "col2": Color("2e5418"), "letter": "S", "blurb": "reload twice as fast"},
 	"dtap": {"name": "Double Tap", "cost": 2000, "col": Color("c98a22"), "col2": Color("5e3c08"), "letter": "D", "blurb": "fire faster, hit harder"},
 	"revive": {"name": "Quick Revive", "cost": 1500, "col": Color("3e7fc0"), "col2": Color("173a60"), "letter": "Q", "blurb": "get back up once"},
+	# Letter U rather than S: Speed Cola owns S, and the badge letter is the perk
+	# strip's only colourblind-safe channel (see hud.gd::_refresh_perks).
+	"stamin": {"name": "Stamin-Up", "cost": 2000, "col": Color("d8c33c"), "col2": Color("6b5f12"), "letter": "U", "blurb": "run further, walk quicker"},
+	"mule": {"name": "Mule Kick", "cost": 4000, "col": Color("a2571f"), "col2": Color("4a2409"), "letter": "M", "blurb": "carry a third weapon"},
 }
+
+# --- what the two new perks actually do ---------------------------------------
+#
+# The four original effects live on `Game` (JUG_HP, SPEED_RELOAD_MULT, DTAP_*)
+# because `Game` owns the accessors that read them. These two are here, next to
+# the rows that name them, because their only consumer is player.gd and adding two
+# more constants to the balance surface would have split one perk's definition
+# across two files for no reader's benefit. If a later wave moves the roster's
+# mechanics onto Game wholesale, these go with them.
+
+## Stamin-Up. ONLY MEANINGFUL SINCE MILESTONE 1: sprint became a finite resource
+## then (player.gd's SPRINT_DRAIN / SPRINT_RECOVER / SPRINT_FLOOR), and before that
+## a perk that lengthened it would have multiplied an unbounded quantity by two.
+##
+## 0.5 on the drain takes the bar from 4.2 s to 8.4 s and 1.5 on the recovery
+## refills it in 2.67 s instead of 4.0 — so the duty cycle goes from 51% to 76%,
+## which is the reference's "you can keep running" without being "you never stop".
+const STAMIN_DRAIN_MULT := 0.5
+const STAMIN_RECOVER_MULT := 1.5
+
+## THE 1.07 IS A BOUND, NOT A FEEL, and it is the one number in this file that
+## another assertion is already watching.
+##
+## `Player.SPEED` is 3.15 and `Game.SPEED_SPRINT` — the fastest zombie class — is
+## 3.45, and --verify's "walking is slower than the sprint class" is what keeps the
+## game losable. 3.15 x 1.07 = 3.371, still under 3.45. 3.15 x 1.10 = 3.465 is over
+## it, and a *walking* player who cannot be caught by anything in the game is
+## exactly the failure Milestone 1's finite sprint was introduced to close — it
+## would arrive back through a 2000-point purchase instead of through a constant.
+## Anything above 1.0952 re-opens it; scripts/dev/checks/traps.gd asserts the
+## margin rather than the value, so retuning either speed cannot silently cross it.
+const STAMIN_SPEED_MULT := 1.07
+
+## Mule Kick's third slot. player.gd's `give_gun` caps `guns` at two; this is what
+## that cap reads instead.
+const BASE_SLOTS := 2
+const MULE_SLOTS := 3
 
 
 static func spec(key: String) -> Dictionary:
@@ -101,6 +157,37 @@ static func make_gun(key: String, pap: bool) -> Dictionary:
 		"reloading": 0.0, "next_shot": 0.0,
 		"state": WEAPON.State.IDLE, "state_t": 0.0, "state_len": 0.0,
 	}
+
+
+# --- perk accessors -----------------------------------------------------------
+#
+# Same shape as Game.reload_scale() / rpm_scale() / damage_scale(): a caller asks
+# for the scale and never asks whether the perk is held, so a perk cannot be
+# half-applied by a call site that only remembered one of its two effects.
+# Stamin-Up has three, which is precisely why.
+
+static func sprint_drain_scale() -> float:
+	return STAMIN_DRAIN_MULT if Game.has_perk("stamin") else 1.0
+
+
+static func sprint_recover_scale() -> float:
+	return STAMIN_RECOVER_MULT if Game.has_perk("stamin") else 1.0
+
+
+## Multiplies the player's ground speed, walking and sprinting alike. See
+## STAMIN_SPEED_MULT for why the ceiling on this number is not negotiable.
+static func move_speed_scale() -> float:
+	return STAMIN_SPEED_MULT if Game.has_perk("stamin") else 1.0
+
+
+## How many weapons the player may hold at once.
+##
+## A function and not a constant because it is a function of what is held. Losing
+## Mule Kick cannot happen in this port — solo keeps its perks through a down, and
+## `_go_down` erases `revive` alone — so nothing has to decide what becomes of the
+## third gun. The day a perk can be lost, this is where that question lands.
+static func gun_slots() -> int:
+	return MULE_SLOTS if Game.has_perk("mule") else BASE_SLOTS
 
 
 static func roll_box(rng: RandomNumberGenerator) -> String:

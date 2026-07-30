@@ -44,6 +44,124 @@ const GROAN_MIN := 3.5
 const GROAN_MAX := 9.0
 const GROAN_RANGE := 20.0
 
+## THE COLLIDER, RECONCILED WITH THE SPRITE (§4.2). ONE radius, for all three
+## kinds, and it is the ancestor's own: `r: isDog?0.30:0.30` at
+## kriegsnacht.html:2214, tested as `if(perp > z.r) continue` at html:2486.
+##
+## What was here before M4 was `0.26 if kind != "hound" else 0.30`, and 0.26 has
+## a provenance too — it is `const R = 0.26` at html:2337, the radius the ancestor
+## keeps a zombie's CENTRE off a WALL while it walks. Two quantities, two places;
+## the port collapsed them into one and kept the wall one.
+##
+## The evidence note quotes the resulting gap as "~0.42 m per side of unhittable
+## billboard", from 48 px x 0.02844 m/px = 1.365 m of drawn width. That is the
+## CELL, not the sprite: measured at the sprite's own 0.35 alpha scissor the
+## walker's ink spans at most 32 px, 0.910 m, and 0.26 already covered 85.5% of
+## the head-on view.
+##
+## WHY ONE NUMBER AND NOT THREE. A capsule is radially symmetric and the drawn
+## width is a function of bearing, so no single radius can match a silhouette at
+## every bearing — the criterion has to name which error it is minimising. A shot
+## that lands on visible pixels and registers nothing is what §4.2 calls broken
+## hit registration and is what a player perceives; a shot that lands a few
+## centimetres beside a body and connects is invisible. So the radius is chosen
+## to minimise MISSES, and because coverage is monotonic in radius that means
+## taking the largest figure either source supports rather than the smallest.
+##
+## Measured over all eight bearings of the shipped atlas, at the 0.35 scissor,
+## every live cycle, every palette (scripts/dev/checks/enemies.gd re-measures
+## from the PNGs rather than trusting this table):
+##
+##   kind     r=0.22   r=0.26   r=0.30   r=0.34    head-on ink half-width
+##   walker    78.0%    84.5%    92.5%    94.6%    0.4550 m
+##   crawler   84.8%    93.2%    97.5%    99.5%    0.2371 m
+##   hound     65.2%    75.4%    80.2%    87.7%    0.2205 m
+##
+## An earlier M4 pass set these to the 95%-of-ink radius of the HEAD-ON view
+## alone — 0.30/0.23/0.22 — which reads well for the walker and is a regression
+## for the other two at six of the eight bearings: it took the hound from 80.2%
+## to 65.2% covered and its profile from 57.5% to 40.2%, i.e. a round placed
+## squarely on the middle of a dog's flank stopped registering. Going past 0.30
+## is not supported by either source, so 0.30 it is.
+##
+## THE COST, RECORDED. This capsule is also the physics body (layer 4, mask 1|2),
+## so it is the wall clearance as well, and moving it from 0.26 to 0.30 moves the
+## ancestor's html:2337 clearance by 4 cm for walkers and crawlers. That is a
+## deliberate departure: a doorway on this map is a whole tile, 0.60 m of body
+## still passes one with 0.40 m to spare, and the alternative — a second shape
+## for the hit volume — costs an Area3D per body and a `collide_with_areas`
+## change in player.gd for four centimetres of wall hugging.
+const HIT_RADIUS := 0.30
+
+## Frames of walk cycle per metre travelled. `z.anim += dt*spd*2.6` (html:2340),
+## where `anim` indexes the walk strip directly (`set.walk[(z.anim|0) % len]`,
+## html:2074) — so 2.6 is frames per metre and it is the whole of the ancestor's
+## animation timing. The port drove `speed_scale` off a one-shot random instead,
+## which let a sprint-class zombie shuffle slower than a walker.
+const ANIM_FRAMES_PER_METRE := 2.6
+
+## The walk animation's authored rate in `sprite_lib.gd::frames_for`. `speed_scale`
+## multiplies it, so the conversion from "frames per metre" to a scale factor
+## needs this. Duplicated from there deliberately: a scale is meaningless without
+## the rate it scales, and the assertion in enemies.gd reads the live
+## SpriteFrames rather than this constant, so a drift is caught rather than
+## mirrored.
+const WALK_FPS := 8.0
+
+## Everything below this fraction of the body's height is leg. The walker's hip
+## joint is drawn at `base-20` on a 64 px cell standing 1.82 m (html:861), which
+## is 0.626 m off the floor — 0.344 of the body. Rounded down, so the band never
+## reaches into the coat.
+const LEG_FRACTION := 0.34
+
+## Damage into the leg band needed to take the legs off, as a fraction of the
+## body's full health. Accumulated rather than tested per shot: a single
+## threshold would let one M14 round at a walker's shin make a crawler, and BO1
+## takes a burst. Half a zombie's health into its legs leaves it the other half,
+## which is the whole point of the mechanic — a crawler is a zombie you chose not
+## to finish.
+const LEG_BREAK := 0.5
+
+## What a walker keeps when its legs go. `_configure` gives a spawned crawler
+## `base_speed * 0.62`, so this is that same factor applied to a speed that has
+## already been rolled — a legged sprinter stays the fastest crawler on the map,
+## which is both the reference's behaviour and the reason legging one is a
+## decision rather than a free win.
+const CRAWLER_SPEED := 0.62
+
+## Seconds of delay per metre from the player before a nuked body actually
+## collapses. Without it the whole horde hits the floor on one frame, which reads
+## as a bug rather than as a detonation; with it the collapse leaves the player as
+## a wave. Capped, because the map's far corner is 45 m away and a corpse that
+## stands for two seconds after the toast is its own kind of wrong.
+const NUKE_STAGGER := 0.045
+const NUKE_STAGGER_MAX := 1.0
+
+## The fake ragdoll, and it is deliberately a slide rather than a physics body:
+## §2.1's frame budget has no room for 24 RigidBody3Ds and BO1 does not have them
+## either — a zombie there is a canned death animation plus a shove. Metres per
+## second at the moment of collapse, by what did the killing; the body decays to a
+## stop over SHOVE_DECAY.
+const SHOVE_BULLET := 0.55
+const SHOVE_MELEE := 1.6
+const SHOVE_BLAST := 2.4
+const SHOVE_DECAY := 7.0
+
+## How long a corpse stays after it has finished falling, and how long it takes to
+## go. The ancestor removed the body at 0.75 s flat (html:2256) and the port held
+## it for `frames/9 + 0.9`; this is that same total, re-apportioned so the last
+## third of it is a fade instead of a corpse standing at full opacity and then
+## being deleted between two frames. No extra draw calls, no extra lifetime.
+const CORPSE_HOLD := 0.55
+const CORPSE_FADE := 0.35
+
+## What killed it. Threaded from the call sites, which have always had this and
+## have always thrown it away: `_apply_hit` knows whether it was a bullet or the
+## Thundergun, `_knife` knows it was a blade, and the Nuke sweep is bracketed by
+## `Game.nuke_clearing`. The death reads as what caused it or it reads as one
+## animation played 24 times.
+enum Cause { BULLET, MELEE, BLAST, NUKE }
+
 ## Working the boards. `boardT: rnd(1.2,0.3)` at spawn (html:2212), then
 ## `z.boardT = z.type==='hound' ? 0.42 : rnd(1.5,0.9)` after each plank
 ## (html:2274). `rnd(a,b)` is `b + random()*(a-b)` (html:377), so both of those are
@@ -83,7 +201,7 @@ const VAULT_TIME := 1.2
 ## Eye geometry, in the sprite's own pixels, read off the ancestor's draw calls
 ## so the quads land on the pixels the art already lights up: a `#F3E4A8` core
 ## inside a soft halo on every walker and crawler frame (kriegsnacht.html:939,
-## 1043) and `#FF7A18` burning eyes on the hound (:1104). They are dark in the
+## 1044) and `#FF7A18` burning eyes on the hound (:1105). They are dark in the
 ## port only because the billboard is `shaded = true` and the map is dark.
 ##
 ## `y` is the row from the top of the cell, averaged over the vertical bob the
@@ -103,6 +221,52 @@ const EYE_PX := {
 	"hound": {"y": 10.6, "sep": 4.4, "x": -18.3, "glow": 6.0},
 }
 
+## The same geometry, per bearing. `EYE_PX` above is the row for the view the
+## ancestor drew — 0 for a walker, 2 for the crawler and the hound, which are
+## authored in profile — and every other row here is the projection of the same
+## body-space eye positions that `tools/gen/views.js` draws through, so the
+## additive quads land on the pixels the art lights up rather than beside them.
+##
+## `n` is how many eyes that bearing shows. Two facing you, ONE in profile
+## (the far eye is behind the nose, and drawing two there is what would give a
+## profile zombie a headlight), and NONE from behind. That last one is the whole
+## reason this table exists: a zombie with its back to you must not glow at you,
+## and until the atlas there was no bearing at which it did not.
+##
+## `x` is measured from the cell's horizontal centre in the un-mirrored art, so a
+## mirrored row negates it — see `_eye_mesh`. Rows 0 and 4 are never mirrored, so
+## their `x` is always 0 and the question does not arise.
+const EYE_VIEW := {
+	"zombie": [
+		{"x": 0.00, "sep": 5.90, "n": 2},
+		{"x": 3.25, "sep": 4.10, "n": 2},
+		{"x": 4.60, "sep": 0.00, "n": 1},
+		{"x": 0.00, "sep": 0.00, "n": 0},
+		{"x": 0.00, "sep": 0.00, "n": 0},
+	],
+	# Row 2 is the ancestor's own frame for both of these, and the ancestor draws
+	# TWO eyes on a head in profile — `fillRect(-16.4,...)` and `fillRect(-11.8,...)`
+	# for the crawler (html:1044) and the same pair on the hound (html:1104). It is
+	# loose anatomy and it is what is on the pixels, so the quads match the art
+	# rather than the model. `views.js` culls the far socket on the bearings it
+	# draws itself, which is why row 1 has two and the walker's row 2 has one.
+	"crawler": [
+		{"x": 0.00, "sep": 4.60, "n": 2},
+		{"x": 12.16, "sep": 3.25, "n": 2},
+		{"x": 13.20, "sep": 4.60, "n": 2},
+		{"x": 0.00, "sep": 0.00, "n": 0},
+		{"x": 0.00, "sep": 0.00, "n": 0},
+	],
+	"hound": [
+		{"x": 0.00, "sep": 4.80, "n": 2},
+		{"x": 15.13, "sep": 3.39, "n": 2},
+		{"x": 18.30, "sep": 4.40, "n": 2},
+		{"x": 0.00, "sep": 0.00, "n": 0},
+		{"x": 0.00, "sep": 0.00, "n": 0},
+	],
+}
+
+
 ## One tint per palette. The three ZPAL bodies (html:844-848) are meant to read
 ## as three different corpses and the groan pitch already splits on `pal`, so the
 ## eyes split too — but only inside the authored amber band, because franchise
@@ -115,7 +279,7 @@ const EYE_TINT := [
 	Color(0.886, 0.941, 0.753),
 ]
 
-## `#FF7A18`, verbatim (html:1104). A hellhound is on fire and must not share an
+## `#FF7A18`, verbatim (html:1105). A hellhound is on fire and must not share an
 ## eye colour with a walker.
 const EYE_TINT_HOUND := Color(1.000, 0.478, 0.094)
 
@@ -156,6 +320,27 @@ var _last_melee := false
 var _height := 1.82
 var _hit_flash := 0.0
 var _groan_timer := 0.0
+
+## The atlas. `_anim` is the cycle without its bearing suffix, because every
+## animation change has to be able to re-issue the same cycle on a new row.
+var _anim := "walk"
+var _view := 0
+var _flip := false
+## Which way the body is pointing, in world XZ. Steering writes it; the atlas
+## reads it. Frozen at death so a corpse does not swing round to face you.
+var _facing := Vector2(0.0, 1.0)
+
+## Damage taken below `LEG_FRACTION` of the body's height, and how the walker
+## turns into a crawler in place.
+var _leg_damage := 0.0
+
+## What killed it, which way the killing blow came from, and the collapse.
+## `_death_delay` is the Nuke's outward wave: the payout, the director's live
+## list and the eyes all happen at once, and only the fall is staggered.
+var last_cause: int = Cause.BULLET
+var _death_delay := 0.0
+var _collapsed := false
+var _shove := Vector3.ZERO
 ## Each zombie aims at a slightly different point around the player. Ten lines,
 ## and most of the difference between a horde and a conga line.
 var _goal_offset := Vector2.ZERO
@@ -231,13 +416,10 @@ func _ready() -> void:
 	collision_mask = 1 | 2
 	floor_max_angle = deg_to_rad(70)
 
-	var caps := CapsuleShape3D.new()
-	caps.radius = 0.26 if kind != "hound" else 0.30
-	caps.height = maxf(_height, caps.radius * 2.0 + 0.05)
 	_collider = CollisionShape3D.new()
-	_collider.shape = caps
-	_collider.position.y = caps.height * 0.5
+	_collider.shape = CapsuleShape3D.new()
 	add_child(_collider)
+	_shape_body()
 
 	_sprite = AnimatedSprite3D.new()
 	_sprite.sprite_frames = SpriteLib.frames_for(kind, pal)
@@ -258,7 +440,7 @@ func _ready() -> void:
 	# muzzle flash uses at main.gd:181-196, which is the working reference in
 	# this project for an additive billboard on this renderer.
 	_eyes = MeshInstance3D.new()
-	_eyes.mesh = _eye_mesh(kind, pal)
+	_eyes.mesh = _eye_mesh(kind, pal, _view, _flip)
 	_eyes.material_override = eye_material()
 	_eyes.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
 	_eyes.position.y = _eye_height()
@@ -275,11 +457,50 @@ func _ready() -> void:
 	_eyes.extra_cull_margin = _eye_span() * 2.0
 	add_child(_eyes)
 
-	# Slight per-zombie variation on the animation. Cosmetic, so it draws from
-	# the visual stream and cannot perturb anything the run depends on.
-	_sprite.speed_scale = Rng.randf_range(Rng.VISUAL, 0.85, 1.2)
+	# `speed_scale` is not written here: `_apply_anim` owns it, because it is a
+	# function of the cycle as well as of the speed. The `Rng.randf_range(VISUAL,
+	# 0.85, 1.2)` roll that used to be on this line is gone rather than moved —
+	# a deliberate one-off change to the VISUAL sequence, which weapon spread also
+	# rides.
+
+	# EVERY WAVE USED TO MARCH IN LOCKSTEP. Nothing set the starting frame, so
+	# every body spawned in a round was on frame 0 together and a horde crossing a
+	# room did it in step. The ancestor never had the bug — `anim: rnd(4)` at
+	# html:2213 gives each one a random phase at spawn — so this is a port
+	# regression, not a missing feature. Cosmetic, and it stays on VISUAL.
+	var walk_frames := _sprite.sprite_frames.get_frame_count(SpriteLib.anim_name("walk", _view))
+	if walk_frames > 1:
+		_sprite.frame = Rng.randi_range(Rng.VISUAL, 0, walk_frames - 1)
+		_sprite.frame_progress = Rng.randf(Rng.VISUAL)
+
 	_groan_timer = Rng.randf_range(Rng.VISUAL, 1.0, GROAN_MAX)
 	_reroll_offset()
+
+
+## Metres per second converted to a multiplier on the walk strip's authored rate.
+## `spd * 2.6` is the ancestor's frames-per-second (html:2340) and `WALK_FPS` is
+## what `sprite_lib.gd` authored the cycle at, so the quotient is exactly what
+## `speed_scale` has to be for a body to cover one stride per stride.
+##
+## Static and public because the assertion suite has to be able to ask "is this
+## monotonic in speed" without standing a zombie up in a scene tree.
+static func anim_scale_for(spd: float) -> float:
+	return maxf(0.05, spd * ANIM_FRAMES_PER_METRE / WALK_FPS)
+
+
+func anim_scale() -> float:
+	return anim_scale_for(speed)
+
+
+## The capsule, sized from `HIT_RADIUS`. Split out of `_ready` because the leg-shot
+## conversion has to redo it: a crawler is a third the height of the walker it was
+## a moment ago and a capsule left at 1.82 m would keep its head in the ceiling.
+func _shape_body() -> void:
+	var caps: CapsuleShape3D = _collider.shape
+	var r := HIT_RADIUS
+	caps.radius = r
+	caps.height = maxf(_height, r * 2.0 + 0.05)
+	_collider.position.y = caps.height * 0.5
 
 
 ## Every animation change goes through here, because the rim overlay and the
@@ -288,8 +509,75 @@ func _ready() -> void:
 ## separate PNGs. A bare `_sprite.play()` anywhere would leave a zombie outlined
 ## by the pose it was in a moment ago.
 func _play(anim: String) -> void:
-	_sprite.play(anim)
-	_sprite.material_overlay = rim_material(kind, pal, anim)
+	_anim = anim
+	_apply_anim(false)
+
+
+## Issues `_anim` on the current bearing. `keep_phase` re-seats the cycle where it
+## already was instead of restarting it, which is what a bearing change needs: a
+## zombie that turns while walking must not snap back to frame 0, and the atlas
+## row is a different SpriteFrames animation, so `play()` alone would do exactly
+## that four times a second on anything circling the player.
+func _apply_anim(keep_phase: bool) -> void:
+	var full := SpriteLib.anim_name(_anim, _view)
+	var was_frame := _sprite.frame
+	var was_progress := _sprite.frame_progress
+	_sprite.play(full)
+	if keep_phase:
+		var n := _sprite.sprite_frames.get_frame_count(full)
+		if n > 0:
+			_sprite.set_frame_and_progress(mini(was_frame, n - 1), was_progress)
+	_sprite.flip_h = _flip
+	_sprite.material_overlay = rim_material(kind, pal, full)
+	# THE ONE WRITER OF `speed_scale`, and the reason it is here rather than in
+	# `_ready` is the death strip.
+	#
+	# Animation rate is a function of speed: what was here was
+	# `speed_scale = Rng.randf_range(Rng.VISUAL, 0.85, 1.2)`, set once at _ready
+	# and never touched again — so a sprint-class body at 3.45 m/s could play a
+	# slower cycle than a walker at 1.05, and the three speed classes stopped
+	# reading as three threats. `speed` is already a gameplay quantity drawn from
+	# AI, so this is DERIVED from it rather than re-rolled; the per-body variation
+	# is the +/-8% `_configure` already applied, carried through, and the VISUAL
+	# draw that used to be here is gone rather than moved.
+	#
+	# But a corpse is not moving, and the ancestor agrees: `z.anim` indexes the
+	# WALK strip (html:2073) and doubles into the attack pair (html:2072), while
+	# the death frame is `(dieT * (len/0.55))|0` (html:2070) — a fixed 0.55 s clock
+	# that `spd` never touches. Scaling it here would be worse than unfaithful: the
+	# corpse budget in `_begin_collapse` is `frames / 9.0`, the strip's authored
+	# rate, so at a walk-class 0.34 scale the fall took 1.30 s of a 1.34 s life and
+	# a crawler's took 1.59 s of a 1.23 s one — it was deleted mid-topple.
+	_sprite.speed_scale = 1.0 if _anim == "death" else anim_scale()
+
+
+## Records which way the body is pointing. One writer, called from each of the
+## four things that can turn a zombie, because "whatever velocity happened to be"
+## is wrong at a window and wrong mid-swing — both are states in which the body
+## does not move and must still face what it is doing.
+func _face(dir: Vector2) -> void:
+	if dir.length_squared() > 1e-6:
+		_facing = dir.normalized()
+
+
+## Picks the atlas row from where the body is pointing and where the camera is,
+## and re-issues the animation when it changes. Cheap enough to run every tick on
+## 24 bodies — one dot product and an acos — and it has to, because the row
+## depends on the camera as much as on the zombie.
+func _update_view() -> void:
+	var cam := get_viewport().get_camera_3d() if is_inside_tree() else null
+	if cam == null:
+		return
+	var cp := cam.global_position
+	var to_cam := Vector2(cp.x - global_position.x, cp.z - global_position.z)
+	var pick := SpriteLib.view_for(_facing, to_cam)
+	var flip := pick.y == 1
+	if pick.x == _view and flip == _flip:
+		return
+	_view = pick.x
+	_flip = flip
+	_apply_anim(true)
+	_refresh_eyes()
 
 
 func _reroll_offset() -> void:
@@ -325,6 +613,10 @@ func set_entering(window_id: int) -> void:
 	_slot = _barricade.claim()
 	var stand: Vector3 = _barricade.stand_point(_slot)
 	global_position = stand
+	# Facing the window from the moment it arrives, so the first frame drawn is
+	# not a body standing outside with its back to the boards it is about to pull.
+	var cue: Vector3 = _barricade.cue_point()
+	_face(Vector2(cue.x - stand.x, cue.z - stand.z))
 	var left: int = _barricade.boards
 	if left <= 0:
 		# A window somebody already stripped is a door. The ancestor made the same
@@ -343,7 +635,7 @@ func set_entering(window_id: int) -> void:
 func _tick_boards(dt: float) -> void:
 	if _swing_t > 0.0:
 		_swing_t -= dt
-		if _swing_t <= 0.0 and _sprite.animation != "walk":
+		if _swing_t <= 0.0 and _anim != "walk":
 			_play("walk")
 
 	if _barricade == null or not is_instance_valid(_barricade):
@@ -379,9 +671,13 @@ func _tick_boards(dt: float) -> void:
 		_board_timer = Rng.randf_range(Rng.AI, BOARD_MIN, BOARD_MAX)
 	_barricade.take_board()
 	var at: Vector3 = _barricade.cue_point()
+	# A body at a window faces the window, not its own zero velocity — which is
+	# what it would face if the atlas read the steering, and a zombie tearing
+	# planks with its back to the boards is the one pose that cannot happen.
+	_face(Vector2(at.x - global_position.x, at.z - global_position.z))
 	Sfx.play_at("board", at, BOARD_VOLUME)
 	_swing_t = BOARD_SWING
-	if _sprite.animation != "attack":
+	if _anim != "attack":
 		_play("attack")
 
 
@@ -392,7 +688,7 @@ func _begin_vault() -> void:
 	_vault_t = 0.0
 	_vault_from = global_position
 	_swing_t = 0.0
-	if _sprite.animation != "walk":
+	if _anim != "walk":
 		_play("walk")
 
 
@@ -412,7 +708,9 @@ func _tick_vault(dt: float) -> void:
 	# Blended off this body's own starting point rather than snapped to the curve's.
 	# One curve serves a window and two zombies work it from two slightly different
 	# spots, so the second one would otherwise jump sideways on its first frame.
+	var was := global_position
 	global_position = on_curve + (_vault_from - start) * (1.0 - _vault_t)
+	_face(Vector2(global_position.x - was.x, global_position.z - was.z))
 	velocity = Vector3.ZERO
 	if _vault_t >= 1.0:
 		state = State.CHASING
@@ -433,12 +731,11 @@ func _physics_process(dt: float) -> void:
 		return
 
 	if state == State.DYING:
-		_death_timer -= dt
-		if _death_timer <= 0.0:
-			queue_free()
+		_tick_death(dt)
 		return
 
 	_tick_flash(dt)
+	_update_view()
 
 	if target == null:
 		return
@@ -460,13 +757,18 @@ func _physics_process(dt: float) -> void:
 		_reroll_offset()
 
 	var here := Vector2(global_position.x, global_position.z)
-	var goal := Vector2(target.global_position.x, target.global_position.z)
+	var goal := _goal_point()
 	var to_target := goal - here
 	var dist := to_target.length()
 
-	if dist <= melee_reach:
+	# Reach is measured on the player whatever the horde is currently walking
+	# toward: a Monkey Bomb pulls zombies off you, it does not make them harmless
+	# to anything they brush past on the way.
+	var to_player := Vector2(target.global_position.x, target.global_position.z) - here
+	if to_player.length() <= melee_reach:
 		state = State.ATTACKING
-		if _sprite.animation != "attack":
+		_face(to_player)
+		if _anim != "attack":
 			_play("attack")
 		_attack_timer -= dt
 		if _attack_timer <= 0.0:
@@ -482,7 +784,7 @@ func _physics_process(dt: float) -> void:
 
 	if state == State.ATTACKING:
 		state = State.CHASING
-	if _sprite.animation != "walk":
+	if _anim != "walk":
 		_play("walk")
 
 	# Direct line of sight beats the flow field near the goal — it stops a horde
@@ -503,6 +805,37 @@ func _physics_process(dt: float) -> void:
 	velocity.z = dir.y * speed
 	velocity.y = 0.0
 	move_and_slide()
+	# After the slide, so a body pressed into a wall faces where it is actually
+	# going rather than where the steering wished it were going.
+	_face(Vector2(velocity.x, velocity.z))
+
+
+## What the horde is walking toward. The player, unless a Monkey Bomb is on the
+## floor — `Game.lure_position` is package PROJ's contract and this is the whole
+## of the zombie side of it, because the flow field already re-solves on demand
+## (`flow.invalidate()`) and nothing else in the AI cares who the goal belongs to.
+##
+## Read through `in` rather than directly so that this file parses, loads and runs
+## on a tree where the property has been renamed out from under it, at the cost of
+## one lookup on a path that already does an acos.
+##
+## THE GUARD IS ONLY SAFE BECAUSE THE CONTRACT IS ASSERTED. It is not free: while
+## the throwable published its lure as a static on `throwables.gd` instead, this
+## fell through to the player on every tick and the Monkey Bomb moved nothing,
+## and neither package's assertions said a word — one tested `flow_goal()`, the
+## other reported "PROJ has not landed" and passed. `enemies.gd::_lure` now fails
+## if `Game.lure_position` is absent, which is what turns this from a silent
+## fallback into a caught one.
+func _goal_point() -> Vector2:
+	if "lure_position" in Game:
+		var lure: Variant = Game.lure_position
+		if typeof(lure) == TYPE_VECTOR3:
+			# `Vector3.INF` is "no lure", so that the contract is one property
+			# rather than a position plus a boolean somebody can forget to clear.
+			var lp: Vector3 = lure
+			if is_finite(lp.x) and is_finite(lp.z):
+				return Vector2(lp.x, lp.z)
+	return Vector2(target.global_position.x, target.global_position.z)
 
 
 ## Brief bright tint on damage, plus a standing warm tint while Insta-Kill is up
@@ -565,7 +898,22 @@ func head_threshold() -> float:
 	return _height * (0.70 if kind == "zombie" else 0.58)
 
 
-func take_damage(amount: float, hit_y: float, by_melee := false) -> bool:
+## The other end of the body. Everything under this is leg, and enough damage
+## into it takes the legs off rather than the zombie — §4.2 item 1.
+func leg_threshold() -> float:
+	return _height * LEG_FRACTION
+
+
+## `cause` and `from_dir` are new and both are optional, because every existing
+## call site already knew them and threw them away: `_apply_hit` knows whether the
+## round came out of a barrel or the Thundergun, `_knife` knows it was a blade,
+## and the Nuke sweep is bracketed by `Game.nuke_clearing`. Defaulted so that a
+## caller which has not been updated behaves exactly as it did.
+##
+## `from_dir` points FROM the killer TOWARD the body, which is the direction the
+## body is pushed. Zero means "no direction", and the collapse falls straight down.
+func take_damage(amount: float, hit_y: float, by_melee := false,
+		cause: int = -1, from_dir := Vector3.ZERO) -> bool:
 	if state == State.DYING:
 		return false
 	var headshot := hit_y >= head_threshold()
@@ -576,18 +924,87 @@ func take_damage(amount: float, hit_y: float, by_melee := false) -> bool:
 	hp -= amount
 	_last_headshot = headshot
 	_last_melee = by_melee
+	last_cause = _resolve_cause(cause, by_melee)
 	_hit_flash = 1.0
 	# Play the impact before the kill check. The killing shot used to be the one
 	# event in the game with no impact sound at all — a headshot kill was silent
 	# apart from the death rattle.
 	Sfx.play_at("headshot" if headshot else "hit", centre(), -10.0)
 	if hp <= 0.0:
-		_die()
+		_die(from_dir)
 		return true
+	# Legs, and only after the kill test: a shot that kills is a kill, not a
+	# conversion, or Insta-Kill would leave a floor of crawlers.
+	if kind == "zombie" and hit_y > 0.0 and hit_y < leg_threshold():
+		_leg_damage += amount
+		if _leg_damage >= max_hp * LEG_BREAK:
+			_become_crawler()
 	return false
 
 
-func _die() -> void:
+## The Nuke does not pass a cause and cannot easily be made to: the sweep is a
+## bare `take_damage(1e9, 0.0)` inside powerup_manager.gd, and `Game.nuke_clearing`
+## is ALREADY the authoritative "this death belongs to the sweep" flag — the
+## economy reads it to suppress the per-body payout (game_state.gd:275). A second
+## channel carrying the same fact is the duplication this codebase keeps paying
+## for, so the flag is read here instead of threaded a second time.
+func _resolve_cause(cause: int, by_melee: bool) -> int:
+	if Game.nuke_clearing:
+		return Cause.NUKE
+	if cause >= 0:
+		return cause
+	return Cause.MELEE if by_melee else Cause.BULLET
+
+
+## A walker whose legs have gone, in place, with whatever health it had left. Not
+## a new body: re-parenting would drop it out of the director's live list and pay
+## the kill twice, and BO1's crawler is the same zombie with a different animation
+## set. Everything that is a function of `kind` or `_height` is rebuilt here, and
+## the list is exactly the set of things `_ready` derives from them.
+func _become_crawler() -> void:
+	kind = "crawler"
+	_height = SpriteLib.HEIGHT[kind]
+	speed *= CRAWLER_SPEED
+	melee_reach = 1.05
+	_leg_damage = 0.0
+
+	_shape_body()
+	_sprite.sprite_frames = SpriteLib.frames_for(kind, pal)
+	_sprite.pixel_size = SpriteLib.pixel_size(kind)
+	_sprite.position.y = _height * 0.5
+	# Through _play rather than _apply_anim: the rim overlay is cut from the strip
+	# the animation lives in and the crawler's is a different PNG, so an overlay
+	# left pointing at the walker's would outline a body that is not there. It also
+	# re-derives `speed_scale`, which has just changed with CRAWLER_SPEED.
+	_play("walk" if _anim != "attack" else "attack")
+
+	_eyes.position.y = _eye_height()
+	_refresh_eyes()
+	# Rebuilt with everything else that is a function of the kind. The margin is a
+	# function of `_eye_span()`, which is a function of `EYE_VIEW[kind]` and of the
+	# kind's pixel size — a crawler's pair sits 13 px off its own origin against a
+	# walker's 5, so a walker's 0.43 m margin on a crawler is 0.21 m short and its
+	# eyes blink out at the edge of the frame. That is the exact failure the margin
+	# exists to prevent, reintroduced by the conversion.
+	_eyes.extra_cull_margin = _eye_span() * 2.0
+
+	# There is no "legs off" clip in the bank and synthesising one belongs to the
+	# audio package, so this is the death rattle pitched down and quiet — a body
+	# coming apart without dying. Silence would make the most dramatic thing a
+	# player can do to a zombie the only thing in the game that makes no sound.
+	Sfx.play_at("death", centre(), -16.0, 0.72)
+
+
+## Everything that happens the instant a body dies: the slot goes back, it stops
+## colliding, it stops being shootable, the payout fires and the eyes go out.
+##
+## What does NOT happen here is the fall. `_death_delay` holds it for a Nuke —
+## and only the fall, deliberately: `died` is emitted synchronously so the
+## director erases the body and pays it inside `Game.nuke_clearing`, which is what
+## suppresses the per-body payout (economy.gd). Deferring the emission instead
+## would let the flag clear underneath 24 pending deaths and pay a round-10 Nuke
+## 1,840 points, which is the exact bug that flag exists to prevent.
+func _die(from_dir := Vector3.ZERO) -> void:
 	# Before the state changes, because the release is keyed on holding a slot and
 	# a corpse holding one would keep a standing place at a window occupied for the
 	# rest of the run.
@@ -595,19 +1012,133 @@ func _die() -> void:
 	state = State.DYING
 	collision_layer = 0
 	collision_mask = 0
+	velocity = Vector3.ZERO
+	# The light goes out on the frame of death even when the body has not fallen
+	# yet — a staggered corpse standing with its eyes lit is a zombie, not a
+	# corpse, and --verify asserts the two lights are out the moment it dies.
+	_eyes.visible = false
+	_collapsed = false
+	_death_delay = 0.0
+	if last_cause == Cause.NUKE and target != null:
+		_death_delay = minf(NUKE_STAGGER_MAX,
+			global_position.distance_to(target.global_position) * NUKE_STAGGER)
+	# A headshot drops a body where it stands. No stagger, no shove worth the
+	# name: the difference between a headshot and a body shot is that one of them
+	# does not stumble.
+	if _last_headshot:
+		_death_delay = 0.0
+
+	var push := Vector3(from_dir.x, 0.0, from_dir.z)
+	var strength := SHOVE_BULLET
+	match last_cause:
+		Cause.MELEE: strength = SHOVE_MELEE
+		Cause.BLAST: strength = SHOVE_BLAST
+		Cause.NUKE: strength = SHOVE_BLAST
+	if push.length_squared() < 1e-6 and target != null:
+		# NO DIRECTION GIVEN, AND ONE IS STILL KNOWN: away from the player. Every
+		# damage source the player can aim originates at their own camera — the
+		# hitscan, the knife, both throwables, the Ray Gun — so the line from the
+		# player to the body is the line the blow came along, to within the width
+		# of the room. A Nuke has the same direction by construction and that is
+		# what makes its collapse read as a shockwave rather than as the horde
+		# tripping over.
+		#
+		# It is a FALLBACK and not the answer: `_apply_hit` and `_knife` know the
+		# real aim vector and should pass it (see the hunks in this package's
+		# report). Until they do, this is the difference between a shove that
+		# exists and one that is dead code — which is what it was, because not one
+		# call site in the game passes `from_dir` and every non-Nuke corpse
+		# therefore fell straight down with `_shove` at zero. An electric trap is
+		# the one source this gets wrong, and a trap kill is not a kill the player
+		# is watching the body of.
+		push = global_position - target.global_position
+		push.y = 0.0
+	_shove = push.normalized() * strength if push.length_squared() > 1e-6 else Vector3.ZERO
+
+	Sfx.play_at("death", centre(), -12.0)
+	died.emit(self, _last_headshot, _last_melee)
+	if _death_delay <= 0.0:
+		_begin_collapse()
+
+
+## The fall itself. Split from `_die` so the Nuke can hold it.
+func _begin_collapse() -> void:
+	_collapsed = true
 	# The rim follows the animation and deliberately survives the death: a corpse
 	# still needs a silhouette while it falls, and the death strip is a different
 	# PNG from the walk strip — outlining one with the other's alpha would trace a
 	# figure that is no longer there.
 	_play("death")
 	_sprite.modulate = Color(1.0, 1.0, 1.0)
-	# The death animation runs for a second or so before queue_free, and a corpse
-	# with two lights still burning in its skull is a bug, not a flourish.
-	_eyes.visible = false
+	# WHICH WAY IT TOPPLES. The death strip rotates the body one way only
+	# (`g.rotate(t*1.32)`, html:995), so mirroring the row is the only lever
+	# there is — and it is the right one: a body should fall away from what hit
+	# it. `_shove` is the killing direction, so the sign of its component along
+	# screen right decides, and it is frozen here rather than recomputed, because
+	# a corpse that flips over when the player strafes is worse than one that
+	# leans the wrong way.
+	#
+	# ONLY ON THE TWO ROWS WHERE THE MIRROR IS FREE. Since the atlas, `flip_h`
+	# means something else as well: `view_for()` mirrors rows 1-3 to cover the
+	# other three bearings, so overriding the flip there does not lean a corpse,
+	# it turns it — a zombie dying in profile facing screen right would snap to
+	# facing screen left on the frame it was shot, which is a far louder wrong
+	# than a body leaning the wrong way. Rows 0 and 4 are never mirrored by
+	# `view_for` (`row > 0 and row < VIEW_COUNT - 1`), so on those two the flag is
+	# genuinely spare — and row 0 is the bearing a zombie killed while chasing the
+	# player is nearly always on.
+	var mirror_is_free := _view == 0 or _view == SpriteLib.VIEW_COUNT - 1
+	if mirror_is_free and _shove.length_squared() > 1e-6:
+		var cam := get_viewport().get_camera_3d() if is_inside_tree() else null
+		if cam != null:
+			var right := cam.global_transform.basis.x
+			_flip = _shove.dot(right) < 0.0
+			_sprite.flip_h = _flip
 	var frames: int = SpriteLib.SPEC[kind].death
-	_death_timer = float(frames) / 9.0 + 0.9
-	Sfx.play_at("death", centre(), -12.0)
-	died.emit(self, _last_headshot, _last_melee)
+	_death_timer = float(frames) / 9.0 + CORPSE_HOLD + CORPSE_FADE
+
+
+## The whole of a corpse's life: the hold before it falls, the fall, the slide,
+## the time it lies there and the fade out. One function so that "how long is a
+## body on screen" is answerable by reading one place.
+func _tick_death(dt: float) -> void:
+	if not _collapsed:
+		_death_delay -= dt
+		if _death_delay <= 0.0:
+			_begin_collapse()
+		return
+
+	_death_timer -= dt
+	if _death_timer <= 0.0:
+		queue_free()
+		return
+
+	# The fake ragdoll. Position is written straight rather than pushed through
+	# move_and_slide, for the same reason the vault is: the body has no collision
+	# layers left, so a slide would resolve against nothing and cost a physics
+	# query per corpse per frame for it.
+	if _shove.length_squared() > 1e-6:
+		global_position += _shove * dt
+		_shove = _shove.move_toward(Vector3.ZERO, SHOVE_DECAY * dt)
+
+	if _death_timer < CORPSE_FADE:
+		# DARKENED, NOT MADE TRANSPARENT, and the constraint is the sprite's own
+		# `ALPHA_CUT_DISCARD`: that mode renders the surface opaque with a discard,
+		# so `modulate.a` does not blend — it only moves the discard threshold, and
+		# a body whose texels are nearly all alpha 1.0 would sit there unchanged
+		# and then vanish between two frames. Switching to a blended alpha_cut
+		# mid-life is worse: it is a different render mode, which on the web target
+		# is a main-thread GLSL compile in the middle of a fight. So the corpse
+		# sinks into the dark instead, which on this map is what a body does.
+		var a := _death_timer / CORPSE_FADE
+		_sprite.modulate = Color(a, a, a)
+		# The rim is a second draw of the same quad through an ADDITIVE shader, so
+		# `modulate` cannot reach it and a faded body would keep a full-brightness
+		# outline — a wireframe ghost. Its energy lives in a material shared by
+		# every zombie in the game, so it cannot be dimmed per corpse either; the
+		# overlay is dropped instead, once the body is more gone than not.
+		if a < 0.55 and _sprite.material_overlay != null:
+			_sprite.material_overlay = null
 
 
 ## Where a hitscan should aim to be "centre mass", used by the melee test.
@@ -675,7 +1206,9 @@ static func eye_material() -> StandardMaterial3D:
 	for k in EYE_PX.keys():
 		var eye_kind: String = k
 		for p in EYE_TINT.size():
-			_eye_mesh(eye_kind, p)
+			for v in SpriteLib.VIEW_COUNT:
+				_eye_mesh(eye_kind, p, v, false)
+				_eye_mesh(eye_kind, p, v, true)
 	return _eye_mat
 
 
@@ -710,22 +1243,50 @@ static func _eye_texture() -> GradientTexture2D:
 	return t
 
 
-## One mesh per kind-and-palette, cached forever. Hounds ignore `pal` for the
-## same reason `SpriteLib.frames_for` does: `SPEC.hound.pal` is 0, so there is
-## only one hound body and there should only be one pair of hound eyes.
-static func _eye_mesh(p_kind: String, p_pal: int) -> ArrayMesh:
-	var key: String = p_kind if p_kind == "hound" else "%s%d" % [p_kind, p_pal]
+## Where the eyes sit for one bearing, and how many of them there are.
+##
+## `EYE_PX` is the row for the bearing the ancestor drew; `EYE_VIEW` is every row.
+## The fallback matters and is not a formality: with no atlas on disk,
+## `sprite_lib.gd` puts the ancestor's single frame on all five rows — so the
+## crawler's and the hound's PROFILE art is what is on screen at every bearing,
+## un-mirrored, and the eyes have to be back at `EYE_PX`'s negative x with both
+## of them lit. Reading EYE_VIEW there would park two glowing dots in mid-air.
+static func eye_geo(p_kind: String, p_view: int) -> Dictionary:
+	var base: Dictionary = EYE_PX[p_kind]
+	if not SpriteLib.has_atlas(p_kind, 0, "walk"):
+		return {"x": float(base.x), "sep": float(base.sep), "n": 2}
+	var rows: Array = EYE_VIEW[p_kind]
+	var row: Dictionary = rows[clampi(p_view, 0, rows.size() - 1)]
+	return {"x": float(row.x), "sep": float(row.sep), "n": int(row.n)}
+
+
+## One mesh per kind, palette, bearing and mirror, cached forever. Hounds ignore
+## `pal` for the same reason `SpriteLib.frames_for` does: `SPEC.hound.pal` is 0,
+## so there is only one hound body and there should only be one pair of hound eyes.
+##
+## A bearing that shows no eyes still gets a mesh — the anchor row's — because
+## `SurfaceTool.commit()` on an empty surface returns null, and a MeshInstance3D
+## with a null mesh has no AABB for the cull-margin assertion in --verify to read.
+## It is simply never made visible; see `_refresh_eyes`.
+static func _eye_mesh(p_kind: String, p_pal: int, p_view: int, p_flip: bool) -> ArrayMesh:
+	var body: String = p_kind if p_kind == "hound" else "%s%d" % [p_kind, p_pal]
+	var key := "%s/%d/%d" % [body, p_view, 1 if p_flip else 0]
 	if _eye_meshes.has(key):
 		var cached: ArrayMesh = _eye_meshes[key]
 		return cached
 
-	var geo: Dictionary = EYE_PX[p_kind]
-	var row_sep: float = geo.sep
-	var row_x: float = geo.x
-	var row_glow: float = geo.glow
+	var base: Dictionary = EYE_PX[p_kind]
+	var geo := eye_geo(p_kind, p_view)
+	var n: int = geo.n
+	if n <= 0:
+		geo = eye_geo(p_kind, int(SpriteLib.ANCHOR_VIEW[p_kind]))
+		n = maxi(1, int(geo.n))
+	var row_glow: float = base.glow
 	var px := SpriteLib.pixel_size(p_kind)
-	var half := row_sep * 0.5 * px
-	var off := row_x * px
+	var half: float = float(geo.sep) * 0.5 * px
+	# Mirroring a row mirrors where its eyes are. `sep` is symmetric about the
+	# pair's own centre, so only the offset changes sign.
+	var off: float = float(geo.x) * px * (-1.0 if p_flip else 1.0)
 	var s := row_glow * 0.5 * px
 
 	var tint: Color = EYE_TINT_HOUND if p_kind == "hound" else EYE_TINT[p_pal]
@@ -735,11 +1296,30 @@ static func _eye_mesh(p_kind: String, p_pal: int) -> ArrayMesh:
 
 	var st := SurfaceTool.new()
 	st.begin(Mesh.PRIMITIVE_TRIANGLES)
-	_eye_quad(st, col, off - half, s)
-	_eye_quad(st, col, off + half, s)
+	if n == 1:
+		# One eye, not two coincident ones: `sep` is zero in profile and drawing
+		# the pair anyway would stack two additive quads on the same texels and
+		# double the brightness of exactly the bearing that shows the least of a
+		# zombie's face.
+		_eye_quad(st, col, off, s)
+	else:
+		_eye_quad(st, col, off - half, s)
+		_eye_quad(st, col, off + half, s)
 	var mesh := st.commit()
 	_eye_meshes[key] = mesh
 	return mesh
+
+
+## Puts the right pair on the body for the bearing it is currently showing, and
+## takes them off entirely on the two rear rows. That last part is the point of
+## the whole table: until the atlas there was no bearing at which a zombie's eyes
+## were not pointed at you, and a horde walking away lighting up the wall in front
+## of it is the tell that a billboard is a billboard.
+func _refresh_eyes() -> void:
+	var geo := eye_geo(kind, _view)
+	var n: int = geo.n
+	_eyes.mesh = _eye_mesh(kind, pal, _view, _flip)
+	_eyes.visible = n > 0 and state != State.DYING
 
 
 ## Two triangles centred on `ox`, in the billboard's local space: +X is camera
@@ -781,12 +1361,20 @@ func _eye_height() -> float:
 
 ## Distance from the node origin to the furthest eye vertex, which is how far the
 ## billboard can swing the geometry outside the mesh's own AABB.
+##
+## Maximised over every bearing, because the margin is set once in `_ready` and
+## the mesh under it is swapped every time the body turns — the crawler's profile
+## row puts its pair 13 px off centre and its head-on row puts them at zero, and a
+## margin sized for whichever one happened to be showing at spawn would clip the
+## other at the edge of the frame.
 func _eye_span() -> float:
-	var geo: Dictionary = EYE_PX[kind]
-	var row_x: float = geo.x
-	var row_sep: float = geo.sep
-	var row_glow: float = geo.glow
-	return (absf(row_x) + row_sep * 0.5 + row_glow * 0.5) * SpriteLib.pixel_size(kind)
+	var px := SpriteLib.pixel_size(kind)
+	var row_glow: float = float(EYE_PX[kind].glow)
+	var worst := 0.0
+	for v in SpriteLib.VIEW_COUNT:
+		var geo := eye_geo(kind, v)
+		worst = maxf(worst, absf(float(geo.x)) + float(geo.sep) * 0.5)
+	return (worst + row_glow * 0.5) * px
 
 
 # --- alpha-edge rim ----------------------------------------------------------
@@ -801,10 +1389,26 @@ const RIM_TINT := Color(190.0 / 255.0, 200.0 / 255.0, 220.0 / 255.0)
 ## `main.gd::_setup_environment`, currently 0.92) rather than over it. The eyes
 ## are meant to bloom — they are two dots. A whole silhouette pushed past the
 ## bleed threshold smears the zombie into a lamp, and the point of the effect is
-## the edge, not a halo. 0.62 x the brightest channel is 0.535, so the rim reads
-## as a cold edge on an unlit wall and never blooms on its own. Invented; this is
-## the knob if it does not read on the target.
-const RIM_ENERGY := 0.62
+## the edge, not a halo.
+##
+## WAS 0.62, AND THAT WAS TOO BRIGHT — found by looking, because no assertion can
+## see it. In a lit frame of eight walkers the rim came out at a mean luminance of
+## 146/255 against a body mean of 42: the outline was **3.4x brighter than the
+## thing it outlined**, and every zombie wore a hard white line that read as a
+## cutout sticker rather than as a body in a dark room. Swept and re-measured on
+## the same frame: 0.30 gives 62 vs 39, a ratio of 1.59, an edge that separates
+## the figure from an unlit wall without becoming the loudest thing on it; 0.16
+## gives 22 vs 33, dimmer than the body, and the silhouette stops reading at all —
+## which is the one thing `outlineSprite` exists to prevent.
+##
+## The 0.62 note used to justify itself with "0.62 x the brightest channel is
+## 0.535". That arithmetic is in DISPLAY space and the shader is not: `rim_color`
+## is declared `source_color`, so the engine linearises it before the fragment
+## runs — measured, by matching the shipped pixels against both paths. The real
+## albedo was linear(0.863) * 0.62 = 0.444, and 0.444 of ADDITIVE light on a wall
+## sitting near zero is a white line whatever it does at the bleed threshold. The
+## threshold was never the binding constraint; the background was.
+const RIM_ENERGY := 0.30
 
 ## Same 2 cm and the same reason as EYE_FORWARD: the overlay is a second draw of
 ## the *same* quad, so without an offset it is exactly coplanar with the sprite
@@ -818,7 +1422,7 @@ const RIM_FORWARD := 0.02
 ## found by sampling neighbouring texels — four taps, thresholded at exactly the
 ## sprite's own alpha scissor so the rim traces the figure and not the quad.
 ##
-## What it lights is already there. `outlineSprite()` (html:955-969) stamps a 1px
+## What it lights is already there. `outlineSprite()` (html:955-971) stamps a 1px
 ## ring of `rgba(6,6,5,205)` on the *transparent* side of every silhouette, and
 ## 205/255 clears the 0.35 scissor — so that ring is drawn, it is simply black. A
 ## black rim reads against a light background, which is what a flat-lit raycaster
@@ -834,16 +1438,21 @@ const RIM_FORWARD := 0.02
 ## fails to compile is a magenta zombie in a build nobody here can step through.
 ##
 ## The horizontal taps are clamped inside the current frame's own column of the
-## strip. Frames are packed edge to edge, so an unclamped tap at a frame boundary
-## samples the *next pose's* alpha and stamps a rim down the middle of nothing.
+## strip, and since M4 the vertical ones inside its own ROW. Frames are packed
+## edge to edge and the atlas stacks five bearings the same way, so an unclamped
+## tap at either boundary samples a different pose's alpha and stamps a rim down
+## the middle of nothing — vertically that is worse than horizontally, because the
+## row above ends in the shadow ellipse under the boots and the row below starts
+## in empty sky, so every corpse would wear a bar across its scalp.
 const RIM_CODE := """shader_type spatial;
 render_mode blend_add, unshaded, cull_disabled, depth_draw_never;
 
 uniform sampler2D rim_tex : filter_nearest, repeat_disable;
 uniform vec3 rim_color : source_color = vec3(0.745, 0.784, 0.863);
-uniform float rim_energy = 0.62;
+uniform float rim_energy = 0.30;
 uniform float cut = 0.35;
 uniform float cols = 1.0;
+uniform float rows = 1.0;
 uniform vec2 texel = vec2(1.0);
 uniform float push_z = 0.02;
 
@@ -874,10 +1483,14 @@ void fragment() {
 	float f0 = floor(UV.x * cols) * fw;
 	float lo = f0 + hx;
 	float hi = f0 + fw - hx;
+	float rh = 1.0 / rows;
+	float r0 = floor(UV.y * rows) * rh;
+	float ylo = r0 + hy;
+	float yhi = r0 + rh - hy;
 	float xl = clamp(UV.x - texel.x, lo, hi);
 	float xr = clamp(UV.x + texel.x, lo, hi);
-	float yl = clamp(UV.y - texel.y, hy, 1.0 - hy);
-	float yr = clamp(UV.y + texel.y, hy, 1.0 - hy);
+	float yl = clamp(UV.y - texel.y, ylo, yhi);
+	float yr = clamp(UV.y + texel.y, ylo, yhi);
 	float a = step(cut, texture(rim_tex, UV).a);
 	float l = step(cut, texture(rim_tex, vec2(xl, UV.y)).a);
 	float r = step(cut, texture(rim_tex, vec2(xr, UV.y)).a);
@@ -941,6 +1554,7 @@ static func rim_material(p_kind: String, p_pal: int, p_anim: String) -> ShaderMa
 
 	var spec: Dictionary = SpriteLib.SPEC[p_kind]
 	var cell: float = spec.w
+	var cell_h: float = spec.h
 	var w := float(strip.get_width())
 	var h := float(strip.get_height())
 
@@ -955,6 +1569,10 @@ static func rim_material(p_kind: String, p_pal: int, p_anim: String) -> ShaderMa
 	# frames of a strip that is four frames wide, and clamping to the animation's
 	# count would put the frame boundary in the wrong place on every tap.
 	m.set_shader_parameter("cols", w / cell)
+	# Bearings per strip, from the image for the same reason — and it is 1 on a
+	# machine with no atlas, which is what makes the clamp a no-op there rather
+	# than a wrong answer.
+	m.set_shader_parameter("rows", maxf(1.0, h / cell_h))
 	m.set_shader_parameter("texel", Vector2(1.0 / w, 1.0 / h))
 	m.set_shader_parameter("push_z", RIM_FORWARD)
 	_rim_mats[key] = m
@@ -974,7 +1592,12 @@ static func rim_materials() -> Array:
 		# the eye meshes do, so one hound is one hound.
 		for p in maxi(1, pals):
 			for anim: String in ["walk", "attack", "death"]:
-				var m := rim_material(k, p, anim)
-				if m != null and not out.has(m):
-					out.append(m)
+				# Every bearing, even though they collapse onto one material per
+				# strip: the collapse is what is being relied on, and asking for all
+				# five is how a future layout that does NOT share a strip would show
+				# up here as more materials rather than as a mid-fight compile.
+				for v in SpriteLib.VIEW_COUNT:
+					var m := rim_material(k, p, SpriteLib.anim_name(anim, v))
+					if m != null and not out.has(m):
+						out.append(m)
 	return out

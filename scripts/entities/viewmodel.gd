@@ -303,6 +303,19 @@ const SWAP_DROP := 0.05072      # 0.42 of screen height
 const SPRINT_DROP := 0.012
 const SPRINT_RATE := 0.08       # metres/second, eased both ways
 
+## The sighted pose: the weapon comes to the centre line and back toward the eye.
+## Invented — the ancestor has no ADS — and sized against the clipping budget rather
+## than by eye. Removing the rest pose's lateral offset entirely can only REDUCE
+## max_screen_radius (whose lateral terms are weighted by `ratio`), and 8 mm forward
+## sits well inside the 7 mm of near-plane clearance plus the 12 mm the kick does not
+## spend. `_measure()` sweeps both ends, so the budget is measured at the sights too.
+##
+## `Player.ads()` drives it rather than a clock of this file's own: ADS owns the
+## camera's field of view, and the pose has to arrive with the zoom or the gun swims.
+const ADS_CENTRE := 1.0         # fraction of REST_POS.x/y removed at the sights
+const ADS_FORWARD := 0.008
+const ADS_YAW := 1.0            # fraction of REST_YAW removed at the sights
+
 ## Every lowering channel shares one budget, because the no-clip guarantee is a
 ## bound on the sum and not on each. In play only one is ever meaningfully lit —
 ## the states are mutually exclusive — so this bites for at most the one frame
@@ -696,7 +709,7 @@ func _apply() -> void:
 	var melee := 0.0
 	if _melee_t > 0.0:
 		melee = sin((1.0 - _melee_t / MELEE_TIME) * PI)
-	_mesh.transform = _mesh_pose(_kick, _dip, _swap + _sprint, melee)
+	_mesh.transform = _mesh_pose(_kick, _dip, _swap + _sprint, melee, _player.ads())
 	_slide.position = Vector3(0.0, 0.0, _slide_offset())
 
 
@@ -704,14 +717,21 @@ func _apply() -> void:
 ## channels. Pure so that `_measure()` can walk the extremes of the same function
 ## rather than re-deriving them, which is the only way the clip assertion can be
 ## about the rig that shipped rather than about a second copy of its arithmetic.
-func _mesh_pose(kick: float, dip: float, drop: float, melee: float) -> Transform3D:
+func _mesh_pose(kick: float, dip: float, drop: float, melee: float,
+		ads := 0.0) -> Transform3D:
 	var down := minf(drop + dip * DIP, DROP_MAX)
+	# The sights pull the grip onto the centre line and the muzzle straight ahead.
+	# Multiplied into the rest offsets rather than added as a second translation, so
+	# full ADS is exactly "no lateral offset, no inward yaw" and cannot overshoot into
+	# a pose the clipping budget was never measured at.
+	var centre := 1.0 - ads * ADS_CENTRE
 	var origin := Vector3(
-		REST_POS.x + dip * DIP_X + melee * MELEE_X,
-		REST_POS.y - down + melee * MELEE_Y - kick * KICK_DOWN,
-		REST_POS.z + kick * KICK_BACK)
+		REST_POS.x * centre + dip * DIP_X + melee * MELEE_X,
+		REST_POS.y * centre - down + melee * MELEE_Y - kick * KICK_DOWN,
+		REST_POS.z + kick * KICK_BACK - ads * ADS_FORWARD)
 	var pitch := REST_PITCH + dip * DIP_ROLL + melee * MELEE_ROT + kick * KICK_PITCH
-	return Transform3D(Basis.from_euler(Vector3(pitch, REST_YAW, 0.0)), origin)
+	var yaw := REST_YAW * (1.0 - ads * ADS_YAW)
+	return Transform3D(Basis.from_euler(Vector3(pitch, yaw, 0.0)), origin)
 
 
 func _slide_offset() -> float:
@@ -853,19 +873,22 @@ func _measure() -> void:
 			for dip: float in [0.0, 1.0]:
 				for drop: float in [0.0, SWAP_DROP + SPRINT_DROP]:
 					for melee: float in melees:
-						var mp := _mesh_pose(kick, dip, drop, melee)
-						for sx: float in sways:
-							for sy: float in sways:
-								var root := Basis.from_euler(Vector3(sx, sy, 0.0))
-								for p: Vector3 in pts:
-									var v := root * (mp * p)
-									var lat := Vector2(v.x, v.y).length() + bob
-									worst = maxf(worst, v.length() + bob)
-									# The bob has no z component, so depth needs no
-									# correction for it.
-									nearest = minf(nearest, -v.z)
-									widest = maxf(widest,
-										sqrt(v.z * v.z + ratio * ratio * lat * lat))
+						# Both ends of the sights, because the clipping budget has to hold at the
+						# sighted pose too — that pose moves the weapon 8 mm toward the near plane.
+						for ads: float in [0.0, 1.0]:
+							var mp := _mesh_pose(kick, dip, drop, melee, ads)
+							for sx: float in sways:
+								for sy: float in sways:
+									var root := Basis.from_euler(Vector3(sx, sy, 0.0))
+									for p: Vector3 in pts:
+										var v := root * (mp * p)
+										var lat := Vector2(v.x, v.y).length() + bob
+										worst = maxf(worst, v.length() + bob)
+										# The bob has no z component, so depth needs no
+										# correction for it.
+										nearest = minf(nearest, -v.z)
+										widest = maxf(widest,
+											sqrt(v.z * v.z + ratio * ratio * lat * lat))
 	_extreme = Vector3(worst, nearest, widest)
 
 

@@ -45,6 +45,18 @@ const ECONOMY := preload("res://scripts/dev/checks/economy.gd")
 ## Settings persistence, the menu's focus graph, the accessibility toggles and the
 ## HUD's behaviour under a real pause.
 const SHELL := preload("res://scripts/dev/checks/shell.gd")
+## The map itself: the six connectivity invariants across all sixteen door states,
+## the interior props and their colliders, the cost field, and a sweep of the seeded
+## run layer. None of what it catches has a symptom at the moment it is introduced.
+const MAPGEN := preload("res://scripts/dev/checks/mapgen.gd")
+## The electric traps, the widened perk roster and the HUD's perk strip. The strip
+## assertion is a regression test: `_refresh_perks()` hung off `weapon_changed` and
+## nothing else, so a bought perk did not light its badge until the next shot.
+## The 8-direction atlas, leg-shot crawlers, corpses and the walk cycle.
+const ENEMIES := preload("res://scripts/dev/checks/enemies.gd")
+const TRAPS := preload("res://scripts/dev/checks/traps.gd")
+## Projectiles: swept integration, the shared explosion, ADS and the throwables.
+const PROJECTILES := preload("res://scripts/dev/checks/projectiles.gd")
 
 ## Every check module in scripts/dev/checks/, by filename, and the single place
 ## they are registered. `_registered()` walks the directory and fails if anything
@@ -64,6 +76,10 @@ const CHECK_MODULES := {
 	"downed.gd": DOWNED,
 	"economy.gd": ECONOMY,
 	"shell.gd": SHELL,
+	"enemies.gd": ENEMIES,
+	"traps.gd": TRAPS,
+	"mapgen.gd": MAPGEN,
+	"projectiles.gd": PROJECTILES,
 }
 
 ## The number of assertions this suite is known to run, minus a small margin for
@@ -90,7 +106,7 @@ const CHECK_MODULES := {
 ##
 ## The floor cannot see a section that never ran at all — a total it was never set
 ## from cannot shrink. That is `_registered()`'s job, and the two are complementary.
-const ASSERTION_FLOOR := 300
+const ASSERTION_FLOOR := 470
 
 var _pass := 0
 var _fail := 0
@@ -135,6 +151,19 @@ func _registered() -> void:
 	check("every check module on disk is registered and actually runs",
 		missing.is_empty(),
 		"never executed: %s" % str(missing))
+
+
+## Printed as each module STARTS, and printed straight out rather than buffered
+## into `_lines`.
+##
+## Everything else in this suite is held until the end so the report reads as one
+## block — which is right when it finishes and useless when it does not. A check
+## that hangs produced NO output at all, so the only signal was "it never came
+## back", and finding out which of eleven sections was responsible meant bisecting
+## by hand. That cost several cycles in Milestone 4 alone. One line per section is
+## a small price for knowing where it stopped.
+func _mark(name: String) -> void:
+	print("[verify] ", name)
 
 
 func run(main: Node3D) -> int:
@@ -193,12 +222,35 @@ func run(main: Node3D) -> int:
 	# queue drawn down; CURVES sweeps 300 seeds, re-seeds Rng and drives reset_run().
 	# CURVES reads nothing but the curves on Game, so it survives a mangled director —
 	# CHECK_SYSTEMS would not survive a reset_run() underneath it.
+	_mark("interact")
 	CHECK_INTERACT.run(self, main)
+	_mark("downed")
 	DOWNED.run(self, main)
+	_mark("economy")
 	ECONOMY.run(self, main)
+	_mark("shell")
 	SHELL.run(self, main)
+	# After SHELL because it drives the HUD's `_process` and SHELL's pause section
+	# leaves Game.state where it wants it; before CHECK_SYSTEMS because that one
+	# mangles the director and this one spawns bodies of its own. It mounts a
+	# private traps node rather than main's, so it can run whether or not main.gd
+	# has been wired for traps yet.
+	_mark("enemies")
+	ENEMIES.run(self, main)
+	_mark("traps")
+	TRAPS.run(self, main)
+	_mark("systems")
 	CHECK_SYSTEMS.run(self, main)
+	_mark("curves")
 	CURVES.run(self, main)
+	# Dead last, and it has to be: the seed sweep rolls MapData's static layout
+	# tables 48 times and re-seeds Rng on every iteration. It puts both back on the
+	# way out, but anything downstream holding a cached wall-buy position would be
+	# reading it across the churn.
+	_mark("mapgen")
+	MAPGEN.run(self, main)
+	_mark("projectiles")
+	PROJECTILES.run(self, main)
 
 	_registered()
 

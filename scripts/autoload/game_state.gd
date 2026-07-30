@@ -113,6 +113,33 @@ var box_spot := 0
 ## value only one of them reads.
 var nuke_clearing := false
 
+## The Monkey Bomb's lure, and the one thing the whole throwable does.
+##
+## `Vector3.INF` means "no lure", so this is one property rather than a position
+## plus a boolean somebody can forget to clear. Written only by
+## `scripts/systems/throwables.gd`; read by `zombie.gd::_goal_point` and by the
+## round director when it re-solves the flow field.
+##
+## It lives here rather than as a static on throwables.gd because the consumer had
+## already been written against `Game.lure_position` — and the two halves were
+## published in different places, so `"lure_position" in Game` was false, every
+## zombie fell back to the player, and the headline throwable of this milestone did
+## nothing at all. Neither side was wrong on its own; there was simply no contract
+## either of them could see.
+var lure_position := Vector3.INF
+
+## Set only for the duration of an electric trap's kill sweep (traps.gd).
+##
+## SEPARATE FROM `nuke_clearing`, and the two are not interchangeable. Both gate
+## the payout — canon awards nothing for a trap kill, which is the whole of what
+## stops a 1000-point switch out-earning itself — but the Nuke also suppresses the
+## DROP roll, because the ancestor's Nuke never reaches `zombieDamage` at all
+## (html:2411-2419) and therefore never reaches `maybeDrop` either. A trap does
+## reach it: canon's drop roll lives in the zombie's own death callback and does
+## not care what killed it. So this flag is read by `add_points()` and deliberately
+## NOT by `try_drop()`.
+var trap_clearing := false
+
 ## Power-ups are earned by points, not by a kill counter (see next_drop_at).
 var points_earned := 0
 var next_drop_at := 2000
@@ -196,6 +223,8 @@ func reset_run() -> void:
 	dbl_points = 0.0
 	drop_count = 0
 	nuke_clearing = false
+	trap_clearing = false
+	lure_position = Vector3.INF
 	box_uses = 0
 	box_spot = 0
 	points_earned = 0
@@ -272,7 +301,7 @@ func set_state(s: int) -> void:
 ## payout call sites and a synchronous sweep drives whichever one the death handler
 ## happens to use today. A guard at one of them is a guard the next one walks past.
 func add_points(n: int) -> void:
-	if nuke_clearing:
+	if nuke_clearing or trap_clearing:
 		return
 	var mult := 2 if dbl_points > 0.0 else 1
 	var gained := n * mult

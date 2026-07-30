@@ -10,6 +10,7 @@
  * size from SPEC there. */
 
 const extract = require('./extract.js');
+const atlas = require('./atlas.js');
 
 /* Cell counts per strip, asserted rather than assumed. sprite_lib.gd's SPEC
  * hard-codes these and slices AtlasTexture regions off them, so a frame count
@@ -59,8 +60,28 @@ function single(sprite) {
  * filename stem. buildTextures() then buildSprites() is the order boot() uses
  * at html:3416-3417; both reseed _seed themselves (html:602, html:1440), so the
  * output does not depend on which subset you ask for. */
+/* Perks the ancestor never had, drawn by the machine the ancestor DOES have.
+ *
+ * `makePerkMachine(k)` (html:1271-1307) reads nothing but `PERKDEF[k]` — two
+ * colours and a letter — so a cabinet for a new perk is a data row rather than
+ * new drawing code, and injecting the row before `buildSprites()` puts it through
+ * the ancestor's own brush, palette and 5x7 letter. That is the difference
+ * between extending the pipeline and forging provenance: the ART is the
+ * ancestor's, the ROW is the port's, and the note on each target says so.
+ *
+ * These must agree with scripts/data/weapons.gd's PERKDEF or the cabinet in the
+ * Generator Hall is a different colour from the badge on the HUD. */
+const PORT_PERKS = {
+	stamin: { name: 'Stamin-Up', cost: 2000, col: '#D8C33C', col2: '#6B5F12', letter: 'U', blurb: 'run further, walk quicker' },
+	mule: { name: 'Mule Kick', cost: 4000, col: '#A2571F', col2: '#4A2409', letter: 'M', blurb: 'carry a third weapon' },
+};
+
+
 function build() {
 	const { anc, meta } = extract.load();
+	for (const [k, d] of Object.entries(PORT_PERKS)) {
+		if (!anc.PERKDEF[k]) anc.PERKDEF[k] = d;
+	}
 	anc.buildTextures();
 	anc.buildSprites();
 
@@ -94,10 +115,20 @@ function build() {
 		}
 	}
 
+	// ---- the 8-direction atlas ----
+	// Added beside the single-view strips above rather than replacing them: the
+	// committed art stays byte-for-byte what it was, `--check` keeps reproducing
+	// the drift table in README.md, and sprite_lib.gd falls back to the
+	// single-view strip on any machine where these have not been generated yet.
+	for (const [name, a] of atlas.build(anc)) add(name, a.dir, a, a.note);
+
 	// ---- props that already ship ----
 	for (const k of Object.keys(anc.PERKDEF)) {
-		add(`perk_${k}_off`, 'assets/props', single(anc.SPR.perk[k].off), 'html:1271-1307 makePerkMachine');
-		add(`perk_${k}_on`, 'assets/props', single(anc.SPR.perk[k].on), 'html:1271-1307 makePerkMachine');
+		const note = PORT_PERKS[k]
+			? 'html:1271-1307 makePerkMachine, port-authored PERKDEF row (see PORT_PERKS)'
+			: 'html:1271-1307 makePerkMachine';
+		add(`perk_${k}_off`, 'assets/props', single(anc.SPR.perk[k].off), note);
+		add(`perk_${k}_on`, 'assets/props', single(anc.SPR.perk[k].on), note);
 	}
 	for (const k of ['closed', 'open', 'teddy']) {
 		add(`box_${k}`, 'assets/props', single(anc.SPR.box[k]), 'html:1310-1365 makeBox');

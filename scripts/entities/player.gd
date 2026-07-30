@@ -53,6 +53,11 @@ const WEAPON := preload("res://scripts/entities/weapon.gd")
 ## the interaction scan. Same reason for preload as above.
 const LOS := preload("res://scripts/world/los.gd")
 
+## Everything that leaves the barrel and is not a hitscan, and the pouch that owns
+## the two that leave the hand. Same reason for preload as above.
+const PROJECTILE := preload("res://scripts/entities/projectile.gd")
+const THROWABLES := preload("res://scripts/systems/throwables.gd")
+
 const SPEED := 3.15
 const SPRINT_MULT := 1.55
 const DOWNED_SPEED := 1.15
@@ -139,6 +144,55 @@ const REDUCE_MOTION_KICK := 0.35
 ## at your shoulder. Past that the cylinder binds and the wedge never fires again.
 const CONE_RADIUS := 4.57
 
+
+# --- aim down sights -----------------------------------------------------------
+#
+# **No ancestor.** The browser build has no ADS of any kind — its viewmodel is a
+# sprite blitted at a fixed screen position (html:3109-3140) and there is no second
+# pose anywhere in it — so all four numbers below are designed against Black Ops.
+#
+# **WHICH NODE OWNS THE ADS TRANSFORM.** Rule: one writer per node, and ADS adds no
+# new one. It is split across exactly two writers that already exist:
+#
+#   - `Camera3D.fov` — written by `_read_settings()` and by nothing else in the
+#     project, which is stated at that function. It stays this file's, and the two
+#     callers now go through `_apply_fov()` so there is still literally one
+#     assignment to it in the codebase.
+#   - `WeaponMesh.transform` — written by `viewmodel.gd::_apply()` and by nothing
+#     else. The sighted pose is a sixth channel of `_mesh_pose()`, which is where
+#     the other five live and which `_measure()` already sweeps.
+#
+# Nothing is added to Player, Head or RecoilPivot, because a sighted pose is not a
+# rotation of the view: the crosshair must not move.
+
+## 0.75 of whatever the player's own field of view is, so the setting stays the
+## authority and ADS is a multiplier on it rather than a second absolute value.
+##
+## The number is BO1's iron-sight zoom, and at this project's 74 degree default it
+## lands somewhere unusually convenient: 74 x 0.75 = 55.5, against
+## `viewmodel.gd`'s `VIEWMODEL_FOV` of 55. That file's whole geometry turns on
+## `ratio = tan(cam_fov/2) / tan(vm_fov/2)`, which is 1.4476 at the hip and
+## **1.011 at full ADS** — so at the sights the weapon is drawn through effectively
+## the same lens as the world it is composited against, and the barrel finally
+## lines up with what it is pointing at. It also moves `max_screen_radius()` the
+## safe way: that metric scales with `ratio`, so narrowing the camera can only
+## shrink it, and the no-clip guarantee is strictly stronger at the sights than at
+## the hip.
+const ADS_FOV_MULT := 0.75
+
+## BO1's iron-sight raise is about a quarter of a second. `move_toward` rather than
+## a lerp, for the reason viewmodel.gd gives at SWAY_RATE: a lerp is asymptotic and
+## never actually arrives.
+const ADS_TIME := 0.22
+
+## Sights are worth something or nobody uses them. Applied on top of the existing
+## moving and downed penalties rather than instead of them, so aiming while walking
+## is still worse than aiming while stood still.
+const ADS_SPREAD := 0.45
+
+## ...and they cost something. BO1's `ads_move_speed_scale` sits around 0.5-0.65.
+const ADS_MOVE := 0.55
+
 var hp := 100.0
 var guns: Array[Dictionary] = []
 var slot := 0
@@ -163,6 +217,25 @@ var _moving := false
 
 var _stamina := 1.0
 var _sprinting := false
+
+## 0 at the hip, 1 at the sights, and everything in between is a real frame.
+var _ads := 0.0
+## The player's own field of view, before ADS scales it. Cached from Settings so
+## `_apply_fov()` has something to multiply that is not the value it last wrote.
+var _base_fov := 74.0
+
+## throwables.gd. A plain RefCounted owned here rather than a system under main,
+## because its only clock is this file's physics tick — see that file's header.
+var _throwables
+
+## project.godot belongs to no package this wave (console.gd:31 says the same about
+## its own toggle keys), so the three actions this file needs may not be bound yet.
+## `Input.is_action_pressed` on an unbound action is an error spew once a frame, so
+## the presence of each is resolved at boot and reported loudly exactly once.
+var _has_ads := false
+var _has_frag := false
+var _has_tactical := false
+var _frag_held := false
 
 ## The Settings autoload, or null. **Untyped, and resolved by node path rather
 ## than by the `Settings` identifier, both deliberately.** An autoload that is not
@@ -267,10 +340,26 @@ func _ready() -> void:
 		_settings.changed.connect(_on_setting_changed)
 	_read_settings()
 
+	_has_ads = _bind_action("ads")
+	_has_frag = _bind_action("throw_frag")
+	_has_tactical = _bind_action("throw_tactical")
+
+	_throwables = THROWABLES.new(self)
+
 	guns = [Weapons.make_gun("m1911", false)]
 	hp = Game.max_health()
 	health_changed.emit(hp, Game.max_health())
 	weapon_changed.emit(current_gun())
+
+
+## Reports a missing binding rather than discovering it sixty times a second. A
+## warning and not an error: a build without these actions is a build where ADS and
+## grenades do nothing, which is a smaller failure than a game that will not start.
+func _bind_action(action: String) -> bool:
+	if InputMap.has_action(action):
+		return true
+	push_warning("input action '%s' is not bound — see project.godot [input]" % action)
+	return false
 
 
 func camera() -> Camera3D:
@@ -311,7 +400,19 @@ func _read_settings() -> void:
 	# The camera is this file's node — nothing outside it may write the FOV, per
 	# the one-writer rule at the top. The clamp is a guard against a hand-edited
 	# localStorage blob, not a design range; the menu's own range is narrower.
-	_cam.fov = clampf(float(_settings.fov), 55.0, 120.0)
+	#
+	# Cached rather than assigned, because ADS now scales it and a value read back
+	# out of the camera would compound: aim, change a setting, and the sighted FOV
+	# would become the new hip FOV.
+	_base_fov = clampf(float(_settings.fov), 55.0, 120.0)
+	_apply_fov()
+
+
+## THE ONLY ASSIGNMENT TO `Camera3D.fov` IN THE PROJECT. Both things that move it —
+## the setting and the sights — arrive here, so there is still exactly one writer of
+## it after ADS rather than two that have to agree about what the other last wrote.
+func _apply_fov() -> void:
+	_cam.fov = _base_fov * lerpf(1.0, ADS_FOV_MULT, _ads)
 
 
 # --- input -------------------------------------------------------------------
@@ -409,6 +510,10 @@ func _physics_process(dt: float) -> void:
 	_knife_cooldown = maxf(0.0, _knife_cooldown - dt)
 	_fire_buffer = maxf(0.0, _fire_buffer - dt)
 	_tick_hurt_gate(dt)
+	# Before the movement below, because both the ADS speed penalty and the sprint
+	# interlock are read out of `_ads` further down this same tick.
+	_update_ads(dt)
+	_tick_throwables(dt)
 
 	if is_downed:
 		downed_time -= dt
@@ -441,6 +546,14 @@ func _physics_process(dt: float) -> void:
 	_update_sprint(dt, _moving and not is_downed)
 	if _sprinting:
 		spd *= SPRINT_MULT
+	# Stamin-Up. Applied after the sprint multiply and to the downed crawl as well,
+	# because it is a property of the legs rather than of the gait — and see
+	# Weapons.STAMIN_SPEED_MULT for why the number it returns has a hard ceiling.
+	spd *= Weapons.move_speed_scale()
+	# ...and the sights cost you. Multiplied last, so it scales whatever the gait
+	# and the perk arrived at rather than replacing either of them, and scaled by
+	# `_ads` rather than switched on it so the slowdown arrives with the zoom.
+	spd *= lerpf(1.0, ADS_MOVE, _ads)
 
 	velocity.x = dir.x * spd
 	velocity.z = dir.z * spd
@@ -459,17 +572,25 @@ func _physics_process(dt: float) -> void:
 
 
 func _update_sprint(dt: float, wants_move: bool) -> void:
-	var held := Input.is_action_pressed("sprint") and wants_move
+	# Aiming beats sprinting, both ways round: you cannot sprint at the sights and
+	# raising the sights drops you out of a sprint. That is the reference's
+	# interlock, and putting it here rather than in `_update_ads` means there is one
+	# rule instead of two that have to agree — `_can_ads()` only has to ask whether
+	# the sprint has already ended.
+	var held := Input.is_action_pressed("sprint") and wants_move and not _wants_ads()
 	if held and _stamina > 0.0 and (_sprinting or _stamina > SPRINT_FLOOR):
 		if not _sprinting:
 			_sprinting = true
-		_stamina = maxf(0.0, _stamina - SPRINT_DRAIN * dt)
+		# Stamin-Up drains slower and recovers faster; both halves go through
+		# Weapons rather than being read off Game.perks here, so the perk cannot be
+		# half-applied by a call site that remembered one of its three effects.
+		_stamina = maxf(0.0, _stamina - SPRINT_DRAIN * Weapons.sprint_drain_scale() * dt)
 		if _stamina <= 0.0:
 			_stop_sprint()
 	else:
 		if _sprinting:
 			_stop_sprint()
-		_stamina = minf(1.0, _stamina + SPRINT_RECOVER * dt)
+		_stamina = minf(1.0, _stamina + SPRINT_RECOVER * Weapons.sprint_recover_scale() * dt)
 
 
 func _stop_sprint() -> void:
@@ -483,6 +604,77 @@ func _stop_sprint() -> void:
 	var was: int = gun.state
 	WEAPON.begin_sprint_out(gun, SPRINT_OUT)
 	_weapon_state(gun, was)
+
+
+# --- aim down sights -----------------------------------------------------------
+
+## 0 at the hip, 1 at the sights. Everything else about ADS is a multiply on this.
+func ads() -> float:
+	return _ads
+
+
+## Polled rather than latched from an event, exactly as the sprint key is. A latch
+## set by a press and cleared by a release is one lost release away from a player
+## stuck at the sights, and losing a release is not hypothetical here — the fire
+## latch needed a dedicated escape hatch in `_unhandled_input` for precisely that.
+func _wants_ads() -> bool:
+	return _has_ads and Input.is_action_pressed("ads")
+
+
+## Aiming is refused on the floor — a downed player is crawling, not aiming — and
+## while the legs are still running. The sprint half is one-directional here
+## because `_update_sprint` has already refused to sprint this tick if the button
+## is down; this only covers the frame or two it takes to actually stop.
+func _can_ads() -> bool:
+	return _wants_ads() and not is_downed and not _sprinting
+
+
+func _update_ads(dt: float) -> void:
+	var want := _can_ads()
+	var to := 1.0 if want else 0.0
+	if is_equal_approx(_ads, to):
+		# Nothing to write, and writing anyway would put a redundant assignment on
+		# the camera's field of view every frame of the game.
+		return
+	# move_toward and never lerp, for the reason viewmodel.gd gives at SWAY_RATE: a
+	# lerp is asymptotic, so the sights would never quite arrive and the FOV would
+	# never quite settle.
+	_ads = move_toward(_ads, to, dt / ADS_TIME)
+	_apply_fov()
+
+
+# --- grenades ------------------------------------------------------------------
+
+## The pouch. Handed out so a HUD can read the counts and the cook clock, and so
+## the box can put four Monkey Bombs in it.
+func throwables():
+	return _throwables
+
+
+func give_throwable(key: String, n: int) -> void:
+	if _throwables != null:
+		_throwables.give(key, n)
+
+
+## Polled for the same reason ADS is: a lost release is a grenade cooked forever.
+## The press has to be an edge, though — `press()` on a held button would try to
+## start a new cook every tick — so the two actions carry their own held flags.
+func _tick_throwables(dt: float) -> void:
+	if _throwables == null:
+		return
+	if _has_frag:
+		var down := Input.is_action_pressed("throw_frag")
+		if down and not _frag_held:
+			_throwables.press(THROWABLES.FRAG)
+		elif _frag_held and not down:
+			_throwables.release(THROWABLES.FRAG)
+		_frag_held = down
+	if _has_tactical and Input.is_action_just_pressed("throw_tactical"):
+		# No cook and therefore no release to pair with: the Monkey Bomb's whole
+		# value is the six seconds it spends on the floor, and a cooked lure is a
+		# lure nobody has time to walk away from.
+		_throwables.press(THROWABLES.MONKEY)
+	_throwables.tick(dt)
 
 
 ## Recoil spring, downed eye height, view bob and shake. Every one of these writes
@@ -644,8 +836,15 @@ func _shoot(gun: Dictionary) -> void:
 	Sfx.play_shot(gun.key + ("_p" if gun.pap else ""), def.freq, def.thump, def.body)
 	fired.emit(_cam.global_position - _cam.global_transform.basis.z * 0.35)
 
+	# The ancestor's own three-way branch, in its order: cone, then projectile, then
+	# pellets (html:2530, :2552, :2566). The middle arm has been dead since the port
+	# began — `proj`, `splash` and `splash_dmg` were carried into weapons.gd verbatim
+	# and read by nothing — which is why the Ray Gun's 620 splash did not exist and
+	# the weapon was a 180-damage hitscan against the M14's 185.
 	if def.cone > 0.0:
 		_cone_blast(def)
+	elif not String(def.proj).is_empty():
+		_launch(def)
 	else:
 		for i in int(def.pellets):
 			_hitscan(def)
@@ -658,13 +857,18 @@ func _shoot(gun: Dictionary) -> void:
 		_start_reload(false)
 
 
-## Accuracy degrades while moving and while downed, as it did in the ancestor.
+## Accuracy degrades while moving and while downed, as it did in the ancestor, and
+## improves at the sights, which it did not — there were no sights.
 func _spread_rad(def: Dictionary) -> float:
 	var s: float = def.spread
 	if _moving:
 		s *= 1.5
 	if is_downed:
 		s *= 1.4
+	# Multiplied on top of the two penalties rather than replacing them, so aiming
+	# while walking is still worse than aiming while stood still — which is the
+	# whole reason the movement penalty exists.
+	s *= lerpf(1.0, ADS_SPREAD, _ads)
 	return deg_to_rad(s) * 0.5
 
 
@@ -709,6 +913,62 @@ func _hitscan(def: Dictionary) -> void:
 			var wall_n: Vector3 = hit.normal
 			surface_impact.emit(wall_at, wall_n)
 			return
+
+
+## The Ray Gun's bolt and the China Lake's shell. html:2552-2564, one branch of the
+## ancestor's `fireWeapon`, and the reason it was worth porting is in the evidence
+## note: without it the Ray Gun is a single-target 180 against the M14's 185 and
+## costs a Mystery Box roll for the privilege.
+##
+## The launch is the ancestor's arithmetic in three dimensions rather than two, and
+## the one place that is a change rather than a translation is the aim: `vx/vy` are
+## a flat heading there because the whole game is flat, so a pitched camera here
+## puts a real vertical component on the bolt. That is right for a projectile you
+## can fire down a stairwell and it is not a decision the ancestor was in a position
+## to make.
+func _launch(def: Dictionary) -> void:
+	var basis := _cam.global_transform.basis
+	var aim := -basis.z
+	# HALF the hitscan cone, which is the ancestor's own relationship between the
+	# two: `(Math.random()-0.5)*spreadDeg*0.0175` for a projectile (html:2553)
+	# against `...*0.0175*2` for a pellet (html:2567). Sampled as a disc rather than
+	# as a square, for the reason `_hitscan` gives, and off VISUAL because that is
+	# the stream weapon spread already rides.
+	var spread := _spread_rad(def) * 0.5
+	if spread > 0.0:
+		var a := Rng.randf(Rng.VISUAL) * TAU
+		var r := sqrt(Rng.randf(Rng.VISUAL)) * spread
+		aim = aim.rotated(basis.x, sin(a) * r).rotated(basis.y, cos(a) * r)
+
+	var kind := String(def.proj)
+	var ray := kind == "ray"
+	var speed := PROJECTILE.RAY_SPEED if ray else PROJECTILE.GRENADE_SPEED
+	var rise := 0.0 if ray else PROJECTILE.GRENADE_RISE
+	var grav := 0.0 if ray else PROJECTILE.GRENADE_GRAV
+
+	# `x:P.x+P.dirX*0.35 ... z:1.42` (html:2556) — see PROJECTILE.SPAWN_DROP for how
+	# an absolute 1.42 becomes a drop below a camera that can now look up and down.
+	var from := _cam.global_position + aim * PROJECTILE.SPAWN_AHEAD \
+		- Vector3(0.0, PROJECTILE.SPAWN_DROP, 0.0)
+	# Double Tap is folded in at launch and frozen there, exactly as
+	# `dmg:d.dmg*dmgMul` (html:2560) is: a shell already in the air must not get
+	# stronger because the power-up landed while it was travelling.
+	var scale := Game.damage_scale()
+	var cfg := {
+		"kind": kind,
+		"grav": grav,
+		"dmg": float(def.dmg) * scale,
+		"splash": float(def.splash),
+		"splash_dmg": float(def.splash_dmg) * scale,
+		"fuse": PROJECTILE.LIFE,
+		"contact": true,
+		"bounces": false,
+		"lures": false,
+	}
+	var host: Node3D = world if world != null and is_instance_valid(world) else get_parent() as Node3D
+	if host == null:
+		return
+	PROJECTILE.launch(self, host, cfg, from, aim * speed + Vector3.UP * rise)
 
 
 ## The Thundergun's instant blast — no projectile, everything inside the volume
@@ -769,10 +1029,21 @@ func _cone_blast(def: Dictionary) -> void:
 ## `at` is the world-space point the shot landed on. The height decides the
 ## headshot; the other two components exist only so the puff can be put where the
 ## round actually went in rather than at the zombie's origin.
-func _apply_hit(z: Zombie, dmg: float, at: Vector3) -> void:
+## `cause` and `from_dir` decide how the corpse falls. They default to a bullet
+## because every hitscan weapon routes through here, and the one caller that is NOT
+## a bullet is the explosive splash — which passed nothing at all, so `Cause.BLAST`
+## was unreachable in the shipped game and a Ray Gun kill was shoved 0.55 m like a
+## rifle round instead of 2.4 m like a blast. The enum value existed; only a Nuke
+## could ever produce it.
+func _apply_hit(z: Zombie, dmg: float, at: Vector3,
+		cause: int = Zombie.Cause.BULLET, from_dir := Vector3.ZERO) -> void:
 	var local_y := at.y - z.global_position.y
 	var headshot := local_y >= z.head_threshold()
-	var killed := z.take_damage(dmg, local_y)
+	# Zero means "no direction given", which `_die` answers with its away-from-the
+	# player fallback. That fallback is right for a bullet and wrong for a blast, so
+	# the blast is the caller that has to supply one.
+	var dir := from_dir if from_dir != Vector3.ZERO else (z.centre() - at).normalized()
+	var killed := z.take_damage(dmg, local_y, false, cause, dir)
 	if not killed:
 		Game.add_points(Game.PTS_HIT)
 	hit_confirmed.emit(headshot, killed)
@@ -985,7 +1256,9 @@ func give_gun(key: String, pap := false) -> void:
 			slot = i
 			_raise_current(WEAPON.DRAW_TIME)
 			return
-	if guns.size() < 2:
+	# Mule Kick's third slot. `Weapons.gun_slots()` and not a literal 2, so the perk
+	# is one place rather than a number that has to be found again.
+	if guns.size() < Weapons.gun_slots():
 		guns.append(Weapons.make_gun(key, pap))
 		slot = guns.size() - 1
 	else:

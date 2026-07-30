@@ -401,8 +401,11 @@ static func _drops(v: Verify, main: Node3D) -> void:
 ## work the day a fifth is added. That is precisely when it will be forgotten.
 static func _perks(v: Verify, main: Node3D) -> void:
 	v.check("the perk cap is the era's four", Game.PERK_CAP == 4)
-	v.check("the map offers exactly as many perk machines as a player can hold",
-		MapData.PERKSPOTS.size() == Game.PERK_CAP,
+	# ...and that day arrived. The map offers six machines now, so the cap is a
+	# choice rather than a description, and this assertion is what stops the roster
+	# quietly shrinking back to a number the cap cannot bind against.
+	v.check("the map offers more perk machines than a player can hold",
+		MapData.PERKSPOTS.size() > Game.PERK_CAP,
 		"%d machines, cap %d" % [MapData.PERKSPOTS.size(), Game.PERK_CAP])
 
 	# R4 §1, Tier 1, traced end to end: 60 melee damage against 100 base and 160

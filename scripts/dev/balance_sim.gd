@@ -38,6 +38,11 @@ const WEAPON := preload("res://scripts/entities/weapon.gd")
 ## place to change it and one place to forget.
 const ROUND_DIRECTOR := preload("res://scripts/systems/round_director.gd")
 
+## The electric traps, for their price, window and cooldown. Imported for the same
+## reason DROP_CHANCE is: a copy of the three numbers here is a second place to
+## change them and one place to forget.
+const TRAPS := preload("res://scripts/systems/traps.gd")
+
 ## The physics tick the fire-rate fix is written against. `_update_fire` runs at
 ## Godot's default 60 Hz and the whole of the M2 cadence bug was the remainder
 ## inside one of these being thrown away, so this rate is not a sim convenience —
@@ -61,12 +66,14 @@ const ROUND_FIELDS: Array = [
 	"hp_per_s", "points", "drops", "refills",
 	"damage_taken", "hp_bars", "contact_frac", "contact_zsec",
 	"peak_alive", "first_contact_s",
+	"trap_buys", "trap_kills", "trap_spend", "wallet",
 ]
 
 const SUMMARY_FIELDS: Array = [
 	"gun", "pap", "cadence", "perks", "seed", "band", "rounds",
 	"clear_s", "shots", "kills", "points", "damage_taken",
 	"contact_zsec", "mean_contact_frac", "refills",
+	"trap_buys", "trap_kills", "trap_spend",
 ]
 
 const CADENCE_FIELDS: Array = [
@@ -119,6 +126,26 @@ func run(main: Node3D) -> int:
 		"rounds": rounds,
 		"pap": pap,
 	}
+	# THE TRAP TERM, and it is a worst case rather than an average.
+	#
+	# There are no positions in this model, so "how many of the horde route through
+	# the gate" cannot be a fact — it is `--sim-trap`, the probability that a given
+	# arrival crosses the trap. **1.0 is the honest setting**, and it is the default
+	# when the flag is given bare: it is the player camped behind the gate so that
+	# every zombie in the round has to walk through it, which is the layout the
+	# reference's own trap strategy uses and the only one where "does this trivialise
+	# a round" has a yes available. Anything lower flatters the trap.
+	#
+	# The wallet is the other half and it is what makes the answer interesting. A
+	# trap kill pays nothing (traps.gd, Game.trap_clearing), so the only income is
+	# what the player shoots — and this model spends the wallet on NOTHING ELSE, not
+	# ammunition, not doors, not perks. So the affordability it reports is an upper
+	# bound: if the trap starves itself even here, it starves harder in a real run.
+	model["trap"] = _trap_share(args)
+	model["wallet"] = float(Game.START_POINTS)
+	model["trap_t"] = 0.0
+	model["trap_cd"] = 0.0
+
 	# Derived from the real map rather than picked: the mean straight-line distance
 	# from a live window to the player's start tile. It is a *straight line*, so it
 	# is a lower bound on the walk a zombie actually makes — stated here because a
@@ -261,6 +288,12 @@ func _run_build(main: Node3D, p: Dictionary) -> bool:
 	for k: String in String(p.perks).split(",", false):
 		Game.perks[k.strip_edges()] = true
 	_dice.seed = hash("%d/simplayer" % int(p.seed))
+	# The wallet and the two trap clocks are the only state that outlives a round in
+	# this model, so they are reset here with everything else — a build that
+	# inherited the previous build's savings would not be comparable with it.
+	p["wallet"] = float(Game.START_POINTS)
+	p["trap_t"] = 0.0
+	p["trap_cd"] = 0.0
 
 	var gun := Weapons.make_gun(String(p.gun), bool(p.pap))
 	var label := "%s%s/%s" % [p.gun, "+pap" if bool(p.pap) else "", p.cadence]
@@ -292,8 +325,12 @@ func _run_build(main: Node3D, p: Dictionary) -> bool:
 
 	var clear: float = total.clear_s
 	var contact: float = total.contact_zsec
-	_note("%-16s  clear %7.1f s   contact %8.1f z·s   points %7d   taken %9.0f"
-		% [label, clear, contact, int(total.points), float(total.damage_taken)])
+	var trap := ""
+	if float(p.trap) > 0.0:
+		trap = "   trap %d buys / %d kills / %d spent" % [
+			int(total.trap_buys), int(total.trap_kills), int(total.trap_spend)]
+	_note("%-16s  clear %7.1f s   contact %8.1f z·s   points %7d   taken %9.0f%s"
+		% [label, clear, contact, int(total.points), float(total.damage_taken), trap])
 	return true
 
 
@@ -360,6 +397,21 @@ func _sim_round(main: Node3D, p: Dictionary, gun: Dictionary, r: int) -> Diction
 	var first_contact := -1.0
 	var hp_each: float = Game.zombie_hp(r)
 
+	# --- the trap ------------------------------------------------------------
+	var trap_share: float = float(p.trap)
+	var trap_on: bool = trap_share > 0.0
+	var trap_buys := 0
+	var trap_kills := 0
+	var trap_spend := 0
+	# Traps need the power, and the generator sits behind two bought doors. There is
+	# no economy in this model to buy them with, so the round the player is assumed
+	# to have thrown it is a stated constant rather than a simulated purchase —
+	# stated here so a reader can see it is an assumption and not a fact.
+	var trap_from_round := 6
+	# Carried across rounds through `p`, but held locally for the round so that the
+	# payout sites below can feed it without a Dictionary write per pellet.
+	var wallet: float = float(p.wallet)
+
 	while (to_spawn > 0 or not alive.is_empty()) and t < ROUND_TIMEOUT:
 		# --- spawning: the real interval, the real cap, the real crawler roll ----
 		spawn_timer -= TICK
@@ -377,6 +429,44 @@ func _sim_round(main: Node3D, p: Dictionary, gun: Dictionary, r: int) -> Diction
 			spawn_timer = Game.spawn_interval(r)
 			intervals.append(spawn_timer)
 			peak_alive = maxi(peak_alive, alive.size())
+
+		# --- the gate -----------------------------------------------------------
+		#
+		# Clocked before the contact test, because a body the trap takes must never
+		# also have been in reach for a tick: the whole value of the thing is that
+		# what it kills never touches you.
+		if trap_on and r >= trap_from_round:
+			if float(p.trap_t) > 0.0:
+				p.trap_t = maxf(0.0, float(p.trap_t) - TICK)
+				if float(p.trap_t) <= 0.0:
+					p.trap_cd = TRAPS.COOLDOWN
+			elif float(p.trap_cd) > 0.0:
+				p.trap_cd = maxf(0.0, float(p.trap_cd) - TICK)
+			elif wallet >= float(TRAPS.TRAP_COST) and alive.size() >= 2:
+				# Bought the moment there is a wave to spend it on and the money is
+				# there, which is the most favourable buying policy available and
+				# therefore the right one for a worst case.
+				wallet -= float(TRAPS.TRAP_COST)
+				p.trap_t = TRAPS.ACTIVE
+				trap_buys += 1
+				trap_spend += TRAPS.TRAP_COST
+
+		# The roll is made ON THE ARRIVAL TICK and only there — `z[2] > t - TICK`
+		# picks out the single tick a body crosses the threshold — so a survivor is
+		# not re-rolled every frame it stands in front of you, which would make the
+		# effective share 1.0 for any share above zero.
+		if float(p.trap_t) > 0.0:
+			var i := alive.size() - 1
+			while i >= 0:
+				var z: Array = alive[i]
+				if z[2] <= t and z[2] > t - TICK and _dice.randf() < trap_share:
+					# No points. `Game.points_earned` is deliberately untouched, which
+					# is what starves the next activation.
+					trap_kills += 1
+					kills += 1
+					if _kill(alive, i, drop_chance):
+						drops += 1
+				i -= 1
 
 		# --- what is inside melee reach, and what that costs --------------------
 		var in_contact := 0
@@ -448,10 +538,12 @@ func _sim_round(main: Node3D, p: Dictionary, gun: Dictionary, r: int) -> Diction
 				t_row[0] -= landed
 				if t_row[0] > 0.0:
 					points += Game.PTS_HIT
+					wallet += float(Game.PTS_HIT)
 					Game.points_earned += Game.PTS_HIT
 					continue
 				var pay: int = Game.PTS_HEADSHOT if head else Game.PTS_KILL
 				points += pay
+				wallet += float(pay)
 				# Game.add_points() would be the real path, but it emits
 				# points_changed and the HUD is bound to it — a hundred thousand
 				# signal dispatches for a number no headless run will ever draw. The
@@ -468,6 +560,7 @@ func _sim_round(main: Node3D, p: Dictionary, gun: Dictionary, r: int) -> Diction
 					var blast := _splash(alive, splash_dmg, splash_targets, drop_chance)
 					kills += int(blast[0])
 					points += int(blast[1])
+					wallet += float(blast[1])
 					drops += int(blast[2])
 				target = -1
 				retarget = retarget_len
@@ -493,7 +586,10 @@ func _sim_round(main: Node3D, p: Dictionary, gun: Dictionary, r: int) -> Diction
 		t += TICK
 
 	var ticks: float = maxf(1.0, t / TICK)
+	p.wallet = wallet
 	return {
+		"trap_buys": trap_buys, "trap_kills": trap_kills, "trap_spend": trap_spend,
+		"wallet": wallet,
 		"stalled": t >= ROUND_TIMEOUT,
 		"dog": dog, "count": count, "hp_each": hp_each, "total_hp": total_hp,
 		"max_alive": cap,
@@ -648,6 +744,8 @@ func _format_round(p: Dictionary, r: int, row: Dictionary) -> Dictionary:
 		"contact_zsec": "%.1f" % float(row.contact_zsec),
 		"peak_alive": row.peak_alive,
 		"first_contact_s": "%.2f" % float(row.first_contact_s),
+		"trap_buys": row.trap_buys, "trap_kills": row.trap_kills,
+		"trap_spend": row.trap_spend, "wallet": "%.0f" % float(row.wallet),
 	}
 
 
@@ -655,6 +753,7 @@ func _blank_totals() -> Dictionary:
 	return {
 		"rounds": 0, "clear_s": 0.0, "shots": 0, "kills": 0, "points": 0,
 		"damage_taken": 0.0, "contact_zsec": 0.0, "contact_frac": 0.0, "refills": 0,
+		"trap_buys": 0, "trap_kills": 0, "trap_spend": 0,
 	}
 
 
@@ -668,6 +767,9 @@ func _accumulate(into: Dictionary, row: Dictionary) -> void:
 	into.contact_zsec = float(into.contact_zsec) + float(row.contact_zsec)
 	into.contact_frac = float(into.contact_frac) + float(row.contact_frac)
 	into.refills = int(into.refills) + int(row.refills)
+	into.trap_buys = int(into.trap_buys) + int(row.trap_buys)
+	into.trap_kills = int(into.trap_kills) + int(row.trap_kills)
+	into.trap_spend = int(into.trap_spend) + int(row.trap_spend)
 
 
 func _format_totals(p: Dictionary, band: String, tot: Dictionary) -> Dictionary:
@@ -682,6 +784,8 @@ func _format_totals(p: Dictionary, band: String, tot: Dictionary) -> Dictionary:
 		"contact_zsec": "%.1f" % float(tot.contact_zsec),
 		"mean_contact_frac": "%.3f" % (float(tot.contact_frac) / n),
 		"refills": tot.refills,
+		"trap_buys": tot.trap_buys, "trap_kills": tot.trap_kills,
+		"trap_spend": tot.trap_spend,
 	}
 
 
@@ -717,6 +821,17 @@ func _arg(args: PackedStringArray, name: String, fallback: String) -> String:
 	if i < 0 or i + 1 >= args.size():
 		return fallback
 	return args[i + 1]
+
+
+## `--sim-trap` with no value, or with one. Absent is 0.0, which is the shipping
+## model and leaves every existing row bit-identical to a run before this landed.
+func _trap_share(args: PackedStringArray) -> float:
+	var i := args.find("--sim-trap")
+	if i < 0:
+		return 0.0
+	if i + 1 < args.size() and args[i + 1].is_valid_float():
+		return clampf(args[i + 1].to_float(), 0.0, 1.0)
+	return 1.0
 
 
 func _mean(values: Array[float]) -> float:

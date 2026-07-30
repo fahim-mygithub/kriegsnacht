@@ -48,6 +48,7 @@ func build(m: MapData) -> void:
 	_build_static()
 	_build_doors()
 	_build_windows()
+	_build_props()
 	# window1..window6 are no longer drawn by anything: the planks in those six
 	# images are separate meshes now, so a barricade at any board count is
 	# `window0` — the masonry surround and the opening — with `n` real boards in
@@ -347,6 +348,15 @@ func _build_static() -> void:
 					_shade_at(c3, shade, room, false, H))
 
 				_emit_edge_walls(wall_st, x, y, shade, collide, H)
+
+	# The props go into the wall batches rather than into batches of their own, and
+	# this is why they are emitted from inside `_build_static` rather than alongside
+	# the rest of the prop work in `_build_props`. Committed separately they were six
+	# extra MeshInstance3Ds — Lobby concrete, Lobby wood, Theatre wood, Alley wood,
+	# Alley brick, Hall metal — on a level the README measures at 16-28 draw calls.
+	# That is a quarter more draw calls for geometry that shares a room and a
+	# material with the wall right behind it.
+	_emit_prop_meshes(wall_st)
 
 	_commit(wall_st, "Walls")
 	_commit(floor_st, "Floors")
@@ -688,3 +698,235 @@ func set_power_on() -> void:
 	var m: StandardMaterial3D = _materials.get("metal")
 	if m != null:
 		m.emission_energy_multiplier = METAL_POWER_EMISSION
+
+
+# --- interior geometry -------------------------------------------------------
+
+## The props, and the colliders the machines never had.
+##
+## THIS IS A GAMEPLAY PASS WEARING A RENDERING PASS'S CLOTHES. Every room in the
+## level was an empty extruded rectangle, and an empty rectangle has nothing to
+## train around: a player circling one has to use the walls, which means the horde
+## is always between them and the middle of the room. A pillar is what turns a
+## rectangle into a loop. The perk machines, Pack-a-Punch and the generator were
+## `Sprite3D`s with no body at all — walk-through holograms — so the four biggest
+## objects in the level were the four you could stand inside.
+##
+## The geometry rides the surfaces `_build_static` already made, keyed the same
+## "<room>|<texture>" way, so a crate in the Lobby lands in the Lobby's wood batch
+## and costs no extra draw call. Collision is one StaticBody3D holding a BoxShape3D
+## per prop rather than a triangle soup: a box is exact, it is the cheapest shape
+## Jolt has, and unlike the world's ConcavePolygonShape3D it can be moved — which is
+## what `set_box_collider` needs.
+
+## Collision layer 1 — "world" — for everything below, and that is the load-bearing
+## decision in this file.
+##
+## `los.gd` tests against mask 1 and four systems share it, so a prop on this layer
+## occludes for all four at once: a zombie stops seeing through a crate and hands
+## steering back to the flow field, a bullet stops at a pillar, a splash stops at
+## one, and the interaction scan stops selling through one. That is right for all
+## four, and it is why MapData sizes a blocking prop above `LOS_HEIGHT` and a
+## machine below it — see the note there. Putting props on their own layer instead
+## would have needed a mask edit in both player.gd and zombie.gd and would have made
+## the level's own geometry invisible to the level's own visibility test.
+const PROP_LAYER := 1
+
+var _prop_body: StaticBody3D
+## The mystery box's collider. Created on the first `set_box_collider()` and moved
+## thereafter — nothing here knows where the box is, because the box moves and this
+## file is built once.
+var _box_shape: CollisionShape3D
+
+
+## The picture half, into whichever "<room>|<texture>" surface each prop belongs in.
+## Called from `_build_static` while those surfaces are still open.
+func _emit_prop_meshes(sink: Dictionary) -> void:
+	for p: Dictionary in MapData.PROPS:
+		# A prop sits in open floor, so its room is its own tile's room rather than
+		# the room across a face — the opposite of `_emit_wall_faces`, where the face
+		# exists precisely because the tile on the other side is not this one's.
+		var room := _room_at(int(p.x0), int(p.y0))
+		var shade: float = map.tile_shade[MapData.ix(int(p.x0), int(p.y0))]
+		_emit_box(sink, _prop_lo(p), _prop_hi(p), shade, room, String(p.tex))
+
+
+func _prop_lo(p: Dictionary) -> Vector3:
+	return Vector3(float(p.x0) + float(p.inset), 0.0, float(p.y0) + float(p.inset))
+
+
+func _prop_hi(p: Dictionary) -> Vector3:
+	return Vector3(float(p.x1) + 1.0 - float(p.inset), float(p.h),
+		float(p.y1) + 1.0 - float(p.inset))
+
+
+## The physics half. One body, one BoxShape3D per prop and per machine.
+func _build_props() -> void:
+	var root := Node3D.new()
+	root.name = "Props"
+	add_child(root)
+
+	_prop_body = StaticBody3D.new()
+	_prop_body.name = "PropCollision"
+	_prop_body.collision_layer = PROP_LAYER
+	root.add_child(_prop_body)
+
+	for p: Dictionary in MapData.PROPS:
+		_add_box_shape(_prop_lo(p), _prop_hi(p))
+
+	# The machines. No mesh: `atmosphere.gd` owns their art and always has, and two
+	# nodes drawing one object is the one-writer rule broken in the least visible
+	# way there is. What is added here is the half of a machine that was missing —
+	# the half a body walks into.
+	for m: Vector2 in map.machine_positions():
+		var half := MapData.MACHINE_HALF_PERK
+		if m.is_equal_approx(MapData.PAPSPOT):
+			half = MapData.MACHINE_HALF_PAP
+		elif m.is_equal_approx(MapData.GENSPOT):
+			half = MapData.MACHINE_HALF_GEN
+		_add_box_shape(Vector3(m.x - half, 0.0, m.y - half),
+			Vector3(m.x + half, MapData.MACHINE_H, m.y + half))
+
+
+func _add_box_shape(lo: Vector3, hi: Vector3) -> CollisionShape3D:
+	var box := BoxShape3D.new()
+	box.size = hi - lo
+	var cs := CollisionShape3D.new()
+	cs.shape = box
+	cs.position = (lo + hi) * 0.5
+	_prop_body.add_child(cs)
+	return cs
+
+
+## The one thing in the level that moves. `Game.box_spot` is the mystery box's live
+## position — `mystery_box._place()` and `atmosphere.set_box_display()` both read
+## `MapData.BOXSPOTS[Game.box_spot]` and nothing else does — so following it is how
+## the box's collider stays under the box.
+##
+## POLLED RATHER THAN SIGNALLED, and that is a seam rather than a preference: the box
+## raises no event when it relocates, and giving it one means threading a `world`
+## handle through `interaction_system.build()` into `mystery_box.bind()` — two files
+## this package does not own, to replace one integer comparison a frame. The moment
+## the box has a `moved` signal, delete `_process` and connect to it.
+var _box_at := -1
+
+
+func _process(_dt: float) -> void:
+	if _prop_body == null or Game.box_spot == _box_at:
+		return
+	_box_at = Game.box_spot
+	set_box_collider(MapData.BOXSPOTS[_box_at])
+
+
+## The mystery box's body, which follows it.
+##
+## The GRID BLOCK goes with it, in the same call, and that pairing is the whole point:
+## the crate is 1.24 m of solid layer-1 geometry and only `MACHINE_H` tall, so a
+## zombie's 1.2 m sight line passes clean over it and `zombie._physics_process` keeps
+## steering straight through a thing its body cannot cross. `set_box_block` is what
+## tells the field. `MapData.machine_positions()` deliberately excludes the box so
+## that `build()` cannot bake a block in at a spot the teddy bear has already moved it
+## away from.
+func set_box_collider(pos: Vector2) -> void:
+	if _prop_body == null:
+		return
+	var half := MapData.MACHINE_HALF_BOX
+	var lo := Vector3(pos.x - half, 0.0, pos.y - half)
+	var hi := Vector3(pos.x + half, MapData.MACHINE_H, pos.y + half)
+	if _box_shape == null or not is_instance_valid(_box_shape):
+		_box_shape = _add_box_shape(lo, hi)
+	else:
+		_box_shape.position = (lo + hi) * 0.5
+	map.set_box_block(pos)
+
+
+## Five faces of an axis-aligned box — the sixth is on the floor and nothing can see
+## it — split at integer world coordinates so every quad covers about one metre of
+## texture. Without the split a three-tile counter would stretch one copy of
+## `wood.png` across three metres while the wall behind it repeats three times, and
+## the two surfaces would read as different materials.
+func _emit_box(sink: Dictionary, lo: Vector3, hi: Vector3, shade: float, room: int,
+		tex: String) -> void:
+	var key := "%d|%s" % [room, tex]
+	if not sink.has(key):
+		sink[key] = _new_st()
+	var st: SurfaceTool = sink[key]
+	var xs := _splits(lo.x, hi.x)
+	var zs := _splits(lo.z, hi.z)
+
+	for k in xs.size() - 1:
+		var x0: float = xs[k]
+		var x1: float = xs[k + 1]
+		# -Z and +Z, and both take the Z-facing darkening every wall along z takes.
+		_side(st, Vector3(x0, 0.0, lo.z), Vector3(x1, 0.0, lo.z), hi.y,
+			shade * Z_FACE_SHADE, room)
+		_side(st, Vector3(x1, 0.0, hi.z), Vector3(x0, 0.0, hi.z), hi.y,
+			shade * Z_FACE_SHADE, room)
+	for k in zs.size() - 1:
+		var z0: float = zs[k]
+		var z1: float = zs[k + 1]
+		_side(st, Vector3(hi.x, 0.0, z0), Vector3(hi.x, 0.0, z1), hi.y, shade, room)
+		_side(st, Vector3(lo.x, 0.0, z1), Vector3(lo.x, 0.0, z0), hi.y, shade, room)
+
+	for kz in zs.size() - 1:
+		for kx in xs.size() - 1:
+			var a := Vector3(xs[kx], hi.y, zs[kz])
+			var b := Vector3(xs[kx + 1], hi.y, zs[kz])
+			var c := Vector3(xs[kx + 1], hi.y, zs[kz + 1])
+			var d := Vector3(xs[kx], hi.y, zs[kz + 1])
+			# No crease on a top face: it is a horizontal surface in open air, and the
+			# floor band is a wall-to-floor cue that would read as a painted border.
+			_quad(st, a, b, c, d, Vector3.UP,
+				_prop_shade(a, shade, room, false), _prop_shade(b, shade, room, false),
+				_prop_shade(c, shade, room, false), _prop_shade(d, shade, room, false))
+
+
+## One vertical face from `a` to `b`, in two bands so the bottom edge can carry the
+## same floor crease `_emit_wall_faces` gives a wall. `v` runs against WALL_H rather
+## than the prop's own height, so a 1.35 m crate shows the bottom half of the texture
+## at the same texel density as the wall behind it.
+func _side(st: SurfaceTool, a: Vector3, b: Vector3, h: float, shade: float,
+		room: int) -> void:
+	# `UP.cross(b - a)`, and the order is not interchangeable. Every quad in this
+	# file is wound a -> b -> b+h -> a+h, so the outward normal of a face running
+	# from `a` to `b` is UP x (b - a); the other order gives a normal pointing INTO
+	# the prop, which culls nothing (winding decides that) and instead renders every
+	# side of every crate as an unlit black slab — see notes/perf/shots/m4-props-2.
+	var nrm := Vector3.UP.cross(b - a).normalized()
+	var mid: float = minf(AO_BAND, h * 0.5)
+	var bands := PackedFloat32Array([0.0, mid, h])
+	for bi in 2:
+		var y0: float = bands[bi]
+		var y1: float = bands[bi + 1]
+		var pa := a + Vector3(0.0, y0, 0.0)
+		var pb := b + Vector3(0.0, y0, 0.0)
+		var pc := b + Vector3(0.0, y1, 0.0)
+		var pd := a + Vector3(0.0, y1, 0.0)
+		_quad(st, pa, pb, pc, pd, nrm,
+			_prop_shade(pa, shade, room, true), _prop_shade(pb, shade, room, true),
+			_prop_shade(pc, shade, room, true), _prop_shade(pd, shade, room, true),
+			1.0 - y0 / MapData.WALL_H, 1.0 - y1 / MapData.WALL_H)
+
+
+## The static bake for a prop: the tile jitter, the room's lamp fill, and the floor
+## crease. NOT `_shade_at`, and the missing term is the reason — `_ao_at` counts the
+## solid tiles meeting a grid corner, and a prop stands on open floor where that
+## count is zero by definition. Feeding it a prop's corners would produce a constant,
+## which is an exposure change dressed up as occlusion.
+func _prop_shade(p: Vector3, base: float, room: int, crease: bool) -> float:
+	var v := 1.0
+	if crease:
+		v = 1.0 - AO_CREASE * clampf(1.0 - p.y / AO_BAND, 0.0, 1.0)
+	return base * v * _fill_at(p, room)
+
+
+## `lo`, every integer strictly between, then `hi`.
+func _splits(lo: float, hi: float) -> PackedFloat32Array:
+	var out := PackedFloat32Array([lo])
+	var v := floorf(lo) + 1.0
+	while v < hi - 0.001:
+		if v > lo + 0.001:
+			out.append(v)
+		v += 1.0
+	out.append(hi)
+	return out

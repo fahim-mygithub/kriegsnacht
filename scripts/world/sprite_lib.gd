@@ -7,6 +7,15 @@ extends RefCounted
 ## drawing code, so the sprites here are pixel-identical to the web version —
 ## same three zombie palettes, same walk/attack/death cycles, same 1px dark
 ## rim that outlineSprite() stamped so silhouettes read in the dark.
+##
+## Since M4 there is a second family beside them: the 8-direction atlas,
+## `<stem>_dir.png`, which is the same strip with VIEW_COUNT rows stacked
+## vertically — one bearing per row. The ancestor draws exactly ONE view of each
+## enemy (`makeZombieSet`, kriegsnacht.html:973), so a zombie walking away from
+## you faced you; the atlas is the fix and `tools/gen/views.js` is where the four
+## new bearings per body are drawn. The single-view strips are still committed and
+## still loaded when an atlas is missing, so a checkout without regenerated art
+## behaves exactly as it did before rather than losing its enemies.
 
 const DIR := "res://assets/sprites/"
 
@@ -19,6 +28,57 @@ const SPEC := {
 
 ## World height in metres for each type — from the browser build's ZH table.
 const HEIGHT := {"zombie": 1.82, "crawler": 0.62, "hound": 0.98}
+
+## Rows in an atlas strip: 0, 45, 90, 135 and 180 degrees. The other three
+## bearings are the horizontal mirror of rows 1-3, applied by `flip_h` on the
+## Sprite3D — see `view_for()`. Must equal VIEW_COUNT in tools/gen/views.js;
+## scripts/dev/checks/enemies.gd asserts it against the shipped image height.
+const VIEW_COUNT := 5
+
+## Which row of each atlas is the ancestor's own frame rather than new art, and
+## therefore which row a fallback strip stands in for. The walker is drawn facing
+## the viewer (`makeZombieSet`, html:973) so its frame is row 0; the crawler
+## (`makeCrawlerSet`, html:1010) and the hound (`makeHoundSet`, html:1060) are
+## drawn in profile, so theirs is row 2. Kept here rather than in the generator
+## because it is the runtime that has to know a missing atlas puts the crawler's
+## profile art on every bearing.
+const ANCHOR_VIEW := {"zombie": 0, "crawler": 2, "hound": 2}
+
+## Facing-to-row, and it exists here rather than in zombie.gd because two other
+## callers need the same answer: the eye quads have to be hidden on exactly the
+## rows that draw no eyes, and scripts/dev/checks/enemies.gd has to be able to
+## sweep the mapping without a live zombie.
+##
+## `facing` is the body's heading in the XZ plane, `to_cam` points from the body
+## toward the camera. Both are treated as unit vectors. Returns the row in `x` and
+## 1 in `y` when the row must be mirrored.
+static func view_for(facing: Vector2, to_cam: Vector2) -> Vector2i:
+	if facing.length_squared() < 1e-6 or to_cam.length_squared() < 1e-6:
+		return Vector2i(0, 0)
+	var f := facing.normalized()
+	var c := to_cam.normalized()
+	# 0 when the body faces the camera, PI when it faces away.
+	var bearing := acos(clampf(f.dot(c), -1.0, 1.0))
+	var row := clampi(int(round(bearing / (PI / 4.0))), 0, VIEW_COUNT - 1)
+	# Screen right, in world XZ. A billboard's local +X is the camera's right, and
+	# the camera's right is `to_cam` turned -90 degrees about the world up — which
+	# is rotation-covariant, so this needs no camera basis and cannot go stale if
+	# the camera chain gains another node.
+	var screen_right := Vector2(c.y, -c.x)
+	# views.js draws rows 1-3 with the body turned toward screen right, so a body
+	# turned the other way is that row mirrored. Rows 0 and 4 are never flipped:
+	# there is nothing to gain and it would mirror the asymmetries the ancestor
+	# authored — palette 2's torn arm, the scalp wound — for no reason.
+	var flip := row > 0 and row < VIEW_COUNT - 1 and f.dot(screen_right) < 0.0
+	return Vector2i(row, 1 if flip else 0)
+
+
+## The animation name for one bearing of one cycle. Every animation in a
+## SpriteFrames built here is view-suffixed, including on the fallback path, so
+## nothing downstream has to branch on whether an atlas was found.
+static func anim_name(anim: String, view: int) -> String:
+	return "%s_%d" % [anim, view]
+
 
 static var _cache := {}
 
@@ -34,36 +94,73 @@ static func frames_for(kind: String, pal: int) -> SpriteFrames:
 
 	var prefix := kind + str(pal) if spec.pal > 0 else kind
 
-	_add_strip(sf, "walk", DIR + prefix + "_walk.png", spec.w, spec.h, spec.walk, 8.0, true)
+	_add_set(sf, "walk", DIR + prefix + "_walk", spec.w, spec.h, spec.walk, 8.0, true)
 
 	if spec.has("attack"):
-		_add_strip(sf, "attack", DIR + prefix + "_attack.png", spec.w, spec.h, spec.attack, 6.0, true)
+		_add_set(sf, "attack", DIR + prefix + "_attack", spec.w, spec.h, spec.attack, 6.0, true)
 	else:
 		# Crawlers and hounds reuse the first two walk frames as their swing,
 		# exactly as the browser build did (attack: walk.slice(0, 2)).
-		_add_strip(sf, "attack", DIR + prefix + "_walk.png", spec.w, spec.h, 2, 6.0, true)
+		_add_set(sf, "attack", DIR + prefix + "_walk", spec.w, spec.h, 2, 6.0, true)
 
-	_add_strip(sf, "death", DIR + prefix + "_death.png", spec.w, spec.h, spec.death, 9.0, false)
+	_add_set(sf, "death", DIR + prefix + "_death", spec.w, spec.h, spec.death, 9.0, false)
 
 	_cache[key] = sf
 	return sf
 
 
-static func _add_strip(sf: SpriteFrames, anim: String, path: String,
+## True when the 8-direction strip for this cycle was found. Reported by the
+## checks so "the atlas is missing on this machine" reads as that rather than as
+## every bearing silently drawing the same pose.
+static func has_atlas(kind: String, pal: int, anim: String) -> bool:
+	var spec: Dictionary = SPEC[kind]
+	var prefix := kind + str(pal) if spec.pal > 0 else kind
+	var stem: String = anim
+	if anim == "attack" and not spec.has("attack"):
+		stem = "walk"
+	return ResourceLoader.exists(DIR + prefix + "_" + stem + "_dir.png")
+
+
+## One cycle, all VIEW_COUNT rows. `stem` is the path without its extension: the
+## atlas is preferred and the single-view strip stands in for every row when it is
+## absent, which is the whole of the fallback.
+static func _add_set(sf: SpriteFrames, anim: String, stem: String,
 		w: int, h: int, count: int, fps: float, loops: bool) -> void:
-	sf.add_animation(anim)
-	sf.set_animation_speed(anim, fps)
-	sf.set_animation_loop(anim, loops)
-	if not ResourceLoader.exists(path):
+	var atlas_path := stem + "_dir.png"
+	var flat_path := stem + ".png"
+	var have_atlas := ResourceLoader.exists(atlas_path)
+	var path := atlas_path if have_atlas else flat_path
+	var sheet: Texture2D = load(path) if ResourceLoader.exists(path) else null
+	if sheet == null:
 		push_warning("SpriteLib: missing sheet " + path)
-		return
-	var sheet: Texture2D = load(path)
-	for i in count:
-		var at := AtlasTexture.new()
-		at.atlas = sheet
-		at.region = Rect2(i * w, 0, w, h)
-		at.filter_clip = true
-		sf.add_frame(anim, at)
+	elif have_atlas and sheet.get_height() != h * VIEW_COUNT:
+		# A strip whose row count does not match would slice every bearing at the
+		# wrong offset — visible as a zombie wearing another zombie's legs — and
+		# there is no way to notice that from a frame count. Refuse it and fall back.
+		push_warning("SpriteLib: %s is %d px tall, expected %d — falling back to the single view"
+			% [atlas_path, sheet.get_height(), h * VIEW_COUNT])
+		have_atlas = false
+		sheet = load(flat_path) if ResourceLoader.exists(flat_path) else null
+
+	for v in VIEW_COUNT:
+		var name := anim_name(anim, v)
+		sf.add_animation(name)
+		sf.set_animation_speed(name, fps)
+		sf.set_animation_loop(name, loops)
+		if sheet == null:
+			continue
+		var row: int = v if have_atlas else 0
+		for i in count:
+			var at := AtlasTexture.new()
+			at.atlas = sheet
+			at.region = Rect2(i * w, row * h, w, h)
+			at.filter_clip = true
+			sf.add_frame(name, at)
+	# `_atlas_seen[kind/anim] = have_atlas` was recorded here and read by nothing
+	# at all: the one place that knew whether the atlas was really being sliced,
+	# kept in a static dict no caller could reach. Deleted rather than exposed —
+	# the AtlasTexture regions built just above ARE that record, they cannot drift
+	# from what the sprite samples, and enemies.gd asserts on those instead.
 
 
 ## Metres-per-pixel so a sprite lands at its correct world height.

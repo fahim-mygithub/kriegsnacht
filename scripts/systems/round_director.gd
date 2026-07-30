@@ -11,6 +11,11 @@ extends Node3D
 ## parent. It sits at the origin under main, so `z.global_position` still means
 ## exactly what it did when main.gd was the parent.
 
+## The Monkey Bomb's lure, for the flow-field goal. preload rather than the class
+## name: a freshly added script is not in the class registry until the editor
+## rescans, and a headless run has no editor.
+const THROWABLES := preload("res://scripts/systems/throwables.gd")
+
 ## Flat chance of a drop on any death, on top of the points threshold.
 const DROP_CHANCE := 0.03
 
@@ -56,7 +61,12 @@ func begin_run() -> void:
 ## and tree order is not a contract anyone reading this file can see. main.gd's
 ## drive order is that contract.
 func tick(dt: float) -> void:
-	flow.update(player.grid_pos())
+	# The flow field solves to the LURE when a Monkey Bomb is live, not to the
+	# player. Without this only zombies with line of sight divert — `_goal_point`
+	# is the direct-chase path — and everything pathing round a corner keeps
+	# walking to you, which is most of the horde and the whole point of the
+	# throwable. Returns the fallback untouched when nothing is thrown.
+	flow.update(THROWABLES.flow_goal(player.grid_pos()))
 
 	# Hand every zombie the current neighbour list for separation.
 	var live: Array[Zombie] = []

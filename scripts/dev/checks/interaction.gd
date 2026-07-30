@@ -24,6 +24,17 @@ extends RefCounted
 ## preload rather than the global class name: a freshly added script is not in the
 ## class registry until the editor rescans, and a headless run has no editor.
 const INTERACT := preload("res://scripts/systems/interaction_system.gd")
+## The electric traps: three more switch rows the scan has to have built.
+const TRAPS := preload("res://scripts/systems/traps.gd")
+
+## A machine's interact point IS its own tile centre, and T3.4 gave every machine a
+## body there. Standing inside your own collider is what a machine is, not a bug.
+##
+## `box` is absent deliberately: it escapes today only because this module runs
+## before `mapgen`, which is what first calls `set_box_block()`. Reorder the two and
+## the box joins the list — so this omission is an order dependency, not an opinion,
+## and it is written down rather than silently relied on.
+const MACHINE_KINDS := ["perk", "power", "pap"]
 
 ## THE MEASUREMENT THE OCCLUSION RAY EXISTS FOR.
 ##
@@ -91,7 +102,7 @@ static func _rows(v: Verify, main: Node3D) -> void:
 	# Derived from the map rather than typed in: a wall buy added to MapData with
 	# no row built for it is a plaque painted on a wall that nothing can sell.
 	var want: int = MapData.DOORS.size() + MapData.WALLBUYS.size() \
-		+ MapData.PERKSPOTS.size() + MapData.WINDOWS.size() \
+		+ MapData.PERKSPOTS.size() + MapData.WINDOWS.size() + TRAPS.SPOTS.size() \
 		+ 4      # the Bowie, the generator, Pack-a-Punch, the box
 	v.check("every interactable in the map data has exactly one row",
 		rows.size() == want, "rows=%d want=%d" % [rows.size(), want])
@@ -100,14 +111,34 @@ static func _rows(v: Verify, main: Node3D) -> void:
 	# ray, so a face offset pointing the wrong way is no longer a cosmetic error —
 	# it is an unbuyable object. Doors are the one documented exception: a closed
 	# door's point is inside the door slab, which is the whole reason for `slack`.
+	# This check DRIFTED rather than the map breaking, and the distinction matters.
+	# It used to ask `map.is_blocked()`, which at the last commit meant `solid == 1`
+	# — masonry. T3.4 gave every machine a real collider and stamped it into
+	# `prop_solid`, so `is_blocked` now means "masonry OR prop OR machine" and all
+	# eight machines failed by construction: a machine's interact point IS its own
+	# tile centre. Standing inside your own body is what a machine is.
+	#
+	# Narrowed rather than relaxed — the exemption is "this row is a machine AND
+	# this tile is a machine's", so a wall-buy whose face points into masonry still
+	# fails. That was confirmed by flipping one and watching it report
+	# `wallbuy:olympia(masonry)`.
 	var buried := ""
 	for row: Dictionary in rows:
 		if String(row.kind) == "door":
 			continue
 		var p: Vector2 = row.pos
-		if map.is_blocked(floori(p.x), floori(p.y)):
-			buried += "%s " % row.key
-	v.check("no interactable except a door stands inside a wall",
+		var x := floori(p.x)
+		var y := floori(p.y)
+		if x < 0 or y < 0 or x >= MapData.MAPW or y >= MapData.MAPH:
+			buried += "%s(off the map) " % row.key
+			continue
+		var i := MapData.ix(x, y)
+		if map.solid[i] == 1:
+			buried += "%s(masonry) " % row.key
+		elif map.prop_solid[i] == 1 and not (
+				MACHINE_KINDS.has(String(row.kind)) and map.machine_at[i] >= 0):
+			buried += "%s(prop) " % row.key
+	v.check("no interactable except a door stands inside masonry or a prop",
 		buried.is_empty(), buried)
 
 	# `live` and `sleeping` partition the table minus whatever has been bought

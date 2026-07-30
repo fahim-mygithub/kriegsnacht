@@ -27,7 +27,15 @@ const BUNDLE = path.join(__dirname, 'ancestor.generated.js');
  * you are told to look before you regenerate art. Print the current value with
  *   node tools/gen/extract.js --report
  * and paste it here once you have read the diff. */
-const EXPECTED_SHA = '58d4cea3fa5e9a44118d6310ee7c4a1d1b9668499c673a156a4d411f28234af4';
+/* Moved once, on 2026-07-29, from
+ *   58d4cea3fa5e9a44118d6310ee7c4a1d1b9668499c673a156a4d411f28234af4
+ * and NOT because anything in kriegsnacht.html, the anchors or the patches
+ * changed — the 961 extracted lines are byte-identical, which `--report` still
+ * prints. The hash covers the whole assembled module, and the module's last line
+ * is `module.exports = { ... EXPORTS }`; the 8-direction atlas needs `bake`,
+ * `outlineSprite` and `ZPAL` reachable, so EXPORTS grew by three names and the
+ * hash moved with it. If it ever moves again, assume the ancestor did. */
+const EXPECTED_SHA = '62289369199d6d4aaa30171e516eda8e5465ca83fb79633dd649281fe8b2a4a8';
 
 /* Each range runs from the first line matching `start` up to, but not
  * including, the first line at or after it matching `stop`. `stop` is a regex,
@@ -181,6 +189,11 @@ const EXPORTS = [
 	'makeChalk', 'makePaP',     // called from boot(), never from buildSprites()
 	'PERKDEF', 'POWERDEF',      // the keys the prop filenames are built from
 	'WEAPONS', 'WALLBUYS', 'BOWIE',
+	// The 8-direction atlas (atlas.js / views.js). `bake` is the canvas harness,
+	// `outlineSprite` the 1px rim every silhouette in the game carries, and
+	// `ZPAL` the three corpse palettes — all three are the ancestor's and the
+	// turned views must draw through them rather than carry a second copy.
+	'bake', 'outlineSprite', 'ZPAL',
 ];
 
 

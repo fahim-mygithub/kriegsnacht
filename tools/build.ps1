@@ -66,8 +66,39 @@ function Restore-Project {
 try {
   if (-not $SkipVerify) {
     Write-Host "== verifying =="
-    & $Godot --headless --path $root --verify
-    if ($LASTEXITCODE -ne 0) { throw "verification failed (exit $LASTEXITCODE) - not building" }
+    # Bounded, because the failure this gate is most likely to meet is not a failed
+    # assertion. A parse error in ANY script reachable from the main scene makes
+    # main.gd fail to compile, and Godot then spends minutes dying while printing a
+    # single "could not preload" line and no assertion output at all. Measured:
+    # 414 s to exit against a healthy run's 5 s.
+    #
+    # It does exit non-zero, so the gate was never actually unsafe — but unbounded
+    # it is indistinguishable from a hang, and the reflex is to kill it and guess.
+    # Sixty seconds is twelve times a healthy run and a fraction of a broken one.
+    $verifyTimeoutSec = 60
+    # `--path .` with an explicit -WorkingDirectory, NOT `--path $root`.
+    # Start-Process joins -ArgumentList with spaces and does not quote, and this
+    # project's own path contains one ("Cod Zombies Rouglike"), so passing $root
+    # here splits it into two arguments and Godot exits 1 on a path that does not
+    # exist — which reads exactly like a failed assertion run.
+    $v = Start-Process -FilePath $Godot `
+      -ArgumentList @("--headless", "--path", ".", "--verify") `
+      -WorkingDirectory $root -NoNewWindow -PassThru
+    if (-not $v.WaitForExit($verifyTimeoutSec * 1000)) {
+      $v.Kill(); $v.WaitForExit()
+      throw @"
+verification did not finish in ${verifyTimeoutSec}s (a healthy run takes about 5).
+That is almost always a PARSE ERROR in a script reachable from the main scene
+rather than a slow test. Find it with:
+
+  & `$Godot --headless --path . --check-only --script scripts/<file>.gd
+
+Ignore "Identifier not found: Game / Sfx / Rng / Settings" from that command --
+it does not register autoloads. Only parse-stage errors are real, and note it
+stops at the FIRST error, so everything below that line is unchecked.
+"@
+    }
+    if ($v.ExitCode -ne 0) { throw "verification failed (exit $($v.ExitCode)) - not building" }
   }
 
   Write-Host "== preparing project.godot =="

@@ -1,0 +1,6 @@
+gun,pap,cadence,perks,seed,band,rounds,clear_s,shots,kills,points,damage_taken,contact_zsec,mean_contact_frac,refills,trap_buys,trap_kills,trap_spend
+mp40,0,fixed,dtap+speed,20260729,1-5,5,73.03,220,57,5570,0,0.0,0.000,0,0,0,0
+mp40,0,fixed,dtap+speed,20260729,6-10,5,166.57,1241,149,18950,288,6.3,0.061,2,0,0,0
+mp40,0,fixed,dtap+speed,20260729,11-15,5,317.60,3423,253,42840,112632,1972.1,0.743,10,0,0,0
+mp40,0,fixed,dtap+speed,20260729,16-20,5,726.58,8098,372,87420,710904,12549.3,0.959,29,0,0,0
+mp40,0,fixed,dtap+speed,20260729,all,20,1283.78,12982,831,154780,823824,14527.6,0.441,41,0,0,0

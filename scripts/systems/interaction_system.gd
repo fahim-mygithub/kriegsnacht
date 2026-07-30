@@ -23,6 +23,10 @@ const MYSTERY_BOX := preload("res://scripts/systems/mystery_box.gd")
 ## See `_sees()` for why the slack this scan needs is expressed by shortening the
 ## ray here rather than by adding a parameter there.
 const LOS := preload("res://scripts/world/los.gd")
+## The electric traps, for TRAP_COST. The switch rows themselves come from the
+## bound instance; only the price is a constant, and it is read from there rather
+## than restated so the prompt and the spend cannot disagree.
+const TRAPS := preload("res://scripts/systems/traps.gd")
 
 const INTERACT_RADIUS := 2.0
 const PAP_COST := 5000
@@ -92,6 +96,9 @@ var hud
 var lighting
 var atmos
 var box
+## traps.gd. Untyped for the same reason the four above are: the script is
+## attached at runtime, so a typed handle could not see state_of() or arm().
+var traps
 
 ## Every row ever built. Nothing reads it but the debug console and the assertion
 ## suite; the scan does not touch it.
@@ -115,7 +122,7 @@ var _pap_key := ""
 
 
 func bind(m: MapData, w: WorldBuilder, f: FlowField, p: Player, h: Node,
-		lit: Node3D, a: Node3D, b: Node) -> void:
+		lit: Node3D, a: Node3D, b: Node, tr: Node3D) -> void:
 	map = m
 	world = w
 	flow = f
@@ -124,6 +131,7 @@ func bind(m: MapData, w: WorldBuilder, f: FlowField, p: Player, h: Node,
 	lighting = lit
 	atmos = a
 	box = b
+	traps = tr
 
 
 ## The table the scan walks, and the moment every prop in the level is spawned —
@@ -193,6 +201,16 @@ func build() -> void:
 			"kind": "window", "key": "window:%d" % wi, "id": wi,
 			"pos": Vector2(w.ix + 0.5, w.iy + 0.5),
 			"cost": 0, "label": "Rebuild barricade", "radius": WINDOW_RADIUS,
+		})
+
+	# The electric traps. Built from the traps system's own rows rather than from a
+	# second table here, so a gate that moves moves once. They never retire: a trap
+	# is a thing you buy again, which is the whole of its economy.
+	for t: Dictionary in traps.spots():
+		_add({
+			"kind": "trap", "key": "trap:%s" % t.key, "trap": String(t.key),
+			"pos": Vector2(t.switch), "cost": TRAPS.TRAP_COST,
+			"label": String(t.label), "radius": INTERACT_RADIUS,
 		})
 
 	_add({
@@ -297,6 +315,26 @@ func _state_of(it: Dictionary) -> Dictionary:
 			if map.window_workers[it.id] > 0:
 				return {"none": true}
 			return {"label": "Rebuild barricade", "cost": 0, "hold": true, "none": false}
+		"trap":
+			# Canon: the traps run off the generator. That gate is most of why a trap
+			# cannot touch the early game — the generator is behind two bought doors —
+			# so it is stated here rather than left to the map to imply.
+			if not Game.power_on:
+				return {"label": "%s  —  needs power" % it.label, "cost": 0, "hold": false, "none": true}
+			var ts: String = traps.state_of(it.trap)
+			if ts == "live":
+				# `bare` and NOT `none`: a live gate must go on winning the
+				# nearest-pick, so F at a crackling trap says something legible
+				# instead of reaching past it to whatever is behind.
+				return {"label": "%s  —  live  (%ds)" % [it.label,
+					ceili(float(traps.active_left(it.trap)))],
+					"cost": 0, "hold": false, "none": false, "bare": true}
+			if ts == "cooldown":
+				return {"label": "%s  —  cooling down  (%ds)" % [it.label,
+					ceili(float(traps.cooldown_left(it.trap)))],
+					"cost": 0, "hold": false, "none": false, "bare": true}
+			return {"label": "%s  —  %d" % [it.label, it.cost], "cost": it.cost,
+				"hold": false, "none": false}
 		"power":
 			if Game.power_on:
 				return {"none": true}
@@ -631,6 +669,25 @@ func _do_interact(it: Dictionary, st: Dictionary) -> void:
 				Sfx.play("buy")
 			else:
 				_deny()
+		"trap":
+			# The wallet is spent HERE and not inside `arm()`, exactly as it is for
+			# every door, wall buy and perk machine above: traps.gd has no other
+			# business with the economy and should not become a second writer of it.
+			# `arm()` re-checks the state and the power for itself, so a refusal is
+			# reported rather than paid for.
+			if traps.state_of(it.trap) != "idle":
+				return
+			if not Game.spend(cost):
+				_deny()
+				return
+			if not traps.arm(it.trap):
+				# Nothing here can reach this today — the prompt refuses on power and
+				# the state was just tested — so if it ever does, the money goes back
+				# rather than vanishing into a switch that did not throw.
+				Game.add_points(cost)
+				_deny()
+				return
+			Sfx.play("buy")
 		"power":
 			Game.power_on = true
 			atmos.light_perks()

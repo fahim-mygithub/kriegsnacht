@@ -284,6 +284,32 @@ var _round_cap_r := 0
 var _box_state := ""
 var _power_seen := false
 
+## THE PERK STRIP IS POLLED, and that is the fix for a bug that survived three
+## milestones: `_refresh_perks()` was reachable from `_on_weapon` and from nowhere
+## else, so BUYING A PERK DID NOT LIGHT ITS BADGE until the next shot, reload or
+## swap. It was live enough that two other files had already grown a workaround
+## for it rather than a fix — player.gd emits a spare `weapon_changed` from
+## `_go_down`, beside its `Game.perks.erase("revive")`, with a comment naming
+## this exact cause; console.gd's `perk` command has no workaround at all, so a
+## perk granted from the console stays invisible until you shoot.
+##
+## Removing the call from `_on_weapon` fixes a second thing hiding in the same
+## line. `weapon_changed` is emitted on EVERY SHOT — the last line of `_shoot` —
+## so the strip was freeing and reallocating up to four ColorRects and four
+## Labels 14.7 times a second while an MP40 was held down. The strip changes a
+## handful of times in a run; it was being rebuilt thousands.
+##
+## Polled and not signalled, deliberately. `Game.perks` is a plain public
+## Dictionary with FIVE writers outside this file — the perk machine in
+## interaction_system.gd, `_go_down`'s erase, `reset_run`'s clear, the console's
+## `perk` command and the assertion suite — so a `perks_changed` signal would have
+## to be emitted by every one of them, and the failure mode of a missed emission is
+## exactly the bug being fixed, silently stale, again. A signal is right only once
+## the dictionary is private behind a mutator; until then the poll is the only
+## detector that cannot be forgotten. It costs one `Dictionary.hash()` over at most
+## four entries per frame.
+var _perks_key := 0
+
 ## The third edge detector, and the one that is not optional: `downed_changed`
 ## arrives every frame while down rather than on the transition. See `_on_downed`.
 var _downed_seen := false
@@ -332,6 +358,11 @@ func bind(p: Player, g: Node3D) -> void:
 	_on_health(player.hp, Game.max_health())
 	_on_weapon(player.current_gun())
 	_on_points(Game.points)
+	# Drawn once here rather than as a side effect of the weapon readout, and the
+	# fingerprint is taken from the same state that was just drawn so the first
+	# `_process` cannot rebuild a strip that is already correct.
+	_refresh_perks()
+	_perks_key = Game.perks.hash()
 
 
 ## menu.gd hands itself over here. Two things change: this file stops drawing its
@@ -1001,6 +1032,15 @@ func _process(dt: float) -> void:
 		_float_t = maxf(0.0, _float_t - dt)
 		_title_t = maxf(0.0, _title_t - dt)
 
+	# Not a clock either, and OUTSIDE the `playing` gate on purpose: the console
+	# grants perks with the tree held and `reset_run()` clears them with
+	# the state already off play, so a gated poll would leave the strip showing
+	# the last run's badges on the title screen of the next one. See _perks_key.
+	var perk_key := Game.perks.hash()
+	if perk_key != _perks_key:
+		_perks_key = perk_key
+		_refresh_perks()
+
 	# Not a clock: the stamina bar is a readout of a value that simply cannot move
 	# while the player's own physics step is frozen, so gating it would only mean
 	# it could be stale after a state change rather than merely idle.
@@ -1420,22 +1460,41 @@ func _on_weapon(gun: Dictionary) -> void:
 		_ammo.modulate.a = 1.0
 
 	# A14: the other gun, so swapping is a decision rather than a discovery.
+	#
+	# THE NEXT GUN IN THE SWAP CYCLE, not "the other one". `_swap_weapon` steps the
+	# slot by `(slot + 1) % guns.size()`, so with Mule Kick's third slot the
+	# old `guns[1 - slot]` named the wrong weapon from two of the three slots — and
+	# in fact named none at all, because the whole line was gated on `size() == 2`.
+	# The `+N` says how many more are behind it, so a three-gun loadout does not
+	# read as a two-gun one.
 	_altw.text = ""
-	if player and is_instance_valid(player) and player.guns.size() == 2:
-		var alt: Dictionary = player.guns[1 - player.slot]
+	if player and is_instance_valid(player) and player.guns.size() > 1:
+		var alt: Dictionary = player.guns[(player.slot + 1) % player.guns.size()]
 		var alt_name: String = alt.def.name
-		_altw.text = "[Q] %s   %d / %d" % [alt_name, alt.mag, alt.res]
-
-	_refresh_perks()
+		var behind := player.guns.size() - 2
+		_altw.text = "[Q] %s   %d / %d%s" % [alt_name, alt.mag, alt.res,
+			"" if behind <= 0 else "   +%d" % behind]
 
 
 ## The perk strip is the one hue-coded element that already had its second
-## channel: every PERKDEF carries a distinct `letter` (weapons.gd:53-56, J S D Q)
-## and the badge draws it. Juggernog's red and Speed Cola's green ARE the same
-## colour to a protanope, so the letter is not decoration — it is the readout, and
-## scripts/dev/checks/shell.gd asserts the four stay distinct.
+## channel: every PERKDEF carries a distinct `letter` and the badge draws it.
+## Juggernog's red and Speed Cola's green ARE the same colour to a protanope, so
+## the letter is not decoration — it is the readout, and scripts/dev/checks/shell.gd
+## asserts they stay distinct. Six rows now share that namespace rather than four,
+## which makes the assertion binding rather than a formality.
+##
+## Called from the `_perks_key` poll in `_process` and from `bind()`, and from
+## nowhere else. It used to be called from `_on_weapon` — see `_perks_key`.
 func _refresh_perks() -> void:
+	# remove_child BEFORE queue_free, which is not belt-and-braces: a queue_free'd
+	# node stays a child — and stays DRAWN — until the end of the frame, so a
+	# rebuild put the old badges and the new ones in the same HBoxContainer for one
+	# frame and the strip visibly doubled in length. Invisible at one rebuild per
+	# purchase; it was one rebuild per shot before this function stopped hanging off
+	# `weapon_changed`. It is also what lets an assertion read the child count
+	# without waiting a frame for the queue to drain.
 	for c in _perks.get_children():
+		_perks.remove_child(c)
 		c.queue_free()
 	for k in Game.perks:
 		var d: Dictionary = Weapons.PERKDEF[k]

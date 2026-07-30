@@ -75,7 +75,7 @@ const COMMANDS := {
 	"spawn": " <kind> [n]   spawn n of zombie|crawler|hound",
 	"give": " <gun> [pap]   hand over a weapon",
 	"points": " <n>         set the wallet",
-	"perk": " <key>         grant jug|speed|dtap|revive",
+	"perk": " <key>         grant a perk (tab completes the roster)",
 	"power": "              throw the generator",
 	"god": "                toggle invulnerability",
 	"timescale": " <x>      Engine.time_scale",
@@ -85,8 +85,19 @@ const COMMANDS := {
 
 const GUN_KEYS: Array = ["m1911", "olympia", "m14", "mp40", "pm63", "ak74u",
 	"stakeout", "m16", "rpk", "chinalake", "raygun", "thundergun"]
-const PERK_KEYS: Array = ["jug", "speed", "dtap", "revive"]
+## Derived, not listed. `_cmd_perk` has always validated against `Weapons.PERKDEF`
+## while the completion pool and the refusal message read this — so the day the
+## roster grew from four to six, tab-completion silently stopped offering two perks
+## the command would have accepted. A `const` cannot call `.keys()`, hence the
+## static and the lazy fill.
+static var _perk_keys: Array = []
 const SPAWN_KINDS: Array = ["zombie", "crawler", "hound"]
+
+
+static func perk_keys() -> Array:
+	if _perk_keys.is_empty():
+		_perk_keys = Weapons.PERKDEF.keys()
+	return _perk_keys
 
 
 ## Adds the console to `owner_node` if this build is allowed one, and otherwise
@@ -313,7 +324,7 @@ func _arg_pool(cmd: String) -> Array:
 		"give":
 			return GUN_KEYS
 		"perk":
-			return PERK_KEYS
+			return perk_keys()
 		"spawn":
 			return SPAWN_KINDS
 	return []
@@ -434,7 +445,7 @@ func _cmd_points(args: Array) -> void:
 func _cmd_perk(args: Array) -> void:
 	var key: String = String(args[0]) if args.size() > 0 else ""
 	if not Weapons.PERKDEF.has(key):
-		_err("perk <%s>" % "|".join(PackedStringArray(PERK_KEYS)))
+		_err("perk <%s>" % "|".join(PackedStringArray(perk_keys())))
 		return
 	Game.perks[key] = true
 	if key == "revive":

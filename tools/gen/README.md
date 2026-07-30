@@ -72,9 +72,95 @@ SYNTHESIS §6 (Milestone 2) says to extract *"374-392 + 564-1450"*.
   add the name there when something needs it.
 - `dataToCanvas` (html:2013-2019) exists to hand a `bake()` buffer back to a
   canvas for `drawImage`. `png.js` writes the buffer straight out instead.
-- The 8-direction atlas (SYNTHESIS §4.2) needs a `yaw` parameter threaded into
-  `zombieBody`, which is a change to ancestor code rather than an extraction.
-  It belongs in a later package built on this one.
+- ~~The 8-direction atlas (SYNTHESIS §4.2)~~ — **built, 2026-07-29**, and not by
+  threading `yaw` into `zombieBody` after all. See
+  [The 8-direction atlas](#the-8-direction-atlas) below.
+
+## The 8-direction atlas
+
+`views.js` and `atlas.js` are the one part of this package that **is not the
+ancestor's drawing code**, and they say so at the top of both files. The ancestor
+draws exactly one view of each enemy — `makeZombieSet` (html:973), `makeCrawlerSet`
+(html:1043), `makeHoundSet` (html:1090) — so a zombie walking away from you still
+faced you. There is no ancestor code for the other seven bearings.
+
+Output goes to **new files**, `<stem>_dir.png`, one per kind/palette/cycle:
+frames left to right as before, five bearings stacked top to bottom (0, 45, 90,
+135, 180 degrees; the other three are `flip_h` at runtime).
+`scripts/world/sprite_lib.gd` prefers them and falls back to the single-view strip
+when one is absent.
+
+**The seventeen committed strips are untouched.** That is deliberate and it is
+why the [drift table](#drift-against-the-committed-art) below is still valid.
+
+### What is still the ancestor's
+
+| | |
+|---|---|
+| `ZPAL` | the three corpse palettes, html:844-848 |
+| `outlineSprite` | the 1px rim every silhouette carries, html:955-969 |
+| `bake` | the canvas harness, html:571 |
+| frame parameter tables | the swing/bob/reach/lean per frame, transcribed from the ancestor's own loops (html:975-999, 1078-1086, 1115-1123) |
+| **one whole row of every strip** | see below |
+
+Three names were added to `EXPORTS` in `extract.js` for this — `bake`,
+`outlineSprite`, `ZPAL` — which is why `EXPECTED_SHA` moved on 2026-07-29. The 961
+extracted lines are byte-identical; the hash covers the assembled module, and the
+module's last line is the exports list.
+
+### The anchor row
+
+One row of each atlas is not new art at all:
+
+| kind | row | why |
+|---|---|---|
+| walker | **0** (facing you) | the ancestor draws it front-on, so `zombieBody` is called unmodified |
+| crawler | **2** (profile) | the ancestor draws it in profile, head to the left (html:1071) |
+| hound | **2** (profile) | likewise, head at `translate(-16,...)` (html:1114) |
+
+Both profiles face screen-**left** and this package's yaw convention puts the
+body's forward at screen-right, so the crawler's and the hound's frames are
+*mirrored* into row 2 rather than redrawn. Nothing the ancestor already drew is
+drawn again.
+
+`scripts/dev/checks/enemies.gd` asserts this against the shipped PNGs — not by
+byte equality, which would fail on a correct build for the reasons in
+[Drift](#drift-against-the-committed-art), but by requiring the anchor row to be
+several times closer to the committed frame than any other row is.
+
+### The projection
+
+Every new pose is one body model seen from five bearings, not five hand-drawn
+poses. Parts live in body space — x to the body's right, z out of its chest, y
+down the screen exactly as the ancestor's coordinates run — and project with
+
+```
+screen_x = x*cos(yaw) + z*sin(yaw)
+depth    = z*cos(yaw) - x*sin(yaw)        // larger = nearer the camera
+```
+
+At yaw 0 that is the identity on x, which is why the walker's turned views put
+the head, shoulders, hips and boots on the same scanlines its anchor row does.
+`depth` orders the painter's pass, so an arm behind a torso is behind it with no
+per-view special case, and a surface is drawn only when its own outward normal
+faces the camera — which is what gives a profile one eye and the two rear
+bearings none.
+
+**A zombie with its back to you does not glow at you.** That is the single most
+visible thing the atlas buys and it is asserted in `enemies.gd` rather than left
+to a screenshot.
+
+### What is invented, and admitted
+
+- The back of the walker's coat. The ancestor never drew one, so it is a seam and
+  a shoulder-blade shadow and nothing more.
+- The hound's neck. In profile the head ellipse overlaps the body and none is
+  needed; from 45 degrees the head reads as a floating lantern without one.
+- The hound's ember scatter uses a local xorshift rather than the ancestor's
+  `sr()`, because `_seed` is a module-level `let` inside the extraction and is not
+  reachable from outside it. Same shape, seeded per frame, deterministic.
+- The eye halo on a turned hound is smaller than the ancestor's 7.6x6.6 rect,
+  which only works because that rect falls inside a profile skull.
 
 ## The six patches
 
@@ -192,6 +278,8 @@ Two distinct stories, and they should not be confused:
 | `font5x7.js` | the two bitmap faces and `text()` |
 | `png.js` | 8-bit RGBA encoder and decoder, no dependency |
 | `targets.js` | the manifest: name → destination, size, provenance note |
+| `views.js` | **not ancestor code** — the five turned poses per body |
+| `atlas.js` | stitches those plus the anchor row into `<stem>_dir.png` |
 | `gen.js` | the CLI |
 | `ancestor.generated.js` | written every run, gitignored — **read this when something breaks** |
 

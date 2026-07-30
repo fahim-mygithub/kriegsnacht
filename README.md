@@ -75,6 +75,20 @@ refuses to export if it fails:
 Godot_v4.7-stable_win64_console.exe --headless --path . --verify
 ```
 
+**No `--` separator.** With `-- --verify` the flag lands in
+`get_cmdline_user_args()` instead of `get_cmdline_args()`, `main.gd` never sees it,
+and the game sits on the title screen forever — which looks exactly like a hang and
+leaves a Godot process spinning after you kill the shell that launched it. Two such
+orphans were found at 6696 s and 3591 s of CPU. The same applies to `--sim`,
+`--shot`, `--autostart` and `--console`.
+
+A healthy run takes about **5 seconds**. If it takes minutes it is almost certainly
+a parse error in a script reachable from the main scene rather than a slow test: a
+non-compiling tree exits 1 in ~414 s, printing one "could not preload" line and no
+assertions at all. `tools/build.ps1` bounds the gate at 60 s for that reason, and
+the suite prints `[verify] <module>` as each of its check modules starts, so a hang
+names the section it stopped in.
+
 Render one frame to a PNG and quit — the only way to check culling, winding,
 lighting and glow without a human at the keyboard. Optional second argument is
 a yaw in degrees:
@@ -89,8 +103,15 @@ Godot_v4.7-stable_win64_console.exe --path . --shot out.png 200 --resolution 960
 > deadlock.
 
 Controls: **WASD** move · **Shift** sprint · **Mouse** look · **LMB** fire ·
-**R** reload · **F** interact · **V** knife · **Q** swap weapon ·
+**RMB** aim · **R** reload · **F** interact · **V** knife · **Q** swap weapon ·
+**G** grenade · **T** Monkey Bomb ·
 **L** toggle mouse capture · **P** pause (**Esc** secondary).
+
+The tactical slot is **T**, not the genre-conventional Q, because Q is already the
+weapon swap here. Godot does not deduplicate bindings across actions — both fire —
+so a duplicate is not a keybind bug you notice, it is one press doing two things.
+`scripts/dev/checks/projectiles.gd` now fails on any duplicate physical binding
+anywhere in the InputMap.
 
 **Pausing is the pointer lock, not a key.** Losing the mouse — alt-tabbing, the
 browser taking it back, pressing Escape — *is* the pause, and a **click**

@@ -37,6 +37,7 @@ var powerups    # powerup_manager.gd
 var interact    # interaction_system.gd
 var box         # mystery_box.gd
 var atmos       # atmosphere.gd
+var traps       # traps.gd
 
 var _debug := false
 var _debug_t := 0.0
@@ -109,6 +110,10 @@ func _ready() -> void:
 	# materials any of them own.
 	extra.append_array(atmos.materials())
 	extra.append_array(fx.materials())
+	# The trap posts and the arc sheet. The arc is additive+unshaded, which is a
+	# variant only the muzzle flash otherwise draws with, and the first one the
+	# player sees is at the far end of a corridor with a horde in it.
+	extra.append_array(traps.materials())
 	extra.append_array(viewmodel.materials())
 	# The eight lamp fixtures. Additive, billboarded, unshaded and textured — a
 	# variant nothing else in the level draws with, and one of them is on screen
@@ -217,13 +222,20 @@ func _build_systems() -> void:
 	add_child(box)
 	box.bind(player, atmos)
 
+	# Before the interaction system, which reads `traps.spots()` in its build().
+	traps = TRAPS_SCRIPT.new()
+	traps.name = "Traps"
+	add_child(traps)
+	traps.bind(player)
+	traps.build()
+
 	interact = INTERACT_SCRIPT.new()
 	interact.name = "InteractionSystem"
 	add_child(interact)
 
 	rounds.bind(map, world, flow, player, powerups)
 	powerups.bind(world, player, atmos, rounds)
-	interact.bind(map, world, flow, player, hud, lighting, atmos, box)
+	interact.bind(map, world, flow, player, hud, lighting, atmos, box, traps)
 
 	interact.build()
 
@@ -252,6 +264,12 @@ func _process(dt: float) -> void:
 
 	Game.tick_timers(dt)
 	rounds.tick(dt)
+	# Immediately after the round loop, and the position is part of the contract
+	# rather than a preference: a trap kill routes through `Zombie.died` into the
+	# director's payout path, which draws from the DROPS stream. Here it sees a
+	# horde the director has just finished stepping, and it sees it at the same
+	# point of every frame, which is what a seeded run needs.
+	traps.tick(dt)
 	box.tick(dt)
 	powerups.tick(dt)
 	interact.tick(dt)
@@ -303,6 +321,7 @@ const ROUNDS_SCRIPT := preload("res://scripts/systems/round_director.gd")
 const POWERUPS_SCRIPT := preload("res://scripts/systems/powerup_manager.gd")
 const INTERACT_SCRIPT := preload("res://scripts/systems/interaction_system.gd")
 const BOX_SCRIPT := preload("res://scripts/systems/mystery_box.gd")
+const TRAPS_SCRIPT := preload("res://scripts/systems/traps.gd")
 
 
 ## The M-WARM control, recorded in notes/perf/README.md. `--no-warmup` natively,

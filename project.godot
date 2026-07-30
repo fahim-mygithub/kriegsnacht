@@ -97,15 +97,25 @@ toggle_capture={
 "events": [Object(InputEventKey,"resource_local_to_scene":false,"resource_name":"","device":-1,"window_id":0,"alt_pressed":false,"shift_pressed":false,"ctrl_pressed":false,"meta_pressed":false,"pressed":false,"keycode":0,"physical_keycode":76,"key_label":0,"unicode":0,"location":0,"echo":false,"script":null)
 ]
 }
-; P is primary, Escape secondary. The user agent swallows the first Escape while
-; the pointer is locked, so Escape alone means pausing takes two presses, and it
-; can never resume, because the HTML spec excludes Escape from the input events
-; that grant the transient activation requestPointerLock() demands. Escape stays
-; bound because it is what every player tries first, and it is correct on desktop.
 pause={
 "deadzone": 0.5,
 "events": [Object(InputEventKey,"resource_local_to_scene":false,"resource_name":"","device":-1,"window_id":0,"alt_pressed":false,"shift_pressed":false,"ctrl_pressed":false,"meta_pressed":false,"pressed":false,"keycode":0,"physical_keycode":80,"key_label":0,"unicode":0,"location":0,"echo":false,"script":null)
 , Object(InputEventKey,"resource_local_to_scene":false,"resource_name":"","device":-1,"window_id":0,"alt_pressed":false,"shift_pressed":false,"ctrl_pressed":false,"meta_pressed":false,"pressed":false,"keycode":0,"physical_keycode":4194305,"key_label":0,"unicode":0,"location":0,"echo":false,"script":null)
+]
+}
+ads={
+"deadzone": 0.5,
+"events": [Object(InputEventMouseButton,"resource_local_to_scene":false,"resource_name":"","device":-1,"window_id":0,"alt_pressed":false,"shift_pressed":false,"ctrl_pressed":false,"meta_pressed":false,"button_mask":2,"position":Vector2(0, 0),"global_position":Vector2(0, 0),"factor":1.0,"button_index":2,"canceled":false,"pressed":false,"double_click":false,"script":null)
+]
+}
+throw_frag={
+"deadzone": 0.5,
+"events": [Object(InputEventKey,"resource_local_to_scene":false,"resource_name":"","device":-1,"window_id":0,"alt_pressed":false,"shift_pressed":false,"ctrl_pressed":false,"meta_pressed":false,"pressed":false,"keycode":0,"physical_keycode":71,"key_label":0,"unicode":0,"location":0,"echo":false,"script":null)
+]
+}
+throw_tactical={
+"deadzone": 0.5,
+"events": [Object(InputEventKey,"resource_local_to_scene":false,"resource_name":"","device":-1,"window_id":0,"alt_pressed":false,"shift_pressed":false,"ctrl_pressed":false,"meta_pressed":false,"pressed":false,"keycode":0,"physical_keycode":84,"key_label":0,"unicode":0,"location":0,"echo":false,"script":null)
 ]
 }
 
@@ -119,34 +129,13 @@ pause={
 
 [physics]
 
-; Set explicitly. Godot 4.7 only self-defaults GodotPhysics3D; Jolt registers but
-; never claims the default, and the 4.6 note about Jolt becoming default applies
-; to new-project creation, not the runtime fallback. Relying on an unwritten
-; default is how a physics backend silently swaps under you on an engine upgrade.
-;
-; Jolt, because M-PHYS measured it (notes/perf/). At 24 zombies with
-; zombie<->zombie contact live it costs 1.26 ms against GodotPhysics3D's 2.52 —
-; about half — and neither backend shows the collapse the 4.0/4.1-era reports
-; predicted for 10-40 mutually-colliding CharacterBody3D.
-;
-; The name is "Jolt Physics", with the space. The setting's own hint string is
-; "DEFAULT,Jolt Physics,GodotPhysics3D,Dummy", and an unrecognised value falls
-; back to GodotPhysics3D SILENTLY — the first M-PHYS run asked for
-; "JoltPhysics3D", got GodotPhysics3D, and reported a dead heat between a backend
-; and itself. If you change this, confirm it took: the probe records the concrete
-; space-state class, which is the only field that tells the truth here.
 3d/physics_engine="Jolt Physics"
 
 [rendering]
 
-; The web export is hard-locked to gl_compatibility (single-value enum in the
-; engine), so authoring against Forward+ in the editor means authoring against a
-; renderer that never ships. Pinned on every platform so the viewport tells the
-; truth: no Decal, no volumetric fog, no SSR/SSIL/SDFGI, MSAA is the only AA.
+textures/canvas_textures/default_texture_filter=0
 renderer/rendering_method="gl_compatibility"
 renderer/rendering_method.mobile="gl_compatibility"
-renderer/rendering_method.web="gl_compatibility"
-textures/canvas_textures/default_texture_filter=0
 lights_and_shadows/directional_shadow/soft_shadow_filter_quality=0
 anti_aliasing/quality/msaa_3d=1
 environment/defaults/default_clear_color=Color(0.043, 0.047, 0.039, 1)
