@@ -236,15 +236,12 @@ func _on_zombie_died(z: Zombie, was_headshot: bool, by_melee: bool) -> void:
 	if was_headshot:
 		Game.headshots += 1
 
-	if Game.insta_kill > 0.0:
-		# Insta-Kill pays a flat rate rather than the full headshot/melee bonus,
-		# so it is a survival tool rather than pure economic upside.
-		Game.add_points(Game.PTS_INSTAKILL)
-	else:
-		var pts := Game.PTS_HEADSHOT if was_headshot else Game.PTS_KILL
-		if by_melee:
-			pts += Game.PTS_MELEE_BONUS
-		Game.add_points(pts)
+	# One rule, one place — see Game.kill_points(). The branch that used to be here
+	# paid a flat 50 for a KNIFE kill under Insta-Kill, and R4 §3 is Tier 1 that BO1
+	# zeroes only the hit-location bonus: a melee kill still routes through MOD_MELEE
+	# and keeps its bonus, so it stays at the full 130. Insta-Kill plus the Bowie is
+	# the most canonical points play in the genre and it was paying 38% of rate.
+	Game.add_points(Game.kill_points(was_headshot, by_melee))
 
 	# The draw happens on every death, used or not — see Game.try_drop for why that
 	# is load-bearing rather than wasteful.

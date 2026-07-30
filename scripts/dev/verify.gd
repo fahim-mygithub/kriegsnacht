@@ -29,14 +29,68 @@ const WEAPON := preload("res://scripts/entities/weapon.gd")
 const VIEWMODEL := preload("res://scripts/entities/viewmodel.gd")
 const GUNART := preload("res://scripts/data/gunart.gd")
 const CHECK_SYSTEMS := preload("res://scripts/dev/checks/systems.gd")
+## The interaction scan: the occlusion ray, the facing budget and the two buckets.
+## Split out for the same reason CURVES is — it is the part of this suite that is
+## about a rule of the game rather than about the engine.
+const CHECK_INTERACT := preload("res://scripts/dev/checks/interaction.gd")
 ## The canon round curves, pinned with their sources. Split out because they are
 ## the one part of this suite a designer rather than an engineer has to read.
 const CURVES := preload("res://scripts/dev/checks/curves.gd")
+## The downed state, solo Quick Revive and the Thundergun's occlusion gate. None of it
+## can be reached by playing: going down on purpose costs a run, and the blast's
+## occlusion is invisible from inside the room the shot was fired in.
+const DOWNED := preload("res://scripts/dev/checks/downed.gd")
+## The economy: the payout table, the drop rules and the Insta-Kill branch.
+const ECONOMY := preload("res://scripts/dev/checks/economy.gd")
+## Settings persistence, the menu's focus graph, the accessibility toggles and the
+## HUD's behaviour under a real pause.
+const SHELL := preload("res://scripts/dev/checks/shell.gd")
+
+## Every check module in scripts/dev/checks/, by filename, and the single place
+## they are registered. `_registered()` walks the directory and fails if anything
+## on disk is missing from this list.
+##
+## This exists because the floor below CANNOT catch the failure it is named for.
+## A floor detects a section that STOPPED running — it is blind to one that never
+## started, because the total it was set from never counted those assertions in the
+## first place. Both downed.gd and economy.gd sat in that blind spot: written,
+## committed, parse-clean, and never once executed. Thirty-four assertions that
+## existed only as text. A green suite reported them as neither passing nor failing
+## because it had no idea they were there.
+const CHECK_MODULES := {
+	"systems.gd": CHECK_SYSTEMS,
+	"interaction.gd": CHECK_INTERACT,
+	"curves.gd": CURVES,
+	"downed.gd": DOWNED,
+	"economy.gd": ECONOMY,
+	"shell.gd": SHELL,
+}
 
 ## The number of assertions this suite is known to run, minus a small margin for
 ## the ones that are conditional on a resource being present. See the floor check
 ## at the end of run() for why a count is worth asserting at all.
-const ASSERTION_FLOOR := 175
+##
+## HOW TO CHANGE IT, and the two cases are different.
+##
+## While work is in flight: raise it ADDITIVELY by the number of assertions you
+## added, and do NOT read the current total and round down to it. This line is
+## contended — four packages raised it in one session — and additive edits from
+## concurrent authors compose to the right answer. "Set it to what I measured" does
+## not: the measurer silently absorbs everyone else's margin, and the floor drifts
+## further below the true total with every pass.
+##
+## At an integration point, on a quiescent tree: reconcile it to the real total less
+## a small margin, which is what the number is supposed to mean. Additive raises are
+## a concurrency discipline, not the definition; left unreconciled they accumulate
+## exactly the slack they were protecting against. This value was reconciled at 306.
+##
+## Never lower it to make a run pass. A run that goes UNDER the floor has almost
+## certainly lost a whole section to a runtime error, which is the failure this
+## number exists to catch and the one that otherwise exits 0.
+##
+## The floor cannot see a section that never ran at all — a total it was never set
+## from cannot shrink. That is `_registered()`'s job, and the two are complementary.
+const ASSERTION_FLOOR := 300
 
 var _pass := 0
 var _fail := 0
@@ -56,7 +110,51 @@ func near(a: float, b: float, eps := 0.001) -> bool:
 	return absf(a - b) <= eps
 
 
+## Fails if a check module exists on disk but is not in CHECK_MODULES — i.e. if
+## somebody wrote a set of assertions and nothing ever called them.
+##
+## Directory-driven rather than list-driven on purpose. A registry that only checks
+## itself is a tautology: the whole failure being guarded against is that the author
+## added the file and forgot the registration, so the disk has to be the authority
+## and the list the thing under test.
+##
+## Editor-binary only. In an exported build these are `.gd.remap` and the listing
+## does not mean what it means here — but `--verify` is a development gate that only
+## ever runs from the editor binary (tools/build.ps1 calls it before exporting), so
+## being unable to run it there would be a contradiction rather than a gap.
+func _registered() -> void:
+	var dir := DirAccess.open("res://scripts/dev/checks")
+	if dir == null:
+		check("the check-module directory is readable", false,
+			"DirAccess.open failed — the registry cannot be audited")
+		return
+	var missing: Array[String] = []
+	for f in dir.get_files():
+		if f.ends_with(".gd") and not CHECK_MODULES.has(f):
+			missing.append(f)
+	check("every check module on disk is registered and actually runs",
+		missing.is_empty(),
+		"never executed: %s" % str(missing))
+
+
 func run(main: Node3D) -> int:
+	# THE SUITE MUST NOT TOUCH THE PLAYER'S SAVE FILE, and left alone it does.
+	#
+	# Game checkpoints the profile on `round_changed` (game_state.gd), and half the
+	# checks below drive real rounds through the real director. So every `--verify`
+	# run on a developer's machine was writing `user://profile.json`. It shows: the
+	# file on this machine reads best_round 26 with best_points 500 — 500 is
+	# START_POINTS, so that is not a run anyone played, it is a test that happened to
+	# reach round 26 while holding the opening balance.
+	#
+	# Disconnected here, once, rather than in each check that drives a round. A check
+	# that has to remember is a check that will forget, and the one that remembered
+	# did it with an unconditional `disconnect()` that would itself have thrown the
+	# moment anything else disconnected first.
+	var checkpointing := Game.round_changed.is_connected(Game._on_round_changed)
+	if checkpointing:
+		Game.round_changed.disconnect(Game._on_round_changed)
+
 	_canon()
 	_losable(main)
 	_progression()
@@ -76,14 +174,39 @@ func run(main: Node3D) -> int:
 	_quality(main)
 	_probe_contract(main)
 	_viewmodel(main)
-	# These two are last because each leaves state behind, and they are in this
-	# order because only one of them cares what the other leaves. CHECK_SYSTEMS
-	# spawns and kills 24 real zombies and leaves the director's spawn queue drawn
-	# down; CURVES sweeps 300 seeds, re-seeds Rng and drives reset_run(). CURVES
-	# reads nothing but the curves on Game, so it survives a mangled director —
+	# These four are last because each leaves state behind, and they are in this
+	# order because of what each one needs from the state the others leave.
+	#
+	# CHECK_INTERACT first, and it restores everything it touches. It reads the live
+	# map's colliders and drives the Pack-a-Punch clock through the player's real
+	# loadout, so it wants the world and the guns in the state the sections above
+	# left them — DOWNED puts the player on the floor and CHECK_SYSTEMS mangles the
+	# director. It draws from no rng stream at all.
+	#
+	# DOWNED next: it kills real zombies through the director's real payout path, so
+	# it draws from the DROPS stream. CHECK_SYSTEMS re-seeds with Rng.new_run(SEED)
+	# before it samples anything and CURVES sweeps its own seeds, so neither can see
+	# the disturbance. It also fires the Thundergun along the map's real bearings,
+	# which wants the level un-mangled.
+	#
+	# CHECK_SYSTEMS spawns and kills 24 real zombies and leaves the director's spawn
+	# queue drawn down; CURVES sweeps 300 seeds, re-seeds Rng and drives reset_run().
+	# CURVES reads nothing but the curves on Game, so it survives a mangled director —
 	# CHECK_SYSTEMS would not survive a reset_run() underneath it.
+	CHECK_INTERACT.run(self, main)
+	DOWNED.run(self, main)
+	ECONOMY.run(self, main)
+	SHELL.run(self, main)
 	CHECK_SYSTEMS.run(self, main)
 	CURVES.run(self, main)
+
+	_registered()
+
+	# Put the checkpoint back, so a suite run leaves the autoload exactly as it found
+	# it. Nothing after this point drives a round, but a Verify instance is not
+	# guaranteed to be the last thing that ever touches Game.
+	if checkpointing:
+		Game.round_changed.connect(Game._on_round_changed)
 
 	# A floor on the total, not a target. A runtime error inside any check function
 	# above unwinds only that function: run() carries on, the suite prints a smaller
@@ -175,12 +298,25 @@ func _losable(main: Node3D) -> void:
 		"dealt %.1f, expected 10" % (before - p.hp))
 
 	# Quick Revive was defined and called by nothing at all.
+	#
+	# GATED ON HOLDING THE PERK, not on `revives_left`. This pair used to set the
+	# counter alone, which passed for as long as `_go_down` read the counter — and
+	# `_go_down` reading a counter no machine, badge or purchase rule consults was
+	# itself the bug. With the gate corrected to `Game.perks`, the old setup fell
+	# through to `died.emit()`, and main.gd turns that into `Game.record_run()`:
+	# every --verify run was writing +1 to the player's REAL profile.json and
+	# leaving the tree paused in STATE_OVER for every section below.
+	#
+	# The full downed contract lives in scripts/dev/checks/downed.gd; this pair
+	# stays because _losable is where a reader looks for "can the run still end".
+	Game.perks["revive"] = true
 	Game.revives_left = 1
 	p.hp = 1.0
 	p.take_damage(500.0, 4242)
 	check("lethal damage downs rather than kills when a revive is held", p.is_downed)
 	p.revive()
 	check("revive() restores health", near(p.hp, Game.max_health()) and not p.is_downed)
+	Game.perks.clear()
 
 
 # --- progression -------------------------------------------------------------
@@ -354,6 +490,19 @@ func _persistence() -> void:
 	check("a hostile blob can neither inject a key nor retype one", clean,
 		str(Game.profile))
 
+	# The checkpoint is disconnected for the whole suite by run(), so that a check
+	# which drives a real round cannot write to the machine's actual save file. This
+	# is the one section that is ABOUT the checkpoint, so it puts it back for its own
+	# duration and takes it away again — the exemption is local, visible, and owned
+	# by the only tests that need it.
+	#
+	# Safe against the real file because this section is already operating on a saved
+	# and restored copy of it: `path` is deleted and rewritten below, and the original
+	# contents go back at the end of the function.
+	var was_wired := Game.round_changed.is_connected(Game._on_round_changed)
+	if not was_wired:
+		Game.round_changed.connect(Game._on_round_changed)
+
 	# record_run() fires only when the player is killed, and the ordinary way a
 	# browser game ends is the tab closing — so on its own it means a player who
 	# reaches round 20 and walks away keeps nothing.
@@ -382,6 +531,11 @@ func _persistence() -> void:
 			wired += 1
 	check("the round checkpoint is connected exactly once", wired == 1,
 		"got %d" % wired)
+
+	# Back to the suite-wide default: disconnected, so nothing after this point can
+	# write to the machine's real profile by driving a round.
+	if not was_wired and Game.round_changed.is_connected(Game._on_round_changed):
+		Game.round_changed.disconnect(Game._on_round_changed)
 
 	# `runs` moves in record_run() and nowhere else, and the other two are
 	# monotone there — a bad run must never be able to lower a good record.
@@ -1188,21 +1342,32 @@ func _hit_geometry(main: Node3D) -> void:
 	main.add_child(z)
 	z.add_to_group("zombies")
 	var ahead := cam.global_position - cam.global_transform.basis.z * 3.0
-	# A non-zero body height is the point. The cone has no ray and therefore no
-	# hit point, so it builds one — and `_apply_hit` recovers the local height as
-	# `at.y - z.global_position.y`, where `(y + t) - y == t` exactly only while y
-	# is exactly 0.0. Aiming *at* the threshold instead of a centimetre inside it
-	# leaves the payout on a float knife edge that holds today only because
-	# zombies pin velocity.y to zero; any later ground snap or step-up silently
-	# downgrades every cone kill from 100 points to 60 with no other symptom.
+	# These two used to assert the opposite, and they are worth leaving a note on:
+	# they were careful, detailed, and they pinned a bug. The old pair required the
+	# cone to headshot, with a comment warning that losing it would "silently
+	# downgrade every cone kill from 100 points to 60" — treating 60 as the failure.
+	# 60 is the correct payout. The Thundergun was crediting a headshot on every kill
+	# in the wedge because `_cone_blast` aimed its synthetic hit point at the head,
+	# and the ancestor passes `false` for headshot outright (html:2543).
+	#
+	# So the float knife-edge the old comment described is real but no longer load
+	# bearing: the aim point is centre mass now, which is nowhere near the threshold,
+	# and a ground snap or a step-up can no longer move the payout.
+	#
+	# The body is still deliberately stood off zero height, because that is what
+	# makes the local-height recovery (`at.y - z.global_position.y`) meaningful — at
+	# y == 0 the arithmetic is degenerate and the check proves nothing.
 	z.global_position = Vector3(ahead.x, 0.01, ahead.z)
 	p._cone_blast(Weapons.spec("thundergun"))
 	var local_y: float = where[0].y - z.global_position.y
-	check("the cone headshots a body standing off zero height",
-		z.state == Zombie.State.DYING and z._last_headshot,
-		"y=%.3f headshot=%s state=%d" % [z.global_position.y, z._last_headshot, z.state])
-	check("the cone aims inside the head, not on its threshold",
-		local_y >= z.head_threshold() + 0.005,
+	check("the cone kills what stands in the wedge",
+		z.state == Zombie.State.DYING,
+		"y=%.3f state=%d" % [z.global_position.y, z.state])
+	check("a cone kill is not credited as a headshot",
+		not z._last_headshot,
+		"headshot=%s" % z._last_headshot)
+	check("the cone aims at centre mass, well clear of the head threshold",
+		local_y < z.head_threshold() - 0.05,
 		"local_y=%.4f threshold=%.4f" % [local_y, z.head_threshold()])
 
 	# One event per zombie actually damaged, on both signals — the HUD binds to

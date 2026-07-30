@@ -49,6 +49,10 @@ signal surface_impact(at: Vector3, normal: Vector3)
 ## headless run has no editor.
 const WEAPON := preload("res://scripts/entities/weapon.gd")
 
+## The one line-of-sight test in the game, shared with the AI's chase decision and
+## the interaction scan. Same reason for preload as above.
+const LOS := preload("res://scripts/world/los.gd")
+
 const SPEED := 3.15
 const SPRINT_MULT := 1.55
 const DOWNED_SPEED := 1.15
@@ -98,6 +102,43 @@ const BOB_POS := 9.4
 const BOB_ROLL := 13.0
 const BOB_SLOW := 2.2
 
+## Recoil is DAMPED rather than removed under Settings.reduce_motion, where the
+## bob and the shake are removed outright. The difference is whether the movement
+## answers something the player did: the kick is the only thing on screen that
+## says the shot went off, and a weapon that does not move at all reads as a
+## broken gun rather than as an accessibility option. The bob and the shake
+## answer nothing, so they go to zero.
+const REDUCE_MOTION_KICK := 0.35
+
+## The half-width of the Thundergun's blast, in metres, around the aim line.
+##
+## **A deliberate departure from the ancestor**, and the reference is the reason.
+## Treyarch's own T5 script (`maps/_zombiemode_weap_thundergun.gsc`, in the raw
+## file dump at github.com/JTAG7371/T5-RawFile-Dump) tests, in this order: inside
+## `thundergun_knockdown_range`; `VectorDot(forward_view_angles, normal) >= 0`,
+## which is a whole hemisphere and not a cone at all; within
+## `thundergun_cylinder_radius` of the segment from the muzzle along the aim; and
+## finally a `DamageConeTrace` line-of-sight test. Only bodies inside
+## `thundergun_fling_range` are killed — everything from there out to
+## `knockdown_range` takes 15 and gets up again. Those constants are 180, 480 and
+## 1200 game units, and a unit is an inch: **4.57 m, 12.19 m and 30.5 m**. So the
+## reference volume is a CYLINDER, not a wedge, and the port's 11 m `range` is
+## already within half a metre of the reference kill distance.
+##
+## The ancestor has none of it. `cone: .62` tested as `dot >= 1 - .62` (html:1470,
+## html:2540) is `acos(0.38)` = a 67.7 degree half-angle — a 135.3 degree wedge —
+## held at *every* distance, so at 11 m it kills 10.2 m out to the side where the
+## reference stops at 4.57 m. Killed volume falls from ~1730 m^3 to ~610 m^3, a
+## 65% cut, and almost all of it comes out of the far field: that is exactly the
+## "clears the room including everything beside you" complaint, and narrowing the
+## angle instead would have taken it out of the near field, where the reference is
+## in fact the *more* generous of the two.
+##
+## The ancestor's wedge is kept as well, because inside about 1.9 m it is the
+## tighter of the two tests and this weapon should not delete something standing
+## at your shoulder. Past that the cylinder binds and the wedge never fires again.
+const CONE_RADIUS := 4.57
+
 var hp := 100.0
 var guns: Array[Dictionary] = []
 var slot := 0
@@ -122,6 +163,22 @@ var _moving := false
 
 var _stamina := 1.0
 var _sprinting := false
+
+## The Settings autoload, or null. **Untyped, and resolved by node path rather
+## than by the `Settings` identifier, both deliberately.** An autoload that is not
+## in project.godot yet is an *analyser* error and not a runtime one, so writing
+## `Settings.fov` here would stop this script compiling at all — and a script the
+## main scene needs failing to compile makes the editor hang rather than report
+## (constraint 4). Untyped for the same reason main.gd's `hud` and `lighting` are:
+## the script is attached at runtime, so a `Node`-typed handle could see neither
+## `changed` nor the properties below.
+var _settings
+
+## Cached rather than read per frame, and refreshed from the `changed` signal.
+## The defaults are the contract's defaults, which are today's behaviour exactly,
+## so the game is correct on a build where the autoload is absent.
+var _reduce_motion := false
+var _sens_scale := 1.0
 
 ## attacker instance id -> seconds until that attacker may hurt us again
 var _hurt_gate := {}
@@ -204,6 +261,12 @@ func _ready() -> void:
 	_torch.shadow_bias = 0.04
 	_cam.add_child(_torch)
 
+	# After the camera exists, because the FOV is one of the values read back.
+	_settings = get_node_or_null("/root/Settings")
+	if _settings != null:
+		_settings.changed.connect(_on_setting_changed)
+	_read_settings()
+
 	guns = [Weapons.make_gun("m1911", false)]
 	hp = Game.max_health()
 	health_changed.emit(hp, Game.max_health())
@@ -222,12 +285,44 @@ func stamina() -> float:
 	return _stamina
 
 
+# --- settings ----------------------------------------------------------------
+
+func _on_setting_changed(_key: String) -> void:
+	_read_settings()
+
+
+## Every one of these has to land live rather than at boot, and that is the whole
+## point of them: an accessibility option is opened *because* something is already
+## uncomfortable, and a setting that needs a restart cannot be evaluated by the
+## person who needs it.
+func _read_settings() -> void:
+	if _settings == null or not is_instance_valid(_settings):
+		return
+	_reduce_motion = bool(_settings.reduce_motion)
+	# A multiplier on MOUSE_SENS, floored rather than clamped at both ends: zero
+	# would freeze the view, which reads as a hung game rather than as a slow one.
+	_sens_scale = maxf(0.05, float(_settings.mouse_sens))
+	if _reduce_motion:
+		# Applying live means cancelling what is already in flight. Otherwise the
+		# swing that sent the player to the menu goes on running underneath it.
+		_shake = 0.0
+		_kick = 0.0
+		_kick_v = 0.0
+	# The camera is this file's node — nothing outside it may write the FOV, per
+	# the one-writer rule at the top. The clamp is a guard against a hand-edited
+	# localStorage blob, not a design range; the menu's own range is narrower.
+	_cam.fov = clampf(float(_settings.fov), 55.0, 120.0)
+
+
 # --- input -------------------------------------------------------------------
 
 func _unhandled_input(event: InputEvent) -> void:
 	if event is InputEventMouseMotion and Input.mouse_mode == Input.MOUSE_MODE_CAPTURED:
-		rotate_y(-event.relative.x * MOUSE_SENS)
-		_head.rotation.x = clampf(_head.rotation.x - event.relative.y * MOUSE_SENS,
+		# Settings.mouse_sens is a multiplier on the tuned constant rather than a
+		# replacement for it, so the shipped feel stays the 1.0 case.
+		var sens := MOUSE_SENS * _sens_scale
+		rotate_y(-event.relative.x * sens)
+		_head.rotation.x = clampf(_head.rotation.x - event.relative.y * sens,
 			-PITCH_LIMIT, PITCH_LIMIT)
 
 	if event.is_action_pressed("toggle_capture"):
@@ -317,10 +412,21 @@ func _physics_process(dt: float) -> void:
 
 	if is_downed:
 		downed_time -= dt
-		downed_changed.emit(true, downed_time)
+		# Emitted EVERY FRAME while down, deliberately, rather than once with a
+		# duration for the HUD to run its own clock against. The HUD is
+		# PROCESS_MODE_ALWAYS and the world is not, so a HUD-side countdown would
+		# keep ticking behind the pause overlay while the bleedout it is counting
+		# stood still — the exact class of leak the pause change closed everywhere
+		# else. One float a frame is cheaper than a second clock that can disagree
+		# with this one, and hud.gd already renders straight off the argument.
+		downed_changed.emit(true, maxf(0.0, downed_time))
+		# THE BLEEDOUT ENDS IN A REVIVE, NOT A DEATH. `if(P.downT<=0) reviveUp()`
+		# (html:2926), and reviveUp restores FULL health (html:2373). Solo Quick
+		# Revive is a self-revive; a perk that only delayed the same death by seven
+		# seconds would be worth nothing. Dying is `_go_down`'s job, and only when
+		# there was no perk to spend.
 		if downed_time <= 0.0:
-			died.emit()
-			return
+			revive()
 
 	var input := Input.get_vector("move_left", "move_right", "move_forward", "move_back")
 	# Strafe rides the camera's own right vector. Deriving it from the basis
@@ -402,7 +508,14 @@ func _update_view(dt: float, spd: float) -> void:
 
 	# X and Y ride different functions — that asymmetry is what reads as a
 	# figure-eight rather than a pendulum.
-	var amp := 0.0 if not _moving else (0.020 * spd / SPEED)
+	#
+	# Settings.reduce_motion switches the bob off at the amplitude rather than at
+	# each of its four users, because the roll, the slow sway and both translation
+	# axes are all scaled by it — one branch here is the whole of "no view bob",
+	# and there is no fifth term that can be forgotten later.
+	var amp := 0.0
+	if _moving and not _reduce_motion:
+		amp = 0.020 * spd / SPEED
 	var bob_x := sin(_bob_phase * BOB_POS) * amp
 	var bob_y := absf(cos(_bob_phase * BOB_POS * 0.5)) * amp * 0.8
 	_cam.position = Vector3(bob_x, bob_y, 0.0)
@@ -413,7 +526,12 @@ func _update_view(dt: float, spd: float) -> void:
 	_recoil_pivot.rotation = Vector3(_kick + slow, 0.0, roll)
 
 
+## Refused outright under Settings.reduce_motion. Every caller — the shot, the
+## hurt, the power-up — is telling the player something the HUD is telling them
+## as well, so nothing is lost but the movement itself.
 func add_shake(amount: float) -> void:
+	if _reduce_motion:
+		return
 	_shake = minf(1.6, _shake + amount)
 
 
@@ -521,7 +639,7 @@ func _shoot(gun: Dictionary) -> void:
 	# Into the spring, not into the camera. The old code added straight to
 	# _cam.rotation.x with nothing to pull it back, so a 100-round RPK magazine
 	# walked the view up about 30 degrees and left it there.
-	_kick_v -= def.kick * 0.55
+	_kick_v -= def.kick * 0.55 * (REDUCE_MOTION_KICK if _reduce_motion else 1.0)
 	add_shake(def.kick * 0.06)
 	Sfx.play_shot(gun.key + ("_p" if gun.pap else ""), def.freq, def.thump, def.body)
 	fired.emit(_cam.global_position - _cam.global_transform.basis.z * 0.35)
@@ -593,25 +711,58 @@ func _hitscan(def: Dictionary) -> void:
 			return
 
 
-## The Thundergun's instant cone — no projectile, everything in the wedge dies.
+## The Thundergun's instant blast — no projectile, everything inside the volume
+## dies at once. Four tests, in the reference's own order (see CONE_RADIUS for the
+## script and the unit conversions): range, in front, inside the cylinder, and
+## line of sight.
 func _cone_blast(def: Dictionary) -> void:
+	var origin := _cam.global_position
 	var fwd := -_cam.global_transform.basis.z
+	var reach: float = def.range
+	# Read off the weapon with the reference figure as the fallback, exactly as
+	# `_hitscan` reads `pierce`: scripts/data/weapons.gd belongs to another package
+	# and the blast has to have the right shape whether or not the key lands there.
+	var radius: float = float(def.get("cone_radius", CONE_RADIUS))
+	var world3d := get_world_3d()
 	for z in get_tree().get_nodes_in_group("zombies"):
 		if not is_instance_valid(z) or z.state == Zombie.State.DYING:
 			continue
-		var to = z.centre() - _cam.global_position
-		if to.length() > def.range:
+		# CENTRE MASS, NOT THE HEAD. The blast has no ray and therefore no hit
+		# point, so it builds one — and the height of that point is what decides
+		# the payout. Aiming it inside the skull scored a 100-point headshot on
+		# every body in the wedge; the ancestor passes `false` for headshot
+		# (html:2543) and BO1 pays a *falling* scale for a blast kill (full for the
+		# first body, 30 for the second, 10 for the rest — `thundergun_fling` in
+		# the T5 script), so 100 a head was the wrong payout twice over. `centre()`
+		# is `_height * 0.5`, under every kind's `head_threshold()` — 0.58 on a
+		# crawler and a hound, 0.70 on a walker — so this is a body shot by
+		# construction rather than by a hand-picked epsilon.
+		var at: Vector3 = z.centre()
+		var to := at - origin
+		var d := to.length()
+		if d > reach or d < 0.001:
 			continue
-		if fwd.dot(to.normalized()) < 1.0 - def.cone:
+		# Signed distance along the aim, which both remaining tests need: negative
+		# is behind the player, and it is also the projection onto the cylinder's
+		# axis, so `to - fwd * along` is the perpendicular offset from that axis.
+		var along := fwd.dot(to)
+		if along < 0.0:
 			continue
-		# The cone has no ray and therefore no hit point, so aim the one _apply_hit
-		# needs at the head: same world-space height the wedge always used, which
-		# keeps its headshot payout exactly as it was. A centimetre *inside* the
-		# head, not exactly on the threshold, because _apply_hit recovers the local
-		# height as `at.y - z.global_position.y` and (y + t) - y is only exactly t
-		# while the body's y is exactly zero — the same reason _knife aims a
-		# centimetre under the threshold rather than at it.
-		var at: Vector3 = z.global_position + Vector3(0.0, z.head_threshold() + 0.01, 0.0)
+		if radius > 0.0 and (to - fwd * along).length() > radius:
+			continue
+		if along / d < 1.0 - def.cone:
+			continue
+		# html:2541, `if(!hasLOS(P.x,P.y,z.x,z.y)) continue;`, and the reference's
+		# own `DamageConeTrace`. Without it the blast reaches through walls and
+		# clears rooms the player cannot see into — the one weapon in the game that
+		# ignored geometry entirely.
+		#
+		# `clear()` from the camera's real origin, not `clear_flat()`: the flat form
+		# pins the ray to a 1.2 m torso, which would let the blast kill over a low
+		# wall the player cannot see over. The AI wants that height and this does not,
+		# which is why it is a parameter of the shared test rather than a constant.
+		if not LOS.clear(world3d, origin, at):
+			continue
 		_apply_hit(z, 1e9, at)
 
 
@@ -727,6 +878,14 @@ func _tick_hurt_gate(dt: float) -> void:
 ## single global timer the whole horde shared one zombie's damage output, which
 ## is why standing in a pile of six was survivable.
 func take_damage(amount: float, from := 0) -> void:
+	# A DOWNED PLAYER CANNOT BE HURT. `hurtPlayer` early-returns on `P.downed`
+	# (html:2349), which makes the ancestor's own downed-crawl attack — the
+	# `hurtPlayer(24)` branch at html:2331 — dead code: nothing it does can land.
+	# The behaviour is right and matches the reference, where a downed player
+	# bleeds out on a timer rather than being finished off, so the branch is
+	# deliberately NOT ported. zombie.gd still swings and still plays the melee cue
+	# at a downed player, which is what the reference looks like; the damage is
+	# what stops here.
 	if is_downed:
 		return
 	if from != 0 and _hurt_gate.has(from):
@@ -743,25 +902,79 @@ func take_damage(amount: float, from := 0) -> void:
 	health_changed.emit(hp, Game.max_health())
 
 
+## html:2359-2370. Gated on **holding the perk**, not on a counter: `P.perks.revive`
+## is the ancestor's condition and `Game.perks` is what the machine, the HUD badges
+## and `can_take_perk()` all read, so a spare counter that disagreed with it would
+## be the only authority nothing else could see. `revives_left` is decremented
+## alongside because the debug console writes it and it would otherwise drift.
+##
+## **Exactly one perk is consumed, and it is Quick Revive.** SYNTHESIS.md's "perk
+## loss on down" is the CO-OP rule, where the punishment is losing everything while
+## a teammate picks you up. This game is solo, the ancestor is solo, and in solo
+## you keep Juggernog, Speed Cola and Double Tap and lose only the perk that just
+## saved you — which is also what makes buying it again the interesting decision.
+##
+## The slot is forced, not the weapon. `P.slot=0` (html:2364) is the first slot,
+## which on a fresh run is the M1911 and later is whatever is in that slot; the
+## plan's "forced M1911" reads a specific gun into a line that does not name one.
 func _go_down() -> void:
-	if Game.revives_left > 0:
-		Game.revives_left -= 1
-		is_downed = true
-		downed_time = Game.DOWNED_TIME
-		downed_changed.emit(true, downed_time)
-	else:
+	if not Game.has_perk("revive"):
 		died.emit()
+		return
+	Game.perks.erase("revive")
+	Game.revives_left = maxi(0, Game.revives_left - 1)
+	is_downed = true
+	downed_time = Game.DOWNED_TIME
+	_force_slot(0)
+	# hud.gd's perk badges are rebuilt from `weapon_changed` and from nothing else,
+	# so the badge for the perk just spent would otherwise stay lit until the next
+	# reload or swap. `_force_slot` emits it too when the slot actually moves; this
+	# covers the case where the player was already holding slot 0.
+	weapon_changed.emit(current_gun())
+	# No `down` cue is baked — sfx.gd's prebake list has no entry for one and an
+	# unbaked id would synthesise a generic thud mid-fight, on the main thread. The
+	# hurt cue an octave and a half down is the nearest thing already resident;
+	# a dedicated bake belongs to whoever owns sfx.gd next.
+	Sfx.play("hurt", -2.0, 0.62)
+	# The exact string hud.gd's TOAST_BAD table was written against
+	# (`"QUICK REVIVE —"`), and html:2369's own words. That table entry has been
+	# asserted by --verify since Milestone 2 with nothing in the game able to
+	# produce it.
+	Game.toast.emit("QUICK REVIVE — hold on")
+	downed_changed.emit(true, downed_time)
 
 
 ## Solo Quick Revive: the bleedout is survived on its own once, rather than the
 ## perk simply delaying the same death. This was defined and called by nothing.
+## `reviveUp` (html:2372-2376) restores FULL health — not a fraction, not the
+## health you went down with — and clears the damage overlay.
 func revive() -> void:
 	is_downed = false
 	downed_time = 0.0
 	hp = Game.max_health()
 	_regen_wait = 0.0
+	# Before health_changed, so a listener that reads `is_downed` off this signal
+	# sees a player already standing.
 	downed_changed.emit(false, 0.0)
 	health_changed.emit(hp, Game.max_health())
+	Sfx.play("powerup", -6.0, 0.85)
+	Game.toast.emit("BACK ON YOUR FEET")
+
+
+## The one place `slot` moves without the player asking. Routed through the same
+## holster `_swap_weapon` uses rather than assigning `slot` bare, because
+## `_update_fire` advances every gun the player carries: a weapon stowed mid-reload
+## by a bare assignment would go on reloading on your back, which is exactly what
+## `Weapon.stow_cancels` exists to stop.
+func _force_slot(i: int) -> void:
+	if i >= guns.size() or i == slot:
+		return
+	var going := current_gun()
+	var was: int = going.state
+	WEAPON.stow_cancels(going)
+	_weapon_state(going, was)
+	slot = i
+	_raise_current(WEAPON.SWAP_TIME)
 
 
 func give_gun(key: String, pap := false) -> void:

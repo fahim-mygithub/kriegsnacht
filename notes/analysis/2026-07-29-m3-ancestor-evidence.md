@@ -120,10 +120,29 @@ fixed**: `player.gd:766` is `refill_gun(key)` and it matches on `g.key == key`, 
 touches exactly the one weapon. `refill_ammo()` — the one that does touch every gun —
 is Max Ammo, which is supposed to.
 
-### Line of sight, for whoever restores the two occlusion gates
+### Line of sight — **resolved: `scripts/world/los.gd`**
 
-There is no player-side LOS helper. `_has_los` exists only on `zombie.gd:547` and works
-in grid space over `Vector2`s. Either lift it somewhere both can reach, or cast a
-physics ray against collision mask 1 from the camera — mask 1 is already the convention
-`_hitscan` uses (`player.gd:555`). Do not write a second grid-walk implementation: two
-copies of a visibility test that must agree is how they stop agreeing.
+~~There is no player-side LOS helper. `_has_los` exists only on `zombie.gd:547` and
+works in grid space over `Vector2`s.~~ **Both halves of that were wrong** and package
+INTERACT caught it. `Zombie._has_los` takes `Vector2`s but is *not* a grid walk — it is
+already a physics ray on collision mask 1, between two points pinned at `y = 1.2`. The
+sentence described the signature and mistook it for the implementation.
+
+It is also an instance method (it needs `get_world_3d()`), so it cannot be lifted to a
+static without passing the world in, and its baked 1.2 m eye height is wrong for
+anything originating at the camera.
+
+Resolved by extracting it to **`scripts/world/los.gd`**, reached by preload:
+
+```gdscript
+const LOS := preload("res://scripts/world/los.gd")
+LOS.clear(world, a: Vector3, b: Vector3) -> bool          # true == nothing in the way
+LOS.clear_flat(world, from: Vector2, to: Vector2, height := 1.2) -> bool
+```
+
+Four callers have to agree about what "can see" means — the AI's chase-vs-flow choice,
+the Thundergun wedge, explosive splash, and the interaction scan. When they disagree
+the disagreement is invisible until something dies through a wall, which is what
+shipped. `MASK_WORLD = 1` only: enemies and the player are excluded so a body cannot
+shield the body behind it, matching how the ancestor gates each splash target on its
+own independent ray (html:2589).

@@ -49,6 +49,13 @@ const PAP_NAMES := {
 const BOX_POOL := ["olympia", "m14", "mp40", "pm63", "ak74u", "stakeout", "m16", "rpk", "chinalake", "raygun", "thundergun"]
 const BOX_WEIGHT := {"raygun": 0.5, "thundergun": 0.32, "rpk": 0.8, "chinalake": 0.8}
 
+## Costs are R4 §7's BO1 table (Tier 1, `_zombiemode_perks.gsc`), with one trap in
+## it: `revive` carries the **co-op** 1500, and this game is solo-only, where canon
+## charges 500. `Game.REVIVE_COST` is the authority and `interaction_system.gd`
+## special-cases the row it builds from this one. The 1500 is left here rather than
+## overwritten because it is the price the machine costs in the mode the port does
+## not have, and deleting it would make the special case look like an arbitrary
+## discount. Anything that prices a perk machine must read Game first.
 const PERKDEF := {
 	"jug": {"name": "Juggernog", "cost": 2500, "col": Color("b4302c"), "col2": Color("5e1412"), "letter": "J", "blurb": "you can take much more"},
 	"speed": {"name": "Speed Cola", "cost": 3000, "col": Color("6bae3e"), "col2": Color("2e5418"), "letter": "S", "blurb": "reload twice as fast"},

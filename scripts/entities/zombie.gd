@@ -19,6 +19,12 @@ enum State { ENTERING, CHASING, ATTACKING, DYING, TEARING_BOARDS }
 ## round director and finds its barricade from that alone.
 const BARRICADE := preload("res://scripts/world/barricade.gd")
 
+## The one line-of-sight test in the game, shared with the Thundergun's wedge and
+## the interaction scan. This file used to carry its own copy; two visibility tests
+## that have to agree is how they stop agreeing. preload rather than the `Los` class
+## name, for the same reason as above.
+const LOS := preload("res://scripts/world/los.gd")
+
 const SEPARATION_RADIUS := 0.62
 const SEPARATION_FORCE := 2.4
 
@@ -544,13 +550,12 @@ func _separation(here: Vector2) -> Vector2:
 	return push.limit_length(SEPARATION_LIMIT)
 
 
+## Delegated, not reimplemented. `clear_flat`'s default height is this function's own
+## 1.2 m and its mask is the same 1, so the chase-versus-flow-field decision below is
+## bit-for-bit what it was — the move is about there being one implementation, not
+## about changing what the AI can see.
 func _has_los(from: Vector2, to: Vector2) -> bool:
-	var space := get_world_3d().direct_space_state
-	var a := Vector3(from.x, 1.2, from.y)
-	var b := Vector3(to.x, 1.2, to.y)
-	var q := PhysicsRayQueryParameters3D.create(a, b)
-	q.collision_mask = 1
-	return space.intersect_ray(q).is_empty()
+	return LOS.clear_flat(get_world_3d(), from, to)
 
 
 ## Real 3D headshots. The browser build could only test whether screen-centre

@@ -94,9 +94,18 @@ func _collect(kind: String) -> void:
 			# Duplicated because every death erases from the director's own live
 			# list while this loop is walking it.
 			var horde: Array = rounds.alive().duplicate()
+			# The 400 above is the whole payout and the bodies are worth nothing —
+			# see Game.add_points(), which reads this flag. It is set and cleared
+			# around the sweep rather than threaded through it because `died` is
+			# emitted synchronously from inside take_damage, so every payout this
+			# loop causes happens between these two lines and there is no await
+			# anywhere in the path for the flag to leak past. The 400 is banked
+			# first, above, for that same reason: it would otherwise suppress itself.
+			Game.nuke_clearing = true
 			for z: Zombie in horde:
 				if is_instance_valid(z):
 					z.take_damage(1e9, 0.0)
+			Game.nuke_clearing = false
 			Game.toast.emit("NUKE")
 		"carp":
 			Game.add_points(Game.PTS_CARPENTER)

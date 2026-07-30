@@ -37,8 +37,11 @@ const PTS_REBUILD := 10
 const PTS_NUKE := 400
 const PTS_CARPENTER := 200
 
-## BO1 pays a flat 50 per kill while Insta-Kill is up, rather than the full
-## headshot/melee payout. Insta-Kill was previously pure upside.
+## What a SHOT kill pays while Insta-Kill is up. Not a knife kill — that keeps the
+## full 130, because BO1 zeroes the hit-location bonus and not the melee one. Read
+## by kill_points() and by nothing else; the sentence that used to be here said
+## "rather than the full headshot/melee payout", which is half wrong and is exactly
+## the reading the death handler was written from.
 const PTS_INSTAKILL := 50
 
 # perk effects
@@ -102,10 +105,21 @@ var drop_count := 0
 var box_uses := 0
 var box_spot := 0
 
+## Set only for the duration of a Nuke's sweep through the horde, so the deaths it
+## causes can be told apart from the ones the player shot. Read by add_points() and
+## by try_drop(), which are the two things a death is worth — a body the Nuke
+## deleted pays neither. A flag rather than a fourth argument on `Zombie.died`: that
+## signature is fixed by the wave contract, and every listener would have to carry a
+## value only one of them reads.
+var nuke_clearing := false
+
 ## Power-ups are earned by points, not by a kill counter (see next_drop_at).
 var points_earned := 0
 var next_drop_at := 2000
 var drop_index := 0
+
+## A threshold crossing that could not be paid out — see try_drop().
+var drop_pending := false
 
 var revives_left := 0
 var revive_uses := 0
@@ -181,11 +195,13 @@ func reset_run() -> void:
 	insta_kill = 0.0
 	dbl_points = 0.0
 	drop_count = 0
+	nuke_clearing = false
 	box_uses = 0
 	box_spot = 0
 	points_earned = 0
 	next_drop_at = 2000
 	drop_index = 0
+	drop_pending = false
 	revives_left = 0
 	revive_uses = 0
 	next_dog_round = Rng.randi_range(Rng.ROUNDS, 5, 7)
@@ -238,7 +254,26 @@ func set_state(s: int) -> void:
 	state_changed.emit(["title", "play", "pause", "over"][s])
 
 
+## Every point the player earns passes through here — and so does the one case in
+## which they earn nothing.
+##
+## A Nuke pays its flat 400 and the bodies it deletes pay nothing. The ancestor is
+## explicit: html:2411-2419 sets `z.state='dying'` directly inside `grabPowerup`, so
+## the sweep never reaches `zombieDamage` and therefore never reaches `addPoints` at
+## all; canon lands in the same place from the other direction, killing with no
+## attacker credited. The port routes the sweep through `Zombie.take_damage`, which
+## is right — that is what erases the horde from the director's live list and starts
+## the death animation — and is exactly why the payout has to be suppressed
+## explicitly. Before this, a round-10 Nuke on a full horde paid 400 + 24x60 = 1,840
+## points, more than the round it was picked up in, and fed every one of them to the
+## drop threshold, so Nukes were quietly buying the next Nuke.
+##
+## The suppression is here rather than at the kill site because there are three
+## payout call sites and a synchronous sweep drives whichever one the death handler
+## happens to use today. A guard at one of them is a guard the next one walks past.
 func add_points(n: int) -> void:
+	if nuke_clearing:
+		return
 	var mult := 2 if dbl_points > 0.0 else 1
 	var gained := n * mult
 	points += gained
@@ -246,6 +281,35 @@ func add_points(n: int) -> void:
 	if gained > 0:
 		points_earned += gained
 	points_changed.emit(points)
+
+
+## What one death is worth, in one place, because the rule has two exceptions that
+## interact and both of them used to live at the call site.
+##
+## R4 §3 is Tier 1 and decides the Insta-Kill case. WaW doubled the whole payout;
+## BO1 moved the multiply onto the *bonus* only, and an Insta-Kill bullet death is
+## dealt as `MOD_UNKNOWN`, which carries no hit-location bonus — so a gun kill under
+## Insta-Kill pays the bare 50. A knife kill is `MOD_MELEE`, keeps its +80 and still
+## totals 130; R4 says so in as many words. The ancestor disagrees on both counts —
+## html:2233 is `pts = Math.max(pts,100)` and html:2658 adds its 70 on top, making a
+## knife kill under Insta-Kill worth 170 there — and the reference wins. Insta-Kill
+## is a survival tool, not an economy: it can only ever pay less than the shot it
+## replaced.
+##
+## Canon's decomposition is 50 base + 50 head / +80 melee; the port's is 60/100/130
+## as flat totals. Same three numbers, and the flat form is what the ancestor and
+## every other file here already speak.
+func kill_points(headshot: bool, by_melee: bool) -> int:
+	# Tested before the head case rather than added to it. Canon's melee bonus is a
+	# `mod` bonus and the head bonus a `hit_location` one, and
+	# `player_add_points_kill_bonus` returns one or the other — they do not stack,
+	# even in a build where a knife could reach a head. This one cannot: player.gd
+	# damages one notch under the threshold, exactly as html:2657 does.
+	if by_melee:
+		return PTS_KILL + PTS_MELEE_BONUS
+	if insta_kill > 0.0:
+		return PTS_INSTAKILL
+	return PTS_HEADSHOT if headshot else PTS_KILL
 
 
 func spend(n: int) -> bool:
@@ -369,11 +433,19 @@ func crawler_chance(r := -1) -> float:
 ## Power-ups are driven by lifetime points earned, not a kill counter. The old
 ## counter made drops arrive *earlier* the longer a run went, because it was
 ## never reset. The threshold grows 14% per drop and never resets.
+##
+## The new threshold is measured from `points_earned` and not from the threshold
+## just crossed, which is R4 §2's `score_to_drop = curr_total_score + increment`
+## verbatim (Tier 1, `t5/_zombiemode_powerups.gsc:526-550`). The difference is the
+## overshoot — the payout that carried the counter past the line, up to 130 points —
+## and adding to the old threshold instead banks every one of those, so the lead
+## accumulates over a run instead of being discarded at each crossing. It is about
+## 1% over twenty drops, which is small; it is also free to be exactly right.
 func check_points_drop() -> bool:
 	if points_earned < next_drop_at:
 		return false
 	drop_index += 1
-	next_drop_at += int(2000.0 * pow(1.14, drop_index))
+	next_drop_at = points_earned + int(2000.0 * pow(1.14, drop_index))
 	return true
 
 
@@ -399,12 +471,45 @@ func begin_round_drops() -> void:
 ## to happen on every death whether or not it is used. Folding it in here as a
 ## short-circuited `or` would skip the draw whenever the points threshold had already
 ## fired, and a skipped draw desynchronises every seeded run after it.
+##
+## A threshold crossing is LATCHED rather than spent where it happens. Canon splits
+## the two halves across two functions: `watch_for_drop()` compounds the threshold
+## and sets `zombie_drop_item = 1`, and only `powerup_drop()` clears it — after
+## returning early on the per-round cap, so a crossing that lands in a round already
+## holding four power-ups survives into the next round. Spending it here instead
+## compounded the threshold and threw the entitlement away, which is strictly worse
+## than never having crossed the line. The cap is not a corner case: on the committed
+## sim seed the `drops` column reads 4 in eight of twenty-five rounds.
+##
+## One flag and not a queue, because canon holds one boolean — two crossings inside
+## a capped round still owe exactly one drop.
 func try_drop(lucky: bool) -> bool:
-	var earned := check_points_drop()
-	if (earned or lucky) and drop_count < DROP_CAP:
-		drop_count += 1
-		return true
-	return false
+	if check_points_drop():
+		drop_pending = true
+	# A body deleted by a Nuke cannot hand over a power-up, for the same reason it
+	# cannot pay points. The ancestor's drop roll lives inside `zombieDamage`
+	# (html:2237, `maybeDrop(z.x,z.y)` in the kill branch) and its Nuke never calls
+	# `zombieDamage` at all — html:2411-2419 sets `z.state='dying'` inline. So a
+	# nuked body rolls nothing there, and suppressing the payout while leaving the
+	# roll would keep the exact thing the payout fix was for: a 3% roll over 24
+	# bodies is a coin flip per late-round Nuke, and one of the seven entries in the
+	# bag is another Nuke.
+	#
+	# AFTER the latch above, not before it, so the Nuke's own 400 can still carry the
+	# threshold past its line — that crossing is owed to the next real death, which
+	# is what canon's `zombie_drop_item` does with any crossing it cannot pay out.
+	#
+	# Here rather than at the call site so the caller still makes its DROPS draw:
+	# that is the whole reason `lucky` arrives already resolved.
+	if nuke_clearing:
+		return false
+	if drop_count >= DROP_CAP:
+		return false
+	if not (drop_pending or lucky):
+		return false
+	drop_pending = false
+	drop_count += 1
+	return true
 
 
 func tick_timers(dt: float) -> void:

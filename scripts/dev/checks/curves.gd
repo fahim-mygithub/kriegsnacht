@@ -368,17 +368,19 @@ static func _drops(v: Verify, main: Node3D) -> void:
 	#
 	# Driven through the real `force_round()` rather than by poking the field,
 	# because the point is that BEGINNING A ROUND clears it — a test that set the
-	# counter and read it back would pass against the bug. `round_changed` is
-	# disconnected across the call for the duration: Game checkpoints the profile on
-	# that signal, and a headless assertion has no business writing to whatever real
-	# save file happens to be on the machine running it.
+	# counter and read it back would pass against the bug.
+	#
+	# This used to disconnect `round_changed` itself, to stop Game checkpointing the
+	# player's real profile on a signal a test had fired. `Verify.run()` now does
+	# that once for the whole suite, so the local guard is gone — and it had to go
+	# rather than become conditional: an unconditional `disconnect()` on an already
+	# disconnected signal throws, which unwinds this function and silently drops
+	# every assertion below it while the suite still exits 0.
 	if main != null and main.rounds != null:
 		var round_was: int = Game.round_no
-		Game.round_changed.disconnect(Game._on_round_changed)
 		Game.drop_count = 4
 		main.rounds.force_round(7)
 		var cleared := Game.drop_count == 0
-		Game.round_changed.connect(Game._on_round_changed)
 		Game.round_no = round_was
 		Game.drop_count = 0
 		v.check("beginning a round clears the drop counter, so the cap is per round",

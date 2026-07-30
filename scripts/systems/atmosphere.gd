@@ -33,6 +33,19 @@ const CHALK_PX := 0.018         # 0.72 m over 40 source px
 const CHALK_LIFT := 1.30        # floor to the plaque's bottom edge
 const CHALK_PROUD := 0.52       # tile centre to the drawing plane
 
+## The weapon hovering out of an open mystery box — the reel while it spins and
+## the offer once it lands. Same plaque art as a wall buy, drawn smaller and
+## lower: html:2099-2102 is `add(CHALK[...], bs.x, bs.y, 0.62, 1.15, {glow:true})`,
+## i.e. 0.62 m of plaque with its bottom edge 1.15 m off the floor.
+const BOX_SHOW_PX := 0.0155     # 0.62 m over the same 40 source px
+const BOX_SHOW_LIFT := 1.15
+
+## The Pack-a-Punch machine mid-cycle. A multiply on the sprite's albedo, NOT a
+## light energy and not an sRGB conversion of one — constraint 7. It reads as the
+## machine coming alive without adding a second light to the Generator Hall, which
+## already carries the only shadow-casting light in the game.
+const PAP_WORK_TINT := Color(1.5, 1.18, 0.7)
+
 const MUZZLE_COLOR := {
 	"raygun": Color(0.63, 1.0, 0.35),
 	"thundergun": Color(0.59, 0.92, 1.0),
@@ -51,6 +64,11 @@ var _muzzle_t := 0.0
 var _perk_nodes := {}
 var _gen_node: Sprite3D
 var _pap_node: Sprite3D
+var _box_show: Sprite3D
+## What set_box_display() was last asked for, whether or not a plaque existed to
+## draw it with. The box's own assertions read this, so a missing texture is
+## visible as a gap rather than as silence.
+var _box_show_gun := ""
 
 
 func bind(p: Player, vm: Node3D) -> void:
@@ -206,6 +224,57 @@ func spawn_generator() -> void:
 ## seven hundred lines outside the range the original export pass replayed.
 func spawn_pap() -> void:
 	_pap_node = _sprite("pap_off", PAP_PX, MapData.PAPSPOT, "PackAPunch")
+
+
+## The reel, and the weapon the box holds out at the end of it.
+##
+## One persistent sprite whose texture is swapped, for the same reason the muzzle
+## flash is one persistent light: a spin swaps the displayed weapon up to fifteen
+## times in 2.9 s (html:2823), and a node per swap is fifteen allocations for one
+## animation. Pass an empty key to put it away.
+func set_box_display(gun: String, pos: Vector2) -> void:
+	_box_show_gun = gun
+	if gun.is_empty():
+		if _box_show != null and is_instance_valid(_box_show):
+			_box_show.visible = false
+		return
+	# tools/gen emits a plaque per WALL BUY and one for the Bowie (targets.js:119-131);
+	# the ancestor also emits one per BOX_POOL entry it has not already covered
+	# (html:3436). Until that gap is closed, four of the eleven box weapons have no
+	# plaque — and `load()` on a missing path is an error spew *per swap*, fifteen
+	# times a spin, rather than one blank frame.
+	var path := PROP_DIR + "chalk_" + gun + ".png"
+	if not ResourceLoader.exists(path):
+		if _box_show != null and is_instance_valid(_box_show):
+			_box_show.visible = false
+		return
+	if _box_show == null or not is_instance_valid(_box_show):
+		_box_show = Sprite3D.new()
+		_box_show.name = "BoxDisplay"
+		_box_show.pixel_size = BOX_SHOW_PX
+		_box_show.billboard = BaseMaterial3D.BILLBOARD_ENABLED
+		_box_show.texture_filter = BaseMaterial3D.TEXTURE_FILTER_NEAREST
+		# Unshaded, unlike every other prop here. It hovers in the air out of the
+		# lid with no surface to catch the torch, and the ancestor draws it with
+		# `{glow:true}`. Unshaded is what reproduces "readable across a dark room"
+		# without pushing an albedo past 1.0 and calling it emission — constraint 7.
+		_box_show.shaded = false
+		_box_show.alpha_cut = SpriteBase3D.ALPHA_CUT_DISABLED
+		add_child(_box_show)
+	_box_show.texture = load(path)
+	_box_show.position = Vector3(pos.x,
+		BOX_SHOW_LIFT + _box_show.texture.get_height() * BOX_SHOW_PX * 0.5, pos.y)
+	_box_show.visible = true
+
+
+## The Pack-a-Punch mid-cycle, 0 at rest and 1 working.
+##
+## `light_perks()` owns this node's TEXTURE and this owns its MODULATE, so the
+## power ceremony and the machine's own clock are never two writers of one value.
+func pap_glow(amount: float) -> void:
+	if _pap_node == null or not is_instance_valid(_pap_node):
+		return
+	_pap_node.modulate = Color.WHITE.lerp(PAP_WORK_TINT, clampf(amount, 0.0, 1.0))
 
 
 ## The machines only light up once the generator is thrown.

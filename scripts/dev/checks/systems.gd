@@ -338,10 +338,17 @@ static func _box_clock(v: Verify, main: Node3D) -> void:
 	var landed: bool = box.state() == "offering"
 	# Back to idle without taking the weapon, which would hand the player a gun.
 	box.tick(MYSTERY_BOX.BOX_OFFER + 0.01)
+	# A timed-out offer goes to `closing`, not straight to idle — the lid takes its
+	# 0.6 s to come down (html:2841-2842). Asserted rather than merely ticked past:
+	# a machine that dropped the state entirely would still arrive at idle, and a
+	# check that only looked at the destination would pass through the hole.
+	var closing: bool = box.state() == "closing"
+	box.tick(MYSTERY_BOX.BOX_CLOSING + 0.01)
 
 	v.check("the box's clock is a clock: it only moves when it is ticked",
-		opened and mid and landed and box.state() == "idle",
-		"opened=%s mid=%s landed=%s end=%s" % [opened, mid, landed, box.state()])
+		opened and mid and landed and closing and box.state() == "idle",
+		"opened=%s mid=%s landed=%s closing=%s end=%s" % [
+			opened, mid, landed, closing, box.state()])
 
 	Game.points = points_was
 	Game.box_uses = uses_was
