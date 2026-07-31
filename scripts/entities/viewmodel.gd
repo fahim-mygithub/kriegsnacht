@@ -158,6 +158,16 @@ const CLIP_RADIUS := 0.22
 ## the projection-widened radius the header derives at 0.232 m against
 ## `Player.RADIUS`'s 0.24. `_measure()` re-derives all three from the same corners
 ## the meshes are built from.
+##
+## All three are attained at `ads = 0`, and that is worth writing down because it is
+## not obvious: the sighted pose now drops each weapon by up to 20 mm at the grip
+## (`ADS_SIGHT_CLEAR`), which sounds like it should move the lateral term. It does
+## not. Levelling the cant pulls the muzzle back onto the axis and `ADS_FORWARD`
+## pushes the stock 8 mm away from the near plane, and both more than pay for the
+## drop — the sighted extremes come out strictly inside the hip ones. Measured
+## against the pose this replaced, all three agreed to six decimal places
+## (0.201249 / 0.057540 / 0.231884, delta 0.000000), so these figures are unchanged
+## by the sighted pose rather than merely still rounding to the same thing.
 const REST_POS := Vector3(0.038, -0.032, -0.1161)
 
 ## -0.13 rad of muzzle-down cant, and both halves of it are the ancestor's:
@@ -303,7 +313,9 @@ const SWAP_DROP := 0.05072      # 0.42 of screen height
 const SPRINT_DROP := 0.012
 const SPRINT_RATE := 0.08       # metres/second, eased both ways
 
-## The sighted pose: the weapon comes to the centre line and back toward the eye.
+## The sighted pose: the weapon comes to the centre line, levels off, and drops
+## until the eye is looking along the top of it.
+##
 ## Invented — the ancestor has no ADS — and sized against the clipping budget rather
 ## than by eye. Removing the rest pose's lateral offset entirely can only REDUCE
 ## max_screen_radius (whose lateral terms are weighted by `ratio`), and 8 mm forward
@@ -312,9 +324,53 @@ const SPRINT_RATE := 0.08       # metres/second, eased both ways
 ##
 ## `Player.ads()` drives it rather than a clock of this file's own: ADS owns the
 ## camera's field of view, and the pose has to arrive with the zoom or the gun swims.
+##
+## **`ADS_CENTRE` ALONE PUTS THE GRIP ON THE VIEW AXIS, AND THE SIGHTS ARE NOT AT
+## THE GRIP.** They sit on top of the weapon, and this rig shipped without noticing:
+## the M1911's whole sight line sat 66 px above the crosshair in a 720 px frame — the
+## weapon raised by exactly its own sight height, and the player aiming underneath
+## it. Measured off the `ads` scenario at 1280x720, --fixed-fps 60, as the top of the
+## silhouette differenced against the same frame with the viewmodel hidden.
 const ADS_CENTRE := 1.0         # fraction of REST_POS.x/y removed at the sights
 const ADS_FORWARD := 0.008
 const ADS_YAW := 1.0            # fraction of REST_YAW removed at the sights
+
+## ...so the whole rig drops by the weapon's own sight height as well, and the cant
+## comes out with it.
+##
+## At full ADS the weapon's TOP PLANE — its sighting surface, whichever part of that
+## weapon happens to be highest — sits `ADS_SIGHT_CLEAR` art units BELOW the view
+## axis, and `ADS_LEVEL` removes `REST_PITCH` so the barrel runs level to that axis
+## instead of 7.4 degrees under it. The eye then looks along the top of the weapon
+## straight to the crosshair, which is what a hard scope is, and every weapon shows
+## the same hairline of its own top plane however tall it is.
+##
+## The height is `GUNART.sight_height()`, PER WEAPON and derived from the corner walk
+## the mesh is built from — 5.05 art units on the knife against 19.24 on the Ray Gun,
+## so a single constant would bury the Olympia and float the M16. See that function.
+##
+## **ONE ART UNIT IS OUR DECISION.** The ancestor has no ADS, so there is nothing to
+## transliterate and no number to be faithful to; the provenance is the sweep below,
+## run with the cant already levelled, and read off the frames rather than argued.
+## The silhouette is located by differencing the capture against the same scenario
+## with the viewmodel hidden, so the number is the weapon and not a colour guess —
+## the M1911's slide is the only blue-grey thing in the table and a mask tuned to it
+## cannot tabulate the other twelve.
+##
+##   clear   top of silhouette   read at 6x
+##   0       row 360, on it      the crosshair's ticks merge into the top edge; the
+##                               lower tick disappears into the metal
+##   1       5 px below          the ticks read as ticks against the background and
+##                               the top plane is a hairline directly under them
+##   2       9 px below          an obvious band of background between the two
+##   3       14 px below         the weapon has detached from the aim point and
+##                               reads as held low
+##
+## 1 is the smallest clearance at which the crosshair is still legible against the
+## background, which is what looking down an iron sight looks like. For scale, the
+## shipped pose put this top edge at row 294 — 66 px ABOVE the crosshair.
+const ADS_LEVEL := 1.0          # fraction of REST_PITCH removed at the sights
+const ADS_SIGHT_CLEAR := 1.0    # art units of clear air under the top plane
 
 ## Every lowering channel shares one budget, because the no-clip guarantee is a
 ## bound on the sum and not on each. In play only one is ever meaningfully lit —
@@ -393,6 +449,9 @@ var _slides := {}
 ## `_show` always lands.
 var _shown_key := ""
 var _shown_pap := false
+## The shown weapon's own sight height, in metres — latched by `_show()` so the
+## pose costs no corner walk per frame. See ADS_SIGHT_CLEAR.
+var _sight := 0.0
 
 var _want_key := ""
 var _want_pap := false
@@ -709,7 +768,8 @@ func _apply() -> void:
 	var melee := 0.0
 	if _melee_t > 0.0:
 		melee = sin((1.0 - _melee_t / MELEE_TIME) * PI)
-	_mesh.transform = _mesh_pose(_kick, _dip, _swap + _sprint, melee, _player.ads())
+	_mesh.transform = _mesh_pose(_kick, _dip, _swap + _sprint, melee, _player.ads(),
+		_sight)
 	_slide.position = Vector3(0.0, 0.0, _slide_offset())
 
 
@@ -718,18 +778,29 @@ func _apply() -> void:
 ## rather than re-deriving them, which is the only way the clip assertion can be
 ## about the rig that shipped rather than about a second copy of its arithmetic.
 func _mesh_pose(kick: float, dip: float, drop: float, melee: float,
-		ads := 0.0) -> Transform3D:
+		ads := 0.0, sight := 0.0) -> Transform3D:
 	var down := minf(drop + dip * DIP, DROP_MAX)
 	# The sights pull the grip onto the centre line and the muzzle straight ahead.
 	# Multiplied into the rest offsets rather than added as a second translation, so
 	# full ADS is exactly "no lateral offset, no inward yaw" and cannot overshoot into
 	# a pose the clipping budget was never measured at.
 	var centre := 1.0 - ads * ADS_CENTRE
+	# ...and then the whole weapon down by its OWN sight height, so what arrives on
+	# the view axis is the top of the gun and not the hand holding it. `sight` is
+	# passed in rather than read here: `_show()` latches it off the key actually on
+	# the mesh — which the melee override makes the knife's, not the held gun's — and
+	# `_measure()` sweeps each weapon against its own. Reading GUNART here instead
+	# would be a corner walk per frame and would pose the knife as a rifle.
+	var sighted := ads * (sight + ADS_SIGHT_CLEAR * GUNART.UNIT)
 	var origin := Vector3(
 		REST_POS.x * centre + dip * DIP_X + melee * MELEE_X,
-		REST_POS.y * centre - down + melee * MELEE_Y - kick * KICK_DOWN,
+		REST_POS.y * centre - sighted - down + melee * MELEE_Y - kick * KICK_DOWN,
 		REST_POS.z + kick * KICK_BACK - ads * ADS_FORWARD)
-	var pitch := REST_PITCH + dip * DIP_ROLL + melee * MELEE_ROT + kick * KICK_PITCH
+	# The cant leaves on the same fraction the offsets do, so the barrel arrives level
+	# exactly when the pose arrives. Everything else still ADDS to it: a reload arc or
+	# a knife swing taken at the sights is not a sighted pose and must not read as one.
+	var pitch := REST_PITCH * (1.0 - ads * ADS_LEVEL) \
+		+ dip * DIP_ROLL + melee * MELEE_ROT + kick * KICK_PITCH
 	var yaw := REST_YAW * (1.0 - ads * ADS_YAW)
 	return Transform3D(Basis.from_euler(Vector3(pitch, yaw, 0.0)), origin)
 
@@ -764,6 +835,12 @@ func _show(key: String, pap: bool) -> void:
 	_slide.mesh = slide
 	_slide.visible = slide != null
 	_muzzle.position = GUNART.muzzle_local(key)
+	# Latched off the key actually SHOWN, which the melee override above makes the
+	# knife's rather than the held gun's — a knife swung at the sights has to be posed
+	# against the knife's 5 art units and not the Ray Gun's 19. Here rather than in
+	# `_mesh_pose` because `sight_height()` walks every corner of the weapon on a
+	# cache miss, and this function only runs on the frames where the mesh changes.
+	_sight = GUNART.sight_height(key)
 
 
 # --- the geometric guarantee, measured ---------------------------------------
@@ -803,46 +880,37 @@ func max_screen_radius() -> float:
 
 ## All three at once, because they are one sweep.
 ##
+## **SWEPT ONE WEAPON AT A TIME, and that is a correctness condition rather than a
+## tidiness.** This used to pool every weapon's corners into one point set and sweep
+## the pose over it once, which was exactly right while the pose was the same for all
+## thirteen. It is not any more: `ADS_SIGHT_CLEAR` drops each weapon by its own sight
+## height, so a pooled sweep would pose the Olympia's barrel at the Ray Gun's 19-unit
+## drop and the Ray Gun's lens at the knife's 5 — a chimera that is no weapon, and it
+## would be reported as a safety margin. Thirteen sweeps of a couple of hundred
+## points each is not a cost worth trading that for.
+##
 ## Corners come from `GUNART.body_corners()` / `slide_corners()` rather than from
 ## the committed meshes — see the comment there for why a `surface_get_arrays()`
 ## round trip is the wrong thing to hang a safety assertion on, and why an `AABB`
-## is too loose to be useful at this margin. They are deduplicated because the
-## gloved hands are identical geometry on every weapon, and the Pack-a-Punch
-## variants are skipped outright: `pap` changes vertex colours and nothing else.
+## is too loose to be useful at this margin. They are deduplicated within the weapon
+## (a slide at rest can land on a body corner), and the Pack-a-Punch variants are
+## skipped outright: `pap` changes vertex colours and nothing else.
 ##
-## The knife is kept apart from the rest because `_apply()` only ever shows the
-## knife while the melee channel is lit. Pairing a rifle's muzzle with a full melee
-## sweep would measure a frame the rig cannot draw, and it costs 4 mm of a 8 mm
-## margin to do it.
+## The melee channel is lit for the knife alone, because `_apply()` only ever shows
+## the knife while it is lit. Pairing a rifle's muzzle with a full melee sweep would
+## measure a frame the rig cannot draw, and it costs 4 mm of an 8 mm margin to do it.
 ##
 ## Channels are sampled at their endpoints. Each is smooth in the pose and a dense
 ## sweep does not beat the endpoints by more than 0.2 mm on any of the three, which
 ## is two orders under every margin here. Sway is a 3x3 grid rather than the four
 ## corners because zero sway is the worst case for the near plane.
 ##
-## About 86,000 transformed points. Called once, from `verify.gd`, and cached;
-## nothing in the game may call it per frame.
+## 218,016 transformed points. Called once, from `verify.gd`, and cached; nothing in
+## the game may call it per frame.
 func _measure() -> void:
 	if _measured:
 		return
 	_measured = true
-
-	var gun := {}
-	var knife := {}
-	for key: String in GUNART.keys():
-		var into: Dictionary = knife if key == "knife" else gun
-		# Annotated rather than inferred, both of them: a call through a preloaded
-		# script constant is the kind of expression this project builds as an error
-		# when its result is handed to a typed parameter unchecked.
-		var body: PackedVector3Array = GUNART.body_corners(key)
-		var slide: PackedVector3Array = GUNART.slide_corners(key)
-		_collect(body, into, 0.0)
-		_collect(slide, into, 0.0)
-		# The reciprocating group is a live translation of its own mesh, so both
-		# ends of its travel are places a vertex genuinely reaches.
-		_collect(slide, into, SLIDE_TRAVEL)
-	var pts_gun := PackedVector3Array(gun.keys())
-	var pts_knife := PackedVector3Array(knife.keys())
 
 	# From the camera rather than from a constant, so a field of view that ever
 	# moves cannot leave a stale copy of this behind. See VIEWMODEL_FOV.
@@ -863,20 +931,35 @@ func _measure() -> void:
 	var worst := 0.0
 	var nearest := 1e9
 	var widest := 0.0
-	for group in 2:
-		var pts := pts_gun
-		var melees := gun_melees
-		if group == 1:
-			pts = pts_knife
+	for key: String in GUNART.keys():
+		var into := {}
+		# Annotated rather than inferred, both of them: a call through a preloaded
+		# script constant is the kind of expression this project builds as an error
+		# when its result is handed to a typed parameter unchecked.
+		var body: PackedVector3Array = GUNART.body_corners(key)
+		var slide: PackedVector3Array = GUNART.slide_corners(key)
+		_collect(body, into, 0.0)
+		_collect(slide, into, 0.0)
+		# The reciprocating group is a live translation of its own mesh, so both
+		# ends of its travel are places a vertex genuinely reaches.
+		_collect(slide, into, SLIDE_TRAVEL)
+		var pts := PackedVector3Array(into.keys())
+		# THE WHOLE REASON THIS LOOP IS PER WEAPON. Through the same accessor the rig
+		# poses with, so a sight height that stopped being derived from the mesh would
+		# move the assertion and not just the picture.
+		var sight: float = GUNART.sight_height(key)
+		var melees: Array[float] = gun_melees
+		if key == "knife":
 			melees = knife_melees
 		for kick: float in [0.0, KICK_MAX]:
 			for dip: float in [0.0, 1.0]:
 				for drop: float in [0.0, SWAP_DROP + SPRINT_DROP]:
 					for melee: float in melees:
 						# Both ends of the sights, because the clipping budget has to hold at the
-						# sighted pose too — that pose moves the weapon 8 mm toward the near plane.
+						# sighted pose too — that pose moves the weapon 8 mm toward the near plane
+						# and up to 20 mm down, and the drop is what puts the lateral term up.
 						for ads: float in [0.0, 1.0]:
-							var mp := _mesh_pose(kick, dip, drop, melee, ads)
+							var mp := _mesh_pose(kick, dip, drop, melee, ads, sight)
 							for sx: float in sways:
 								for sy: float in sways:
 									var root := Basis.from_euler(Vector3(sx, sy, 0.0))

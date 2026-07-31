@@ -57,6 +57,12 @@ const ENEMIES := preload("res://scripts/dev/checks/enemies.gd")
 const TRAPS := preload("res://scripts/dev/checks/traps.gd")
 ## Projectiles: swept integration, the shared explosion, ADS and the throwables.
 const PROJECTILES := preload("res://scripts/dev/checks/projectiles.gd")
+## The suite-side half of the frame gate. Renders NOTHING — headless has no
+## rendering device — so it covers only what needs no frame: the luminance maths,
+## the tolerance arithmetic, the scenario registry, and the golden file carrying a
+## blessed row and a reference image for every scenario. The half that actually
+## looks at pixels is `pwsh tools/frames.ps1`, and it is a windowed pass.
+const FRAME := preload("res://scripts/dev/checks/frame.gd")
 
 ## Every check module in scripts/dev/checks/, by filename, and the single place
 ## they are registered. `_registered()` walks the directory and fails if anything
@@ -80,6 +86,7 @@ const CHECK_MODULES := {
 	"traps.gd": TRAPS,
 	"mapgen.gd": MAPGEN,
 	"projectiles.gd": PROJECTILES,
+	"frame.gd": FRAME,
 }
 
 ## The number of assertions this suite is known to run, minus a small margin for
@@ -106,7 +113,16 @@ const CHECK_MODULES := {
 ##
 ## The floor cannot see a section that never ran at all — a total it was never set
 ## from cannot shrink. That is `_registered()`'s job, and the two are complementary.
-const ASSERTION_FLOOR := 475
+##
+## Reconciled again at 560: a quiescent tree ran 561 assertions, and this check is
+## itself counted AFTER its own comparison, so 560 is the count it sees on a fully
+## green run and the largest honest floor.
+##
+## +26 for the muzzle-flash package and its review: checks/frame.gd's
+## `_flash_geometry`, `_flash_art`, `_flash_materials` and `_flash_drawn`. A
+## quiescent tree now runs 586, so 585 is the count this check sees on a fully
+## green run. Raised ADDITIVELY.
+const ASSERTION_FLOOR := 585
 
 var _pass := 0
 var _fail := 0
@@ -243,6 +259,10 @@ func run(main: Node3D) -> int:
 	CHECK_SYSTEMS.run(self, main)
 	_mark("curves")
 	CURVES.run(self, main)
+	# Anywhere would do — it touches no global state and renders nothing — so it
+	# sits before the two sections that DO have an ordering constraint.
+	_mark("frame")
+	FRAME.run(self, main)
 	# Dead last, and it has to be: the seed sweep rolls MapData's static layout
 	# tables 48 times and re-seeds Rng on every iteration. It puts both back on the
 	# way out, but anything downstream holding a cached wall-buy position would be

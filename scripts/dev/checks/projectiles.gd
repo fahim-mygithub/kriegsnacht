@@ -30,6 +30,7 @@ extends RefCounted
 const PROJ := preload("res://scripts/entities/projectile.gd")
 const THROWABLES := preload("res://scripts/systems/throwables.gd")
 const VIEWMODEL := preload("res://scripts/entities/viewmodel.gd")
+const GUNART := preload("res://scripts/data/gunart.gd")
 const LOS := preload("res://scripts/world/los.gd")
 
 ## The tick the whole tunnelling argument is written against. `_physics_process`
@@ -615,8 +616,235 @@ static func _ads(v: Verify, main: Node3D) -> void:
 		aim_ratio < hip_ratio and widest < Player.RADIUS,
 		"widest %.4f at the hip ratio against %.3f" % [widest, Player.RADIUS])
 
+	_ads_sight_line(v, main)
+	_ads_flash(v, main)
+
 	p._ads = ads_was
 	p._apply_fov()
+
+
+
+# --- the sighted pose is a SIGHT LINE, not a raised weapon ----------------------
+
+## **THE DEFECT THESE EXIST FOR.** `ADS_CENTRE` brings the GRIP onto the view axis,
+## and a weapon's sights are not at its grip — they are on top of it. Shipped that
+## way, the M1911's whole sight line sat 66 px ABOVE the crosshair in a 720 px frame
+## and the player was aiming at their own glove. 537 assertions were green: every one
+## of them was about the field of view, the cone, the movement penalty or the clip
+## budget, and not one of them asked where the weapon ENDED UP.
+##
+## Driven through the whole real chain — `give_gun` -> `weapon_changed` ->
+## `viewmodel._show()` latching the sight height -> `_apply()` writing
+## `WeaponMesh.transform` — and read back off that node. Nothing here re-evaluates
+## `_mesh_pose`; if it did, it would agree with any pose the rig happened to produce.
+static func _ads_sight_line(v: Verify, main: Node3D) -> void:
+	var p: Player = main.player
+	var vm: Node3D = main.viewmodel
+	var guns_was: Array[Dictionary] = p.guns.duplicate()
+	var slot_was: int = p.slot
+	var ads_was: float = p._ads
+
+	# One art unit of clear air under the top plane. OUR DECISION — the ancestor has
+	# no ADS — swept over 0..3 units and read off captures; viewmodel.gd's
+	# ADS_SIGHT_CLEAR carries the table and what each value looked like.
+	#
+	# **THIS EXPECTATION IS DERIVED FROM THE CONSTANT UNDER TEST, so read what the
+	# check below is actually named.** `_mesh_pose` drops the rig by
+	# `sight + ADS_SIGHT_CLEAR * UNIT` and the top plane is `sight` above the grip,
+	# so the two cancel and `top_ads == -ADS_SIGHT_CLEAR * UNIT` is an algebraic
+	# identity in that constant: it is blind to its VALUE and sees only whether the
+	# rig honours it, per weapon, through the real chain. MEASURED 2026-07-31 by
+	# sweeping ADS_SIGHT_CLEAR over 0, 1, 2 and 3 and running the whole suite at
+	# each — `=== 560 passed, 0 failed ===` all four times.
+	#
+	# So the VALUE is pinned by two things and by nothing else: the `...and that is
+	# BELOW the view axis` check below, which bounds it without naming it, and the
+	# frame gate's geometric relation `the sight line sits below the crosshair`,
+	# whose band [1.005, 1.030]
+	# measured 1.00000 / 1.01389 / 1.02500 / 1.03889 across that same sweep and so
+	# rejects 0 and 3 exactly as the two halves are meant to agree.
+	var want: float = -VIEWMODEL.ADS_SIGHT_CLEAR * GUNART.UNIT
+	var bad_ads := ""
+	var bad_hip := ""
+	var bad_clear := ""
+	# The sweep's own two rejected rows, restated as a bound. 0 units is "the
+	# crosshair's ticks merge into the top edge" and is the DIRECTION the defect
+	# shipped in; 3 units is "the weapon has detached from the aim point and reads
+	# as held low" (viewmodel.gd's ADS_SIGHT_CLEAR table). Strictly outside both, so
+	# a rig posed at either fails here as well as at the gate.
+	#
+	# 2.5 AND NOT 3.0, and that is a measurement rather than a rounding of taste.
+	# The two sides of `-3.0 * UNIT` are computed by different routes — this one
+	# directly, the pose by accumulating `sight + CLEAR * UNIT` and subtracting the
+	# corner back off — so at CLEAR = 3.0 exactly they disagree in the last bit:
+	# CONTROLLED 2026-07-31, six of the thirteen weapons compared 1 ULP INSIDE the
+	# bound and only seven tripped it. The check still failed, but on an accident.
+	# 2.5 is the midpoint of the last admitted row and the first rejected one, so
+	# both are decided by art units rather than by float error.
+	var clear_hi: float = -2.5 * GUNART.UNIT
+	for key: String in GUNART.keys():
+		_pose_weapon(vm, p, key, 1.0)
+		var top_ads := _mesh_top(vm, key)
+		if absf(top_ads - want) > 1.0e-5:
+			bad_ads += "%s %+.5f " % [key, top_ads]
+		# UNDER the axis, and not far under it. Independent of ADS_SIGHT_CLEAR's
+		# value, which is the point: this is the one statement in the suite that the
+		# sweep above could not satisfy at every setting.
+		if top_ads >= 0.0 or top_ads <= clear_hi:
+			bad_clear += "%s %+.3f units " % [key, top_ads / GUNART.UNIT]
+		# BOUNDED AT THE OTHER END, and tightly, because the obvious version of this is
+		# useless. "At the hip the weapon is lower than the axis" passes against a rig
+		# that has dropped its `ads` factor and applies the sight drop ALWAYS — the
+		# weapon is lower still, so the bound is happier. That was run as a control and
+		# it discriminated nothing. With every other channel at rest the hip pose has
+		# to be EXACTLY `REST_POS`, which is the only statement that catches it.
+		_pose_weapon(vm, p, key, 0.0)
+		var rest: Vector3 = vm._mesh.transform.origin
+		if not rest.is_equal_approx(VIEWMODEL.REST_POS):
+			bad_hip += "%s %v " % [key, rest]
+	# An empty corner set cannot make this pass: the expected value is an EQUALITY and
+	# the accumulator starts at -1e9, which is not it.
+	v.check("at the sights every weapon's top plane lands where ADS_SIGHT_CLEAR says",
+		bad_ads.is_empty(), "want %+.5f m, off: %s" % [want, bad_ads])
+	v.check("...and that is BELOW the view axis on every weapon, and not detached from it",
+		bad_clear.is_empty(),
+		"wanted 0 > top > %.1f art units, off: %s" % [clear_hi / GUNART.UNIT, bad_clear])
+	v.check("...and at the hip every weapon is back on the rest pose exactly",
+		bad_hip.is_empty(), "REST_POS is %v, off: %s" % [VIEWMODEL.REST_POS, bad_hip])
+
+	# THE CANT. Half of a hard scope is that the barrel runs LEVEL to the view axis
+	# rather than 7.4 degrees under it; without this the top plane is a ramp and only
+	# one point of it is at the clearance the check above measures.
+	_pose_weapon(vm, p, "m1911", 1.0)
+	var pitch_ads := _mesh_pitch(vm)
+	_pose_weapon(vm, p, "m1911", 0.0)
+	var pitch_hip := _mesh_pitch(vm)
+	v.check("the sights level the weapon's cant and the hip pose keeps it",
+		absf(pitch_ads) < 1.0e-5 and v.near(pitch_hip, VIEWMODEL.REST_PITCH, 1.0e-5),
+		"sighted %.5f rad, hip %.5f rad against REST_PITCH %.5f" % [
+			pitch_ads, pitch_hip, VIEWMODEL.REST_PITCH])
+
+	# THE SLIDE TERM, which is the one way to derive this and get it quietly wrong.
+	# `body_corners` excludes whatever `SLIDE` names, and on the M1911 `SLIDE` is
+	# [1, 6] — part 1 being the slide plate, a rect at art y 20, against the topmost
+	# part left in the body at art y 22. So the term is worth at least 2 art units by
+	# inspection of the table (gunart.gd:50-53, :147), and measures 2.24 with the
+	# PROUD inflation. Two art units is 13 px at the sighted pose.
+	var body_only := -1.0e9
+	var m_body: PackedVector3Array = GUNART.body_corners("m1911")
+	for c: Vector3 in m_body:
+		body_only = maxf(body_only, c.y)
+	var m_sight: float = GUNART.sight_height("m1911")
+	v.check("the M1911's sight height comes off its slide and not just its body",
+		m_sight - body_only > 2.0 * GUNART.UNIT,
+		"sight %.5f m, body alone %.5f m, difference %.2f art units" % [
+			m_sight, body_only, (m_sight - body_only) / GUNART.UNIT])
+
+	# ...and that it is PER WEAPON. The Ray Gun's scope block sits at art y 14 against
+	# a grip at 33 (19 units) and the knife's blade at art y 22 against a grip at 27
+	# (5 units), so the true ratio is 3.8. A `sight_height` that collapsed to one
+	# constant — the failure this whole approach exists to avoid — lands at 1.0.
+	var rg: float = GUNART.sight_height("raygun")
+	var kn: float = GUNART.sight_height("knife")
+	v.check("the sight height is per weapon, so one constant could not have served",
+		rg > 3.0 * kn,
+		"raygun %.2f art units against knife %.2f" % [rg / GUNART.UNIT, kn / GUNART.UNIT])
+
+	p.guns = guns_was
+	p.slot = slot_was
+	p._ads = ads_was
+	vm._melee_t = 0.0
+	p.weapon_changed.emit(p.current_gun())
+	vm._apply()
+
+
+## THE FLASH HAS TO FOLLOW THE BARREL, and "it reads `_muzzle.global_position`, so it
+## should for free" is precisely how ADS shipped with its camera half and not its
+## weapon half.
+##
+## `flash_anchor()` answers "where does a WORLD-projected quad go so that it lands on
+## the barrel ON SCREEN", and the barrel is drawn through the viewmodel's own 55
+## degree projection rather than the camera's. The independent path used here shares
+## none of its arithmetic: the shader scales only the two SCALE terms of the
+## projection matrix, which for a KEEP_HEIGHT camera is exactly a camera at
+## VIEWMODEL_FOV, so unprojecting the marker through one is where the muzzle is
+## DRAWN. Measured at 0.000 px on both poses.
+##
+## AND IT IS AN IDENTITY, WHICH IS WHY IT IS NOT ENOUGH. The ratio cancels, and
+## both sides read `_muzzle.global_position`, so a marker moved to the grip moves
+## both and this still passes — measured: `_muzzle.position = Vector3.ZERO` moves
+## the rendered flash 37 px down the screen and leaves this green. The rendered
+## half is `the muzzle flash comes out of the barrel, under the aim point` and
+## `...is centred on the aim point at the sights` in notes/perf/frames/golden.json.
+static func _ads_flash(v: Verify, main: Node3D) -> void:
+	var p: Player = main.player
+	var vm: Node3D = main.viewmodel
+	var cam := p.camera()
+	var ads_was: float = p._ads
+	var bad := ""
+	var at: Array[Vector2] = []
+	for ads: float in [0.0, 1.0]:
+		p._ads = ads
+		p._apply_fov()
+		vm._apply()
+		var anchor: Vector3 = vm.flash_anchor(1.5)
+		var px_flash := cam.unproject_position(anchor)
+		var fov_was := cam.fov
+		cam.fov = VIEWMODEL.VIEWMODEL_FOV
+		var px_muzzle := cam.unproject_position(vm._muzzle.global_position)
+		cam.fov = fov_was
+		at.append(px_muzzle)
+		if (px_flash - px_muzzle).length() > 0.5:
+			bad += "ads=%.0f flash%s vs muzzle%s " % [ads, px_flash, px_muzzle]
+	# The KEEP_HEIGHT clause is not padding: under KEEP_WIDTH the substitution above
+	# stops being equivalent and the whole comparison would quietly measure nothing.
+	v.check("the muzzle flash lands on the barrel at the hip and at the sights",
+		bad.is_empty() and cam.keep_aspect == Camera3D.KEEP_HEIGHT,
+		"keep_aspect=%d %s" % [cam.keep_aspect, bad])
+	# ...and the two are not the same pose, or a rig whose weapon never moved would
+	# satisfy the check above twice over. Measured 187 px apart.
+	v.check("...and the sighted pose has actually moved the barrel",
+		at.size() == 2 and (at[0] - at[1]).length() > 50.0,
+		"hip %s -> sighted %s" % [at[0], at[1]])
+	p._ads = ads_was
+	p._apply_fov()
+	vm._apply()
+
+
+## Puts the rig into the pose the game would draw for `key` at `ads`, through the
+## same two entry points the game uses. The knife is not a weapon slot — it is only
+## ever on screen through `_apply()`'s melee override — so it is reached the way the
+## rig reaches it, and `_melee_t == MELEE_TIME` is the instant the melee channel
+## evaluates to sin(0) = 0, which is the first frame of a swing.
+static func _pose_weapon(vm: Node3D, p: Player, key: String, ads: float) -> void:
+	if key == "knife":
+		vm._melee_t = VIEWMODEL.MELEE_TIME
+	else:
+		vm._melee_t = 0.0
+		p.give_gun(key, false)
+	p._ads = ads
+	vm._apply()
+
+
+## The highest point of the weapon as DRAWN, in camera space: the corners the mesh is
+## built from, through the transform the rig actually wrote to the node.
+static func _mesh_top(vm: Node3D, key: String) -> float:
+	var xf: Transform3D = vm._mesh.transform
+	var top := -1.0e9
+	var body: PackedVector3Array = GUNART.body_corners(key)
+	for c: Vector3 in body:
+		top = maxf(top, (xf * c).y)
+	var slide: PackedVector3Array = GUNART.slide_corners(key)
+	for c: Vector3 in slide:
+		top = maxf(top, (xf * c).y)
+	return top
+
+
+## `Basis.from_euler` and `get_euler` share Godot's default YXZ order, so this comes
+## back as the pitch `_mesh_pose` put in rather than a decomposition of it.
+static func _mesh_pitch(vm: Node3D) -> float:
+	var xf: Transform3D = vm._mesh.transform
+	return xf.basis.get_euler().x
 
 
 # --- grenades and the Monkey Bomb ----------------------------------------------

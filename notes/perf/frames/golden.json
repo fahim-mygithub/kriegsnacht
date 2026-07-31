@@ -1,0 +1,612 @@
+{
+  "schema": 1,
+  "captured": "2026-07-31",
+  "resolution": [
+    1280,
+    720
+  ],
+  "seed": 20260730,
+  "note": "Committed reference statistics for the rendered-frame gate. Regenerate with `pwsh tools/frames.ps1 -Bless`; that command rewrites `scenarios`, `resolution` and `captured` ONLY. `tolerance` and `relations` are hand-set from measurement and must never be regenerated - see README.md in this directory for the derivation.",
+  "tolerance": {
+    "mean": {
+      "abs": 5E-06,
+      "rel": 0.03
+    },
+    "frac": {
+      "abs": 0.002,
+      "rel": 0.02
+    },
+    "region": {
+      "abs": 5E-05,
+      "rel": 0.05
+    },
+    "probe": {
+      "abs": 5E-05,
+      "rel": 0.05
+    },
+    "chroma": {
+      "abs": 0.001,
+      "rel": 0.02
+    }
+  },
+  "relations": [
+    {
+      "name": "power lifts the room",
+      "num": "power.mean",
+      "den": "power_off.mean",
+      "min": 1.15,
+      "max": 1.9,
+      "why": "LAMP_ENERGY_ON/OFF is 3.0/2.0 and the lamp is one of four contributions, so the whole-frame lift is 1.35x. Under 1.15 the ceremony has stopped happening; over 1.9 the pre-power map has gone dark, which lighting.gd:563-575 rejects as a port invention."
+    },
+    {
+      "name": "power blooms the fixture",
+      "num": "power.probes.fixture_mean",
+      "den": "power_off.probes.fixture_mean",
+      "min": 1.35,
+      "max": 2.6,
+      "why": "lighting.gd is explicit that the reveal is the FIXTURE crossing the glow threshold and not the room getting brighter. Measured 1.78. A build where the rooms lifted but the fixtures did not would pass the relation above and fail this one."
+    },
+    {
+      "name": "rim is not brighter than its body",
+      "num": "horde.probes.rim_mean",
+      "den": "horde.probes.body_mean",
+      "min": 0.0,
+      "max": 0.75,
+      "why": "THE SHIPPED DEFECT. RIM_ENERGY 0.62 measures 1.247 here and 0.30 measures 0.395. Bounded ABOVE ONLY, deliberately: measured with the rim switched off entirely this ratio is 0.480, HIGHER than the shipped value, so a lower bound on it would be a lower bound on nothing. The low end is the relation below."
+    },
+    {
+      "name": "rim covers its silhouette",
+      "num": "horde.probes.rim_frac",
+      "den": "horde.probes.body_frac",
+      "min": 0.0066,
+      "max": 0.0112,
+      "why": "Monotone across the whole RIM_ENERGY sweep and immune to a lighting retune, because both terms are fractions of the same rect. Measured 0.005197 (rim off), 0.005976 (0.16, rejected by the sweep as 'the silhouette stops reading'), 0.008111 (0.30, shipped), 0.013446 (0.62, the defect). The low bound has only 10 points of headroom over the 0.16 case; if it ever trips, re-run the sweep rather than widening it."
+    },
+    {
+      "name": "the bolt lights the room",
+      "num": "raygun.mean",
+      "den": "spawn.mean",
+      "min": 1.6,
+      "max": 3.6,
+      "why": "`raygun` is framed identically to `spawn` and differs by one OmniLight3D. Measured 2.38. projectile.gd::launch records that a round's light used to be left at the world origin for its first tick, found in a --shot and invisible to every assertion; a bolt whose light never arrives lands near 1.0."
+    },
+    {
+      "name": "the viewmodel is lit",
+      "num": "spawn.probes.gun_mean",
+      "den": "spawn.mean",
+      "min": 4.5,
+      "max": 12.0,
+      "why": "THE SECOND SHIPPED BLACK FRAME was the viewmodel going almost invisible against a dark room. Measured 7.52. Relational so it survives a lighting retune; both terms move together when the map is retuned and only the gun going out moves them apart."
+    },
+    {
+      "name": "the sights keep the frame",
+      "num": "ads.mean",
+      "den": "spawn.mean",
+      "min": 0.78,
+      "max": 1.1,
+      "why": "Same view, gun raised and FOV multiplied by ADS_FOV_MULT 0.75. Measured 0.909. Catches an ADS transition that stopped arriving (1.0) or a viewmodel that swallowed the screen."
+    },
+    {
+      "name": "the sight line sits below the crosshair",
+      "num": "ads.probes.sight_top_over_centre",
+      "min": 1.005,
+      "max": 1.03,
+      "why": "THE DEFECT THE GATE COULD NOT SEE. Every other rule here is PHOTOMETRIC, and an ADS pose that put the M1911's whole sight line 66 px ABOVE the crosshair - the player aiming underneath the weapon - passed all of them without moving a committed number: `the sights keep the frame` read 0.909 for both. NO DENOMINATOR: this is already a ratio, the topmost row of the viewmodel silhouette over the frame's centre row, so 1.0 is the top of the weapon exactly on the crosshair and above 1.0 is below it, which is what looking down an iron sight looks like. The silhouette is located by DIFFERENCE against the same instant with the viewmodel hidden (main.gd::_bare_frame), not by a colour mask - viewmodel.gd rejected a mask when it derived ADS_SIGHT_CLEAR because it can only be tuned to one of thirteen weapons. MEASURED 2026-07-31 on the `ads` scenario at 1280x720, --fixed-fps 60, by re-running each pose: the shipped defect (no sight compensation at all) is row 294 = 0.81667, which reproduces viewmodel.gd's own record of 'row 294, 66 px above the crosshair' to the pixel; ADS_SIGHT_CLEAR and ADS_LEVEL at 0 with the per-weapon sight height still applied is row 357 = 0.99167, the sweep's 'clear 0: the crosshair ticks merge into the top edge'; the shipped clear=1 is row 365 = 1.01389. The band's upper end is viewmodel.gd's own sweep, which read clear=2 at 1.02500 as acceptable and clear=3 at 1.03889 as 'the weapon has detached from the aim point and reads as held low'. Run-to-run spread of every statistic on this machine is 0.000000%, so the band is set by the sweep and not by noise."
+    },
+    {
+      "name": "the sight picture is centred on the aim point",
+      "num": "ads.probes.gun_cx_over_centre",
+      "min": 0.985,
+      "max": 1.015,
+      "why": "The other axis of the same picture, and it needs its own rule because the vertical defect above moved this NOT AT ALL - 0.99922 in both poses. NO DENOMINATOR, same reason as above: the horizontal centre of the viewmodel silhouette over the frame's centre column. Reads 0.99922, which is the weapon's centre 0.5 px left of the aim point. MEASURED control, 2026-07-31: ADS_CENTRE dropped from 1.0 to 0.5 - the sights left half-way off the view axis, which is what this pose looked like before ADS_CENTRE existed - moves it to 1.17266, a weapon centre 110 px to the right of the crosshair. The band is +-1.5% of half-width, 9.6 px, which the shipped value clears by a factor of eighteen. It does NOT catch a capture taken mid-transition - measured: with the shutter forced to fire 0.05 s into the ADS transition the silhouette difference covers the whole frame, because the camera's FOV is still moving between the two draws, and the centre of the whole frame is 639.5 all over again. The rule above is the one that catches that: it reads 0.00000 on the same capture."
+    },
+    {
+      "name": "the live gate outshines its corridor",
+      "num": "trap_armed.probes.arc_mean",
+      "den": "trap_armed.mean",
+      "min": 1.15,
+      "max": 2.2,
+      "why": "Measured 1.53. An arm() that silently refused leaves the posts and no arc sheet, and the gate rect falls back to the wall behind it, near 1.0."
+    },
+    {
+      "name": "spawn is a room and not a black background",
+      "num": "spawn.median",
+      "den": "spawn.mean",
+      "min": 0.045,
+      "max": 0.13,
+      "why": "THE FIRST SHIPPED BLACK FRAME, as a ratio. Measured 0.0748. A frame whose lit content has collapsed to the HUD and the viewmodel keeps a mean and loses its median: with LAMP_ENERGY_OFF put back to the 0.34 that shipped as a black frame, this falls to 0.0230. Survives a global brightness retune because both terms scale together."
+    },
+    {
+      "name": "power_off is a room and not a black background",
+      "num": "power_off.median",
+      "den": "power_off.mean",
+      "min": 0.045,
+      "max": 0.13,
+      "why": "The same invariant at the other viewpoint, where the lamp fixture is in frame. Measured 0.0749."
+    },
+    {
+      "name": "the lit room is not washed toward white or blue",
+      "num": "power.chroma_bg",
+      "min": 0.34,
+      "max": 0.55,
+      "why": "NO DENOMINATOR: this bounds the value itself, which is already a ratio (summed linear blue over summed linear green, across the lit pixels). It is here rather than in `scenarios` because -Bless never rewrites this block, and the point is that a hue change must be re-argued by hand. LAMP_COLOR is sodium (0.98, 0.72, 0.34) and this reads 0.4237. MEASURED envelope of a legitimate brightness retune, which chromaticity is meant to survive: LAMP_ENERGY_ON +30% -> 0.3751, -30% -> 0.4978, so the band clears both by ~10%. Rejects LAMP_COLOR pushed pink (0.98,0.68,0.68) -> 0.7834, blue (0.60,0.78,0.98) -> 1.1359, and washed toward white (0.98,0.78,0.62) -> 0.5717. BLIND to a lamp pushed DEEPER amber, which moves this the WRONG WAY (0.98,0.62,0.16) -> 0.4660, because the cold ambient becomes a larger share of what blue is left; the rule below is the other jaw."
+    },
+    {
+      "name": "the lit room is not pushed deeper amber or cold",
+      "num": "power.chroma_rg",
+      "min": 1.8,
+      "max": 2.34,
+      "why": "The other axis, and the other jaw: summed linear red over summed linear green. Reads 2.0787. Legitimate-retune envelope LAMP_ENERGY_ON +30% -> 2.1646, -30% -> 1.9474, cleared by ~8%. Rejects deeper amber (0.98,0.62,0.16) -> 2.5303 and blue -> 0.8905. BLIND to pink (2.2409, only 3.5% above the retune ceiling) and to washed-white (1.8376); the rule above catches both. Neither statistic alone boxes the illuminant in - that was measured, not assumed, and the deep-amber sweep is what disproved the first single-rule design."
+    },
+    {
+      "name": "the muzzle flash is the ancestor's size at the sights",
+      "num": "flash_ads.probes.flash_r_frac",
+      "min": 0.11,
+      "max": 0.22,
+      "why": "THE COMPLAINT, AS ONE NUMBER: 'the muzzle flash is an obvious yellow square, jarring especially when you ads'. NO DENOMINATOR: this is the flash quad's own projected HALF-WIDTH over the frame height, which is the unit the ancestor sizes the effect in. html:3148 rolls r = cssH*(0.05+random*0.035) and html:3150 draws the gradient out to r*2.4, so the halo's half-width is 0.12 to 0.204 of screen height; the band is that with 8% either side, because the size is a per-shot roll and a gate that pinned one draw would be pinning the roll. MEASURED 2026-07-31: this build reads 0.15699 (a 0.44 roll). The SHIPPED DEFECT - a fixed 0.34 m QuadMesh at flash_anchor's 0.35 m - reads 0.46160, a square 92% of the frame height, and 0.32228 at the hip. Recaptured with the shipped file restored out of git, not estimated."
+    },
+    {
+      "name": "the muzzle flash does not grow at the sights",
+      "num": "flash_ads.probes.flash_r_frac",
+      "den": "flash_hip.probes.flash_r_frac",
+      "min": 0.98,
+      "max": 1.02,
+      "why": "The other half of the same defect and the reason it was worst at ADS. The weapon is redrawn through viewmodel.gd's own fixed 55-degree projection, so it does NOT change size when the camera zooms - but a world-space quad at a fixed depth does, by tan(37)/tan(27.75) = 1.43227. Both scenarios fire one shot from the same seed and therefore draw the SAME size roll, so this ratio is the projection and nothing else. MEASURED: 1.00000 here; 1.43227 for the shipped fixed-size quad, which is the tangent ratio to five figures. Paired with the rule above, which is what stops both frames being wrong by the same factor."
+    },
+    {
+      "name": "the muzzle flash falls off from its core",
+      "num": "flash_ads.probes.flash_core_over_ring",
+      "min": 4.0,
+      "max": 60.0,
+      "why": "Layer 1, html:3150-3156: a radial gradient at alpha .95 in the middle, .45 at 0.35 of its radius and 0 at the edge. The port had no albedo_texture at all, so it was a FLAT FILL and this ratio was 1. MEASURED 2026-07-31 by sabotaging only the textures - same size, same placement, same depth behaviour, so this is the shape isolated from everything else: shipped 18.9267, textures dropped 1.0411, the shipped 0.34 m square 0.3125 (below 1 because its middle sat behind the weapon). The core saturates at 1.0, so this ratio is really 1/ring and its upper bound is the one that bites: past 60 the halo has gone dark and only the burst is left."
+    },
+    {
+      "name": "the muzzle flash falls off from its core at the hip too",
+      "num": "flash_hip.probes.flash_core_over_ring",
+      "min": 4.0,
+      "max": 60.0,
+      "why": "The same statement at the other pose, and it needs its own rule because the two are different draws through different projections. MEASURED: shipped 17.3903, textures dropped 1.0883, the shipped square 0.2719."
+    },
+    {
+      "name": "the muzzle flash is a disc and not a square",
+      "num": "flash_ads.probes.flash_corner_over_core",
+      "max": 0.2,
+      "why": "THE GEOMETRIC ONE, and the only rule here a bright fill of any colour at any brightness cannot pass. The sample is four discs at 1.20 half-widths along the quad's own projected diagonals: INSIDE the quad, whose diagonal reaches 1.414, and OUTSIDE the gradient, which is alpha 0 past 1.0. A radial flash cannot light them and a fill across the quad lights them exactly as brightly as its middle. MEASURED: shipped 0.02009, textures dropped 0.96884, and a camera-oriented flat 0.34 m fill 0.85355. BLIND TO THE SHIPPED DEFECT ITSELF, found on review 2026-07-31 and recorded rather than papered over: the git-HEAD flash was BILLBOARDED, and BILLBOARD_ENABLED replaces the model-view basis in the vertex shader, so the node transform this probe takes its four diagonals from is not the orientation that was drawn. The corner discs land off the drawn square and it reads 0.00510, which PASSES. What catches that build is the other five rules (0.462 size, 1.432 growth, 0.312 and 0.272 falloff, 72.8 brightness) plus checks/frame.gd's headless assertion that both layers are BILLBOARD_DISABLED. This rule is the one that separates a shaped flash from a flat fill AT THE SAME ORIENTATION, which is what it is for. BOUNDED ABOVE ONLY, for the reason the rim rule gives: what is left in the corner sample when the flash is shaped is the room behind it, and a lower bound on the room is a lower bound on nothing. The floor is `the muzzle flash lights the frame` below, which is bounded both ways. The empty-mask case - four corner discs that fell off the screen would read 0 and pass this vacuously - is closed by `flash_corner_px` in the scenario row, which is a committed pixel count at a 5% tolerance."
+    },
+    {
+      "name": "the muzzle flash is a disc and not a square at the hip too",
+      "num": "flash_hip.probes.flash_corner_over_core",
+      "max": 0.2,
+      "why": "MEASURED: shipped 0.00187, textures dropped 0.89177, a camera-oriented flat 0.34 m fill 0.89680. Blind to the billboarded git-HEAD build for the reason the rule above gives - it reads 0.00128 there and passes."
+    },
+    {
+      "name": "the muzzle flash comes out of the barrel, under the aim point",
+      "num": "flash_ads.probes.flash_cy_over_centre",
+      "min": 1.03,
+      "max": 1.14,
+      "why": "THE RULE checks/projectiles.gd's `_ads_flash` CANNOT MAKE. That assertion claims 'the muzzle flash lands on the barrel at the hip and at the sights' and is an algebraic identity twice over: flash_anchor() scales by tan(F/2)/tan(V/2) and the check unprojects through V, so the ratio cancels, and BOTH of its sides read `_muzzle.global_position`, so a muzzle marker moved to the grip moves both and it still passes. This side reads the FLASH QUAD'S OWN projected centre against the frame's, which is a constant, so nothing cancels. NO DENOMINATOR: it is already a ratio, and 1.0 is the flash exactly on the crosshair while above 1.0 is below it - which is where a barrel sits when you are looking down a sight over it. The band is 11 to 50 px under the aim point at 720p. MEASURED 2026-07-31 with the marker itself sabotaged in viewmodel.gd:837 and restored: shipped 1.08089 (29 px under), `_muzzle.position = Vector3.ZERO` 1.18269 (66 px under), and a 4 cm LATERAL shift of the marker leaves this at 1.08089 exactly - the two axes are clean, which is why there are two rules."
+    },
+    {
+      "name": "the muzzle flash is centred on the aim point at the sights",
+      "num": "flash_ads.probes.flash_cx_over_centre",
+      "min": 0.985,
+      "max": 1.015,
+      "why": "The other axis, borrowing the band from `the sight picture is centred on the aim point`: +-1.5% of half-width, 9.6 px. Reads 1.00000. MEASURED control, same sabotage: a muzzle marker moved 4 cm along the weapon's x takes this to 1.27778, a flash 178 px to the right of the crosshair. It is BLIND to the vertical error above - `_muzzle.position = Vector3.ZERO` leaves it at 1.00000, because at the sights the weapon is centred and the marker's x is ~0 whatever its height - which is the rule above's job and the reason neither is enough alone."
+    },
+    {
+      "name": "the muzzle flash lights the frame without swallowing it",
+      "num": "flash_ads.mean",
+      "den": "ads.mean",
+      "min": 1.4,
+      "max": 4.0,
+      "why": "`ads` is `flash_ads` with no trigger pulled - same tile, same yaw, same weapon, same settle and the same arrival predicate - so this ratio is the whole cost of the shot and nothing else, the way `power`/`power_off` is the whole cost of the ceremony. It is the one photometric rule in this set and it is the floor the geometric ones do not have: a flash that stopped drawing falls toward 1.0. MEASURED: shipped 2.3151; textures dropped 10.0573; the shipped 0.34 m square 72.5195, i.e. it was putting seventy times the frame's own light on the screen for three frames."
+    },
+    {
+      "name": "the horde frame keeps the same illuminant",
+      "num": "horde.chroma_bg",
+      "min": 0.44,
+      "max": 0.6,
+      "why": "The same invariant on the one lit frame that also contains SPRITES, so a tint error confined to the zombie material has somewhere to show that `power` cannot see. Reads 0.5141; retune envelope [0.4823, 0.5544], cleared by ~9%. Rejects pink -> 0.8109, blue -> 1.0664, washed -> 0.6617. NOT paired with a chroma_rg rule here: horde's rg retune envelope is [1.5019, 1.6197] and pink lands at 1.6468, so any band wide enough to survive a retune would admit the defect - measured, and the reason there are three of these rules and not four."
+    }
+  ],
+  "scenarios": {
+    "spawn": {
+      "black": 0.722447,
+      "blown": 0.0,
+      "chroma_bg": 0.685074,
+      "chroma_rg": 1.719722,
+      "code": 19.310881,
+      "h": 720,
+      "mean": 0.00666,
+      "median": 0.000498,
+      "p01": 8.8E-05,
+      "p99": 0.069375,
+      "probes": {
+        "gun_cx_over_centre": 1.34765625,
+        "gun_cy": 0.518394948224136,
+        "gun_lit_frac": 0.543842105263158,
+        "gun_mean": 0.0500899363229446,
+        "gun_over_frame": 7.52080229337963,
+        "gun_px": 20829.0,
+        "sight_top_over_centre": 1.33055555555556
+      },
+      "regions": [
+        0.010488,
+        0.002919,
+        0.003271,
+        0.001653,
+        0.005436,
+        0.001747,
+        0.001961,
+        0.001486,
+        0.00396,
+        0.002874,
+        0.014311,
+        0.001141,
+        0.027781,
+        0.000186,
+        0.006811,
+        0.020537
+      ],
+      "settle": 0.35,
+      "w": 1280
+    },
+    "power_off": {
+      "black": 0.663849,
+      "blown": 0.0,
+      "chroma_bg": 0.510899,
+      "chroma_rg": 1.935426,
+      "code": 25.600622,
+      "h": 720,
+      "mean": 0.010084,
+      "median": 0.000755,
+      "p01": 8.8E-05,
+      "p99": 0.170065,
+      "probes": {
+        "fixture_mean": 0.0522325941630673,
+        "fixture_over_frame": 5.17966082726705,
+        "fixture_px": 3477.0
+      },
+      "regions": [
+        0.009991,
+        0.0085,
+        0.021153,
+        0.001364,
+        0.004817,
+        0.009864,
+        0.023385,
+        0.00146,
+        0.003838,
+        0.002393,
+        0.015937,
+        0.002166,
+        0.027994,
+        0.000527,
+        0.007472,
+        0.020487
+      ],
+      "settle": 0.35,
+      "w": 1280
+    },
+    "power": {
+      "black": 0.544765,
+      "blown": 0.0,
+      "chroma_bg": 0.423655,
+      "chroma_rg": 2.078674,
+      "code": 30.916008,
+      "h": 720,
+      "mean": 0.013641,
+      "median": 0.001912,
+      "p01": 8.8E-05,
+      "p99": 0.243208,
+      "probes": {
+        "fixture_mean": 0.0929031663488608,
+        "fixture_over_frame": 6.81067412488153,
+        "fixture_px": 3477.0
+      },
+      "regions": [
+        0.013491,
+        0.01371,
+        0.033152,
+        0.003053,
+        0.008873,
+        0.015105,
+        0.036078,
+        0.002757,
+        0.007095,
+        0.003625,
+        0.018654,
+        0.00379,
+        0.029094,
+        0.001049,
+        0.008186,
+        0.020542
+      ],
+      "settle": 2.85,
+      "w": 1280
+    },
+    "trap_armed": {
+      "black": 0.034462,
+      "blown": 7E-06,
+      "chroma_bg": 0.726987,
+      "chroma_rg": 1.512731,
+      "code": 64.788511,
+      "h": 720,
+      "mean": 0.052522,
+      "median": 0.033054,
+      "p01": 0.000174,
+      "p99": 0.300824,
+      "probes": {
+        "arc_frac": 0.406942289297481,
+        "arc_mean": 0.0805402978285593,
+        "arc_over_gate": 1.17650373309449
+      },
+      "regions": [
+        0.033589,
+        0.047191,
+        0.137579,
+        0.014854,
+        0.042014,
+        0.057936,
+        0.038915,
+        0.030908,
+        0.044656,
+        0.087557,
+        0.079525,
+        0.028973,
+        0.049203,
+        0.047571,
+        0.067489,
+        0.03239
+      ],
+      "settle": 0.5,
+      "w": 1280
+    },
+    "ads": {
+      "black": 0.737384,
+      "blown": 0.0,
+      "chroma_bg": 0.618961,
+      "chroma_rg": 1.842192,
+      "code": 17.598748,
+      "h": 720,
+      "mean": 0.005869,
+      "median": 0.000174,
+      "p01": 8.8E-05,
+      "p99": 0.062096,
+      "probes": {
+        "gun_cx_over_centre": 0.99921875,
+        "gun_cy": 0.500640771014556,
+        "gun_lit_frac": 0.985381355932203,
+        "gun_mean": 0.031333596581606,
+        "gun_over_frame": 5.33925394219669,
+        "gun_px": 9029.0,
+        "sight_top_over_centre": 1.01388888888889
+      },
+      "regions": [
+        0.009613,
+        0.004178,
+        0.004183,
+        0.000321,
+        0.004422,
+        0.002398,
+        0.002694,
+        0.00013,
+        0.003777,
+        0.006203,
+        0.006539,
+        0.000129,
+        0.028121,
+        0.000436,
+        0.000293,
+        0.020459
+      ],
+      "settle": 0.5,
+      "w": 1280
+    },
+    "downed": {
+      "black": 0.516336,
+      "blown": 0.0,
+      "chroma_bg": 0.869195,
+      "chroma_rg": 5.607841,
+      "code": 20.69475,
+      "h": 720,
+      "mean": 0.007343,
+      "median": 0.002297,
+      "p01": 0.00011,
+      "p99": 0.072025,
+      "probes": {},
+      "regions": [
+        0.016778,
+        0.000732,
+        0.000721,
+        0.007419,
+        0.004552,
+        0.005336,
+        0.005668,
+        0.003661,
+        0.003267,
+        0.004117,
+        0.014321,
+        0.003399,
+        0.008818,
+        0.002553,
+        0.009779,
+        0.026367
+      ],
+      "settle": 0.7,
+      "w": 1280
+    },
+    "horde": {
+      "black": 0.516386,
+      "blown": 0.001219,
+      "chroma_bg": 0.514106,
+      "chroma_rg": 1.571194,
+      "code": 40.563645,
+      "h": 720,
+      "mean": 0.021754,
+      "median": 0.002189,
+      "p01": 8.8E-05,
+      "p99": 0.644979,
+      "probes": {
+        "body_frac": 0.504232656048136,
+        "body_mean": 0.165431863345203,
+        "rim_frac": 0.00409262153640446,
+        "rim_mean": 0.065394380127308,
+        "rim_over_body": 0.395294949866164
+      },
+      "regions": [
+        0.014584,
+        0.005233,
+        0.005926,
+        0.003416,
+        0.010235,
+        0.005091,
+        0.006007,
+        0.003036,
+        0.008155,
+        0.101607,
+        0.111964,
+        0.011461,
+        0.029772,
+        0.002092,
+        0.008721,
+        0.020767
+      ],
+      "settle": 0.35,
+      "w": 1280
+    },
+    "raygun": {
+      "black": 0.536501,
+      "blown": 0.000195,
+      "chroma_bg": 0.306138,
+      "chroma_rg": 0.982193,
+      "code": 33.840775,
+      "h": 720,
+      "mean": 0.015869,
+      "median": 0.001842,
+      "p01": 8.8E-05,
+      "p99": 0.248394,
+      "probes": {
+        "bolt_frac": 0.029792349726776,
+        "bolt_mean": 0.181681789373221,
+        "bolt_over_frame": 11.4486298301885
+      },
+      "regions": [
+        0.016534,
+        0.01893,
+        0.018187,
+        0.004344,
+        0.013459,
+        0.015244,
+        0.015851,
+        0.003236,
+        0.008947,
+        0.007767,
+        0.06457,
+        0.0025,
+        0.028652,
+        0.00051,
+        0.007773,
+        0.027406
+      ],
+      "settle": 0.15,
+      "w": 1280
+    },
+    "flash_hip": {
+      "black": 0.641708,
+      "blown": 0.001814,
+      "chroma_bg": 0.630254,
+      "chroma_rg": 1.527654,
+      "code": 32.171396,
+      "h": 720,
+      "mean": 0.014573,
+      "median": 0.000668,
+      "p01": 8.8E-05,
+      "p99": 0.432941,
+      "probes": {
+        "flash_core_br": 1.0,
+        "flash_core_mean": 1.0,
+        "flash_core_over_ring": 17.3903203695404,
+        "flash_core_px": 224.0,
+        "flash_corner_mean": 0.00187285923160502,
+        "flash_corner_over_core": 0.00187285923160502,
+        "flash_corner_px": 1594.0,
+        "flash_cx_over_centre": 1.23006801605225,
+        "flash_cy_over_centre": 1.4026362101237,
+        "flash_r_frac": 0.156985293494331,
+        "flash_ring_br": 0.437012523670793,
+        "flash_ring_mean": 0.057503253462284,
+        "flash_ring_px": 13187.0,
+        "flash_white_core": 2.28826394172931
+      },
+      "regions": [
+        0.01093,
+        0.006861,
+        0.008256,
+        0.001897,
+        0.007797,
+        0.001748,
+        0.001961,
+        0.001486,
+        0.006788,
+        0.002875,
+        0.108015,
+        0.001141,
+        0.028064,
+        0.000201,
+        0.02555,
+        0.019601
+      ],
+      "settle": 0.35,
+      "w": 1280
+    },
+    "flash_ads": {
+      "black": 0.72549,
+      "blown": 0.001645,
+      "chroma_bg": 0.53288,
+      "chroma_rg": 1.623729,
+      "code": 30.841935,
+      "h": 720,
+      "mean": 0.013587,
+      "median": 0.000217,
+      "p01": 8.8E-05,
+      "p99": 0.412865,
+      "probes": {
+        "flash_core_br": 1.0,
+        "flash_core_mean": 1.0,
+        "flash_core_over_ring": 18.926697656332,
+        "flash_core_px": 222.0,
+        "flash_corner_mean": 0.0200936820867072,
+        "flash_corner_over_core": 0.0200936820867072,
+        "flash_corner_px": 1602.0,
+        "flash_cx_over_centre": 1.0,
+        "flash_cy_over_centre": 1.08088887532552,
+        "flash_r_frac": 0.156985685560438,
+        "flash_ring_br": 0.164427153324219,
+        "flash_ring_mean": 0.052835418949351,
+        "flash_ring_px": 13174.0,
+        "flash_white_core": 6.08172056611716
+      },
+      "regions": [
+        0.010352,
+        0.004242,
+        0.004252,
+        0.000321,
+        0.006826,
+        0.011741,
+        0.011861,
+        0.00013,
+        0.006339,
+        0.055423,
+        0.056889,
+        0.000129,
+        0.028632,
+        0.000436,
+        0.000293,
+        0.019524
+      ],
+      "settle": 0.5,
+      "w": 1280
+    }
+  }
+}

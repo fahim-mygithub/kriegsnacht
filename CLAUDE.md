@@ -67,6 +67,10 @@ its comment it reads as an accident.
 --headless --path . --verify      # the suite (~5 s healthy). NO `--` separator.
 --headless --path . --sim         # balance sim -> notes/balance/
 --path . --shot out.png [yaw]     # ONE FRAME. NEVER with --headless.
+--path . --shot out.png --shot-setup <name>   # ...of a named world state
+--path . --fixed-fps 60 --frames <name>       # capture + measure ONE scenario. NEVER --headless.
+--headless --path . --frames-list             # the scenario names, one per line
+--headless --path . --frames-report           # THE GATE. Compares, prints, exits non-zero.
 --headless --path . --check-only --script <file>    # parse gate
 ```
 
@@ -141,19 +145,49 @@ throwable. "Set the lure, read the lure back" does not.
 
 ## Visual verification
 
-**This is the weakest surface in the project.** Two milestones shipped a near-black
+**This was the weakest surface in the project.** Two milestones shipped a near-black
 frame that every assertion passed, and a zombie rim at 3.4× the brightness of the body
-it outlined was found only because someone opened a PNG.
+it outlined was found only because someone opened a PNG. There is now a gate.
 
-- `--shot` and **actually look at the image**. "Rendered a frame" is not a check.
-- Prefer a **numeric** frame assertion where one exists — see
-  `scripts/dev/checks/frame.gd` for mean luminance, black fraction, region brightness
-  and brightness *ratios*. Both black-frame bugs and the rim were numerically obvious.
-- Use `--shot-setup <scenario>` for states that need input rather than hand-patching
-  `_tick_shot`. Three agents patched it independently before it existed.
-- A frame comparison metric must be checked before it is trusted: one reviewer's naive
-  row-delta reported two distinct atlas rows as near-identical because it averaged over
-  a mostly-empty cell.
+```
+pwsh tools/frames.ps1                   # capture every scenario, measure, compare, exit non-zero on drift
+pwsh tools/frames.ps1 -Only spawn,horde # iterate on one
+pwsh tools/frames.ps1 -Bless            # adopt this run as the new reference
+pwsh tools/frames.ps1 -Spread 5         # re-measure run-to-run variation
+```
+
+`tools/build.ps1` runs it before every export; `-SkipFrames` opts out and is a
+*separate* admission from `-SkipVerify`.
+
+- **The gate is a windowed pass and `--verify` cannot do any of it.** Headless has no
+  rendering device. `scripts/dev/checks/frame.gd` is the suite-side half and covers
+  only what needs no frame: the statistics maths, the tolerance arithmetic, the
+  scenario registry, and the golden file having a blessed row and a reference image
+  for every scenario. It renders nothing and says so.
+- **The gate is committed NUMBERS, not images** — `notes/perf/frames/golden.json`,
+  which is diffable and survives a driver change. `notes/perf/frames/ref/*.png` are
+  written for the human pass, which statistics do not replace.
+- **`--shot-setup <name>`** puts the world into a named state before the shutter:
+  `spawn, power_off, power, trap_armed, ads, downed, horde, raygun, flash_hip,
+  flash_ads`
+  (`scripts/dev/shot_setup.gd`). Three agents hand-patched `_tick_shot` for this
+  before it existed. `--frames <name>` is the same capture plus the measurements.
+- **`--shot` and actually look at the image** for anything the scenarios do not
+  cover. "Rendered a frame" is not a check.
+- **Prefer a RATIO to an absolute.** Absolute brightness drifts with every tuning
+  pass, and a gate with a maintenance tax gets deleted; both defects that shipped
+  were relational. `golden.json`'s `relations` block is the half that survives a
+  retune, and each rule carries its own provenance.
+- **A frame comparison metric must be checked before it is trusted.** One reviewer's
+  naive row-delta reported two distinct atlas rows as near-identical because it
+  averaged over a mostly-empty cell — and in this package `rim_mean / body_mean`
+  turned out to be *non-monotone*: with the rim switched off completely it reads
+  0.480 against the shipped 0.395, so it can only bound the defect from above.
+  Sweep the constant, tabulate, and only then decide what the number means.
+- **Luminance is linear**, decoded with the sRGB EOTF and weighted Rec.709. The frame
+  arrives sRGB-encoded and a mean over encoded bytes is not a mean over light — which
+  is the same confusion that shipped both black frames. See
+  `notes/perf/frames/README.md`.
 
 ---
 

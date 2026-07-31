@@ -62,9 +62,10 @@ extends Node
 ##
 ## Nothing here draws from an `Rng` stream; the probe carries its own generator
 ## so a perf run cannot be confused with a seeded gameplay run. The one
-## exception is second-hand: `warm` mode emits `player.fired`, and `main.gd`'s
-## handler rolls the muzzle quad's roll from `Rng.VISUAL`. That is main.gd's
-## draw, in a build that never ships, and it is noted rather than worked around.
+## exception is second-hand: `warm` mode emits `player.fired`, and
+## `atmosphere.gd`'s handler rolls the muzzle flash's SIZE from `Rng.VISUAL`.
+## That is atmosphere's draw, in a build that never ships, and it is noted rather
+## than worked around.
 
 const ENDPOINT := "http://127.0.0.1:8970/result"
 
@@ -1124,8 +1125,8 @@ func _on_measure_begin() -> void:
 ## three signals are the player's own public API, so this reproduces the exact
 ## draw the first trigger pull would, without needing synthetic input.
 ##
-## Note for anyone reading a `warm` row: `main.gd`'s `fired` handler rolls the
-## muzzle quad's roll from `Rng.VISUAL`. The probe never draws from a stream
+## Note for anyone reading a `warm` row: `atmosphere.gd`'s `fired` handler rolls
+## the muzzle flash's size from `Rng.VISUAL`. The probe never draws from a stream
 ## itself, but this second-hand draw does perturb one — harmless in a build that
 ## ships to nobody, and recorded rather than worked around.
 func _fire_trigger(ev: String) -> void:

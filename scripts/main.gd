@@ -42,8 +42,36 @@ var traps       # traps.gd
 var _debug := false
 var _debug_t := 0.0
 var _shot_path := ""
-var _shot_frames := -1
 var _shot_yaw := 0.0
+
+## THE SHUTTER'S CLOCK IS SECONDS OF GAME TIME, NOT FRAMES.
+##
+## It used to be a frame count, and that made a bare `--shot` and the frame gate
+## photograph different states. `tools/frames.ps1` passes `--fixed-fps 60`, so for
+## the gate a budget of N frames was N/60 seconds; a bare `--shot`, which CLAUDE.md
+## documents for the human pass, runs uncapped at 113-141 fps on this machine and
+## the same N frames bought a third to a half of the game time. MEASURED: five of
+## the eight scenarios came out different, and `power` came out BYTE-IDENTICAL TO
+## ITS OWN CONTROL — the ceremony had reached three of eight lamps and the only one
+## in frame had not moved. See scripts/dev/shot_setup.gd for the whole table.
+##
+## `dt` is the same quantity under both invocations, so accumulating it is the fix.
+var _shot_active := false
+## Seconds of game time elapsed in the current phase, and frames rendered in it.
+var _shot_t := 0.0
+var _shot_n := 0
+## What the current phase is waiting for: `_shot_wait` seconds, and then
+## `_shot_until` if the scenario declared one.
+var _shot_wait := 0.0
+var _shot_until := Callable()
+## `--shot-setup <name>` / `--frames <name>`. The named world state applied after
+## the world has settled and before the shutter — see scripts/dev/shot_setup.gd.
+var _shot_setup := ""
+var _shot_setup_done := false
+## `--frames` rather than `--shot`: the same capture, but it also computes the
+## frame statistics, runs the scenario's probes and writes them to
+## notes/perf/frames/current/ for the headless `--frames-report` gate.
+var _frames_mode := false
 
 
 func _ready() -> void:
@@ -105,13 +133,15 @@ func _ready() -> void:
 	# palette is not also that palette's first texture upload.
 	var extra: Array = [Zombie.eye_material()]
 	extra.append_array(Zombie.rim_materials())
-	# The muzzle flash's additive billboard, which is Atmosphere's now. Asked for
+	# The muzzle flash's two additive layers — the tinted halo and the near-white
+	# burst — which are Atmosphere's now. Asked for
 	# the same way as every other layer's, so main.gd never has to know how many
 	# materials any of them own.
 	extra.append_array(atmos.materials())
 	extra.append_array(fx.materials())
-	# The trap posts and the arc sheet. The arc is additive+unshaded, which is a
-	# variant only the muzzle flash otherwise draws with, and the first one the
+	# The trap posts and the arc sheet. The arc is additive+unshaded, which was a
+	# variant only the muzzle flash otherwise drew with until the flash acquired a
+	# texture and lost its billboard, and the first one the
 	# player sees is at the far end of a corridor with a horde in it.
 	extra.append_array(traps.materials())
 	extra.append_array(viewmodel.materials())
@@ -164,6 +194,25 @@ func _ready() -> void:
 		_run_verify.call_deferred()
 		return
 
+	# The two halves of the frame gate that need no rendering device, so both are
+	# `--headless` and both are safe to call from anywhere. Kept ahead of the
+	# `--shot` block below so that the one flag which MUST be windowed is the last
+	# thing a reader of this function meets, next to the warning about it.
+	#
+	# `--frames-list` exists so tools/frames.ps1 does not carry a second copy of
+	# the scenario list. A runner with its own list is a runner that silently
+	# stops covering a scenario the day somebody adds one.
+	if "--frames-list" in OS.get_cmdline_args():
+		_run_frames_list.call_deferred()
+		return
+
+	# `--frames-report` is THE GATE: it reads every capture the windowed pass
+	# left in notes/perf/frames/current/, compares them against the committed
+	# golden values and exits non-zero on drift.
+	if "--frames-report" in OS.get_cmdline_args():
+		_run_frames_report.call_deferred()
+		return
+
 	# Headless balance sim: writes CSV to notes/balance/ and quits. Same shape as
 	# --verify because it answers the same kind of question — one a person cannot
 	# answer by playing, because playing to round 20 costs twenty minutes an
@@ -187,13 +236,48 @@ func _ready() -> void:
 	# lighting and glow are all things that can only be checked by looking, and
 	# this is the only way to look without a human at the keyboard.
 	var args := OS.get_cmdline_args()
+
+	# `--shot-setup <name>` puts the world into a named state before the shutter.
+	# Three agents hand-patched `_tick_shot` to photograph a state and reverted it
+	# again (audit §4); this is that, once, in a file that can be reviewed.
+	# Read before both capture flags because either can use it.
+	if "--shot-setup" in args:
+		var s := args.find("--shot-setup")
+		_shot_setup = args[s + 1] if s + 1 < args.size() else ""
+
 	if "--shot" in args:
 		var i := args.find("--shot")
 		_shot_path = args[i + 1] if i + 1 < args.size() else "shot.png"
 		if i + 2 < args.size() and args[i + 2].is_valid_float():
 			_shot_yaw = deg_to_rad(args[i + 2].to_float())
-		_shot_frames = 60
-		start_game.call_deferred()
+		_arm_shot()
+
+	# `--frames <name>`: capture, measure, record. WINDOWED, exactly as `--shot`
+	# is and for exactly the same reason — under `--headless` there is no
+	# rendering device, so `await RenderingServer.frame_post_draw` never returns
+	# and the process hangs forever rather than failing.
+	if "--frames" in args:
+		var i := args.find("--frames")
+		_shot_setup = args[i + 1] if i + 1 < args.size() else ""
+		if SHOT_SETUP.settle_of(_shot_setup) < 0.0:
+			push_error("[frames] unknown scenario '%s'. Known: %s" % [
+				_shot_setup, String(", ").join(SHOT_SETUP.names())])
+			get_tree().quit(2)
+			return
+		_frames_mode = true
+		_arm_shot()
+
+
+## Both capture flags open with the same phase: let the world settle for
+## WORLD_SETTLE seconds of game time before the scenario lands or the shutter
+## fires. Seconds and not frames, for the reason at `_shot_active`.
+func _arm_shot() -> void:
+	_shot_active = true
+	_shot_t = 0.0
+	_shot_n = 0
+	_shot_wait = WORLD_SETTLE
+	_shot_until = Callable()
+	start_game.call_deferred()
 
 
 ## Constructed in dependency order, then cross-wired: the director needs the drop
@@ -242,7 +326,21 @@ func _build_systems() -> void:
 
 func start_game() -> void:
 	Game.set_state(Game.STATE_PLAY)
-	Player.set_capture(true)
+	# A CAPTURE RUN MUST NOT CAPTURE THE POINTER, and this is not tidiness.
+	# `player._unhandled_input` turns mouse motion into camera rotation whenever
+	# `Input.mouse_mode == MOUSE_MODE_CAPTURED`, so a windowed `--shot` or
+	# `--frames` with a real mouse anywhere near the window photographs whatever
+	# direction the hand happened to leave it pointing. It cost a false gate
+	# failure to find: the frame gate run inside tools/build.ps1 reported 95
+	# drifts, four relations out of band, on scenarios the sabotage under test
+	# could not possibly have touched — `ads.mean / spawn.mean` came back 2.13
+	# against a golden 0.91 because the camera had turned to face a lit wall.
+	#
+	# The HUD's pause-on-lost-pointer does not fire either, because `_lock_seen`
+	# never arms without a lock to lose — which is the same path every headless
+	# and MCP-driven run already takes.
+	if not _shot_active:
+		Player.set_capture(true)
 	rounds.begin_run()
 
 
@@ -256,8 +354,8 @@ func start_game() -> void:
 ## `Game.tick_timers` stays ahead of all of it because `spawn_one` reads
 ## `Game.insta_kill` on the frame it expires.
 func _process(dt: float) -> void:
-	if _shot_frames >= 0:
-		_tick_shot()
+	if _shot_active:
+		_tick_shot(dt)
 
 	if Game.state != Game.STATE_PLAY:
 		return
@@ -310,6 +408,8 @@ func _on_player_died() -> void:
 ## the class registry until the editor rescans, and a headless run has no editor.
 const VERIFY_SCRIPT := preload("res://scripts/dev/verify.gd")
 const SIM_SCRIPT := preload("res://scripts/dev/balance_sim.gd")
+const SHOT_SETUP := preload("res://scripts/dev/shot_setup.gd")
+const FRAME_STATS := preload("res://scripts/dev/frame_stats.gd")
 const CONSOLE_SCRIPT := preload("res://scripts/dev/console.gd")
 const WARMUP_SCRIPT := preload("res://scripts/world/shader_warmup.gd")
 const QUALITY_SCRIPT := preload("res://scripts/world/quality_governor.gd")
@@ -355,20 +455,221 @@ func _run_sim() -> void:
 	get_tree().quit(SIM_SCRIPT.new().run(self))
 
 
-func _tick_shot() -> void:
+## Seconds of game time the world gets to settle before the scenario lands. Was
+## 60 frames, which was 1.0 s only under `--fixed-fps 60`.
+const WORLD_SETTLE := 1.0
+
+## How much game time past its own `settle` an arrival predicate gets before the
+## capture is declared a failure. Generous on purpose — a predicate that fires
+## LATE is a scenario whose animation somebody lengthened, and waiting for it is
+## the right answer; a predicate that never fires is a broken scenario, and three
+## extra seconds is long enough to tell those apart for every state here.
+const ARRIVAL_GRACE := 3.0
+
+## Comparing accumulated game time against a budget, so it needs a hair of slack:
+## twenty-one additions of `1.0/60.0` do not land exactly on 0.35. 1e-6 s is ten
+## orders of magnitude above the double-precision drift over the longest budget
+## here and four below one frame at 60 fps, so it can neither miss a frame nor add
+## one.
+const SHOT_EPS := 1e-6
+
+## The runaway guard, and it is NOT the deadline — the deadline above is in game
+## time, which is the only frame-rate-independent way to say "long enough". This
+## catches the one thing a game-time budget cannot: a `dt` that has stopped
+## advancing at all (a paused tree, a zero delta), where waiting for seconds would
+## spin forever inside tools/frames.ps1's own timeout with nothing to report.
+const SHOT_MAX_FRAMES := 60000
+
+
+## True once the current phase's budget is spent AND its arrival predicate, if it
+## has one, is satisfied. Fails the process loudly rather than returning true on a
+## predicate that never fires — a capture that shoots early is a golden row of the
+## wrong state, which is exactly the failure this replaced.
+func _shot_ready() -> bool:
+	if _shot_n > SHOT_MAX_FRAMES:
+		push_error(("[shot] '%s' rendered %d frames for %.3f s of game time — dt is "
+			+ "not advancing. Nothing can be photographed from here.") % [
+			_shot_setup, _shot_n, _shot_t])
+		_shot_active = false
+		get_tree().quit(3)
+		return false
+	if _shot_t + SHOT_EPS < _shot_wait:
+		return false
+	if not _shot_until.is_valid():
+		return true
+	if bool(_shot_until.call(self)):
+		return true
+	if _shot_t > _shot_wait + ARRIVAL_GRACE:
+		push_error(("[shot] '%s' never arrived: %.3f s of game time over %d frames, "
+			+ "budget %.2f s + %.2f s grace, and its arrival predicate is still "
+			+ "false. Refusing to photograph a state the scenario did not reach.") % [
+			_shot_setup, _shot_t, _shot_n, _shot_wait, ARRIVAL_GRACE])
+		_shot_active = false
+		get_tree().quit(3)
+	return false
+
+
+func _tick_shot(dt: float) -> void:
+	# THE CAMERA IS HELD, EVERY FRAME, ALL THE WAY TO THE SHUTTER.
+	#
+	# Belt and braces over `start_game`'s refusal to capture the pointer: that
+	# closes the only route a stray mouse has into the camera today, and this
+	# makes the pose an invariant rather than a consequence of that one guard
+	# still being there. Before the scenario lands the pose is the command line's
+	# yaw and a level pitch; afterwards it is whatever the scenario aimed at,
+	# because a scenario aims the camera at the thing it exists to photograph —
+	# the Corridor trap gate is 90 degrees off the spawn heading — and re-writing
+	# the yaw here would point every one of them at the same wall.
 	if player and is_instance_valid(player):
-		player.rotation.y = _shot_yaw
-	_shot_frames -= 1
-	if _shot_frames > 0:
+		if _shot_setup_done:
+			SHOT_SETUP.hold(self)
+		else:
+			SHOT_SETUP.aim(self, _shot_yaw, 0.0)
+	_shot_t += dt
+	_shot_n += 1
+	if not _shot_ready():
 		return
-	_shot_frames = -1
+
+	# The scenario lands once, after the world has settled and before the
+	# shutter, and it gets its OWN budget and its OWN arrival predicate. A state
+	# whose subject is a timed animation is not photographable at the budget a
+	# static state wants — the power-on ceremony is 2.13 s of tween and the Ray
+	# Gun bolt is 0.15 s of flight — and a state that has to ARRIVE is not
+	# photographable at any budget at all, only at the moment it gets there.
+	if not _shot_setup.is_empty() and not _shot_setup_done:
+		_shot_setup_done = true
+		var settle := SHOT_SETUP.apply(_shot_setup, self)
+		if settle < 0.0:
+			# Fail, never fall through. A typo that silently photographs the
+			# default view is a golden row that certifies nothing.
+			push_error("[shot] unknown --shot-setup '%s'. Known: %s" % [
+				_shot_setup, String(", ").join(SHOT_SETUP.names())])
+			_shot_active = false
+			get_tree().quit(2)
+			return
+		# Latched here and not inside the scenario, so a scenario cannot forget.
+		SHOT_SETUP.latch(self)
+		_shot_t = 0.0
+		_shot_n = 0
+		_shot_wait = settle
+		_shot_until = SHOT_SETUP.arrival_of(_shot_setup)
+		if not _shot_ready():
+			return
+
+	_shot_active = false
+	# Both numbers, every capture. The frame count is the one that moves between a
+	# bare run and `--fixed-fps 60`, and printing them side by side is what makes
+	# a mis-timed capture visible in a log instead of only in the pixels.
+	print("[shot] %s: %.4f s of game time over %d frames" % [
+		_shot_setup if not _shot_setup.is_empty() else "(default view)",
+		_shot_t, _shot_n])
 	# Grab after the frame has actually been drawn, or the capture races the
 	# renderer and comes back empty.
 	await RenderingServer.frame_post_draw
 	var img := get_viewport().get_texture().get_image()
+	if _frames_mode:
+		await _finish_frames(img)
+		return
 	img.save_png(_shot_path)
 	print("[shot] wrote %s (%dx%d)" % [_shot_path, img.get_width(), img.get_height()])
 	get_tree().quit()
+
+
+## Measures the captured frame and writes it to notes/perf/frames/current/.
+##
+## It does NOT gate. The comparison is `--frames-report`'s, so that one bad
+## scenario cannot stop the runner before the other six have been captured and
+## so the verdict is one table rather than seven exit codes. What this exits
+## non-zero for is a capture that is structurally broken — a scenario whose probe
+## came back empty means the thing it was pointed at was not there, and a golden
+## row taken from that would bless the absence.
+## The same instant with the viewmodel hidden, so a probe can locate the weapon by
+## DIFFERENCE rather than by a colour mask — see `frame_stats.changed_box()`.
+##
+## THE TREE IS PAUSED ACROSS THE SECOND DRAW, and that is the whole trick. Without
+## it the two frames are a `dt` apart: the torch flicker, the fixture glow, the arc
+## sheet and every other `_process`-driven light would have moved, and the
+## difference would be most of the room instead of the gun. Paused, the only thing
+## that changed between them is the thing this function turned off.
+##
+## THE CONTROL FOR THAT CLAIM, run rather than assumed: with this one line patched
+## to `visible = true` — the second draw taken without hiding anything — both
+## scenarios that use the difference report a box of `x -1..-1  y -1..-1  (0 px
+## over 0 rows)`, at a threshold of 1 as well as at the shipped 3. The noise floor
+## is exactly nothing, so every pixel the difference finds is the weapon.
+func _bare_frame() -> Image:
+	if viewmodel == null or not is_instance_valid(viewmodel):
+		return null
+	var was_paused := get_tree().paused
+	var was_visible: bool = viewmodel.visible
+	get_tree().paused = true
+	viewmodel.visible = false
+	await RenderingServer.frame_post_draw
+	var out := get_viewport().get_texture().get_image()
+	viewmodel.visible = was_visible
+	get_tree().paused = was_paused
+	return out
+
+
+func _finish_frames(img: Image) -> void:
+	var stats := FRAME_STATS.of(img)
+	# THE LIVE-SCENE PROBES RUN BEFORE THE SECOND DRAW, and the order is load
+	# bearing. They unproject world positions — the Ray Gun bolt, the trap gate, the
+	# lamp fixture — through the live camera, and `_bare_frame()` renders another
+	# frame during which the bolt moves. Taking it first moved `raygun`'s bolt_mean
+	# by 2.8% on a frame whose every whole-frame statistic was bit-identical: the
+	# measurement had drifted off the thing it was measuring. Found by blessing and
+	# reading the diff, which is what the three-way table in a bless is for.
+	var probes := SHOT_SETUP.probe(_shot_setup, self, img)
+	var bare: Image = await _bare_frame()
+	probes.merge(SHOT_SETUP.probe_silhouette(_shot_setup, img, bare))
+	stats["probes"] = probes
+	stats["settle"] = SHOT_SETUP.settle_of(_shot_setup)
+	FRAME_STATS.record(_shot_setup, stats, img)
+	print("[frames] %s  mean=%.6f (code %.1f)  median=%.6f  black=%.4f  blown=%.4f" % [
+		_shot_setup, stats["mean"], FRAME_STATS.code(stats["mean"]),
+		stats["median"], stats["black"], stats["blown"]])
+	for k: String in probes.keys():
+		print("[frames]   %s = %.5f" % [k, float(probes[k])])
+	# The viewmodel's silhouette in PIXELS, printed and deliberately not recorded.
+	# VM_RECT_HIP and VM_RECT_ADS in shot_setup.gd are hand-set rects whose comment
+	# says they were "read off the reference frames with a pixel ruler" — this is
+	# that ruler, so re-reading one after the weapon moves is a line in a log rather
+	# than an afternoon in an image editor. Not a golden value: a bounding box in
+	# pixels is a snapshot that has to be re-blessed at every resolution, and the
+	# two RATIOS derived from it are the half that survives.
+	# Only for the scenarios that MEASURE the silhouette. On `raygun` the same
+	# difference reports the whole frame — the bolt and its light advance between
+	# the two draws, because pausing the tree does not stop everything — and a line
+	# reading `viewmodel box x 0..1279` under a scenario that has no viewmodel
+	# measurement is an invitation to chase a bug that is not there.
+	if bare != null and SHOT_SETUP.silhouette_expected(_shot_setup):
+		var box := FRAME_STATS.changed_box(img, bare)
+		print("[frames]   viewmodel box  x %d..%d  y %d..%d  (%d px over %d rows)" % [
+			box["x0"], box["x1"], box["y0"], box["y1"], box["count"], box["rows"]])
+	var broken := SHOT_SETUP.probes_expected(_shot_setup) and probes.is_empty()
+	if broken:
+		push_error("[frames] %s produced no probe values — its subject was not in the scene"
+			% _shot_setup)
+	# A silhouette scenario whose difference found nothing has photographed a frame
+	# with no weapon in it. The relations would catch it — `sight_top_over_centre`
+	# comes back -1.0, outside every band — but a capture that knows it is broken
+	# should say so where it happened rather than three scenarios later in a table.
+	if SHOT_SETUP.silhouette_expected(_shot_setup) and float(probes.get("gun_px", 0.0)) <= 0.0:
+		push_error(("[frames] %s: hiding the viewmodel changed nothing, so there was "
+			+ "no viewmodel in the frame.") % _shot_setup)
+		broken = true
+	get_tree().quit(1 if broken else 0)
+
+
+func _run_frames_list() -> void:
+	for n: String in SHOT_SETUP.names():
+		print(n)
+	get_tree().quit(0)
+
+
+func _run_frames_report() -> void:
+	get_tree().quit(FRAME_STATS.report(SHOT_SETUP.names()))
 
 
 func restart() -> void:

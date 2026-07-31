@@ -20,6 +20,13 @@
 .PARAMETER SkipVerify
   Skip the assertion gate. For local iteration only — never for a release.
 
+.PARAMETER SkipFrames
+  Skip the rendered-frame gate. For local iteration only — never for a release.
+  The frame gate is the only thing in this pipeline that looks at a PIXEL: two
+  milestones shipped a near-black frame with the assertion suite green, so
+  -SkipVerify and -SkipFrames are two different admissions and neither implies
+  the other.
+
 .PARAMETER Perf
   Build the benchmark harness instead of the game: selects the WebPerf preset,
   targets build/perf/, and registers scripts/perf_probe.gd as an autoload for
@@ -37,6 +44,7 @@ param(
   [string]$Out = "docs/index.html",
   [string]$Godot = "$env:USERPROFILE\Godot\Godot_v4.7-stable_win64_console.exe",
   [switch]$SkipVerify,
+  [switch]$SkipFrames,
   [switch]$Perf
 )
 
@@ -99,6 +107,41 @@ stops at the FIRST error, so everything below that line is unchecked.
 "@
     }
     if ($v.ExitCode -ne 0) { throw "verification failed (exit $($v.ExitCode)) - not building" }
+  }
+
+  if (-not $SkipFrames) {
+    Write-Host "== frame gate =="
+    # THE ONLY THING IN THIS PIPELINE THAT LOOKS AT A PIXEL. --verify was 537
+    # assertions and every one of them was green while two milestones shipped a
+    # near-black frame; the frame gate renders each scenario, measures it and
+    # compares against notes/perf/frames/golden.json.
+    #
+    # IT MUST BE ABLE TO OPEN A WINDOW, and if it cannot it FAILS rather than
+    # skipping. A visual gate that quietly no-ops on a headless CI box is worse
+    # than no gate, because the build then claims a check it never ran. Anyone
+    # who genuinely cannot render passes -SkipFrames and owns that in writing.
+    #
+    # frames.ps1 bounds each of its own Godot invocations at 60 s for the same
+    # reason the block above does, so the only thing left to bound here is the
+    # whole pass: eight windowed captures at ~3.3 s plus a headless report is
+    # about 30 s, and a parse error would take ~414 s per capture.
+    $framesTimeoutSec = 240
+    $f = Start-Process -FilePath "pwsh" `
+      -ArgumentList @("-NoProfile", "-File", "tools/frames.ps1", "-Godot", "`"$Godot`"") `
+      -WorkingDirectory $root -NoNewWindow -PassThru
+    if (-not $f.WaitForExit($framesTimeoutSec * 1000)) {
+      $f.Kill(); $f.WaitForExit()
+      throw @"
+the frame gate did not finish in ${framesTimeoutSec}s.
+A windowed capture that hangs is almost always --headless having reached the
+capture (no rendering device, so `RenderingServer.frame_post_draw` never
+returns), or a parse error in a script reachable from the main scene.
+Check for orphaned Godot processes: killing this shell does NOT kill them.
+"@
+    }
+    if ($f.ExitCode -ne 0) {
+      throw "the frame gate failed (exit $($f.ExitCode)) - not building. See the drift table above; re-bless with `pwsh tools/frames.ps1 -Bless` ONLY after looking at notes/perf/frames/current/*.png and agreeing the change is intended."
+    }
   }
 
   Write-Host "== preparing project.godot =="

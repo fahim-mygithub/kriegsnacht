@@ -406,10 +406,16 @@ static func _hud_clock(v: Verify, main: Node3D) -> void:
 ## signal by hand — that also proves the connection survived the move, which is
 ## the part of a relocation most likely to be silently dropped.
 ##
-## The second assertion is constraint 6 from the cosmetic side. The quad's roll is
-## a VISUAL draw and has to stay one: it happens once per shot, immediately before
-## the two VISUAL draws that pick the bullet's spread, so promoting it to a
+## The second assertion is constraint 6 from the cosmetic side. The flash's SIZE
+## is a VISUAL draw and has to stay one (atmosphere.gd's `_on_fired`; the roll it
+## replaced was discarded by the billboard): it happens once per shot, immediately
+## before the two VISUAL draws that pick the bullet's spread, so promoting it to a
 ## gameplay stream would shift every seeded run's aim.
+##
+## NOTE THE EMIT BELOW IS AT THE CAMERA'S OWN POSITION, so `_on_fired` computes
+## dist = 0 and `flash_size` returns 0.0: this fires a ZERO-SIZE flash and only
+## reads `visible`, which is all it claims. Anything needing a size fires at a real
+## depth instead — checks/frame.gd::_flash_drawn, `FIRE_DEPTH`.
 static func _muzzle(v: Verify, main: Node3D) -> void:
 	var atmos: Node3D = main.get("atmos")
 	var streams: Array[StringName] = [Rng.SPAWN, Rng.BOX, Rng.DROPS, Rng.ROUNDS, Rng.AI]

@@ -368,6 +368,56 @@ static func slide_corners(key: String) -> PackedVector3Array:
 	return _corners(key, true)
 
 
+## Cache for `sight_height`, keyed by weapon. Nothing invalidates it because
+## nothing here is mutable: `ART`, `GRIP`, `SLIDE`, `UNIT`, `PROUD` are all
+## constants, so a weapon's top edge is fixed at load.
+static var _sight_cache: Dictionary = {}
+
+
+## How far the weapon's own sighting surface — the top of it — sits above the
+## grip, in metres. `viewmodel.gd` drops the whole rig by this at the sights so
+## that what lands on the view axis is the top of the gun rather than the hand
+## holding it; see `ADS_SIGHT_CLEAR` there for why that is what a hard scope is.
+##
+## **DERIVED FROM THE SAME CORNER WALK THE MESH IS BUILT FROM, and that is the
+## whole reason it is a function and not a table.** Thirteen hand-read top edges
+## would be a second copy of the art, and it would go stale the first time a part
+## moved by a unit — silently, because a sight height that is wrong by two units
+## looks like a weapon that is merely posed a little high.
+##
+## **`slide_corners` is not optional.** `body_corners` excludes whatever `SLIDE`
+## names, and on the M1911 the topmost part IS the slide plate (`SLIDE` index 1, a
+## rect at art y 20 against a grip at 30). Walking the body alone reads 8.00 art
+## units against the real 10.24 and puts the flagship weapon's sight line 2.24
+## units — about 13 px at the sighted pose in a 720 px frame — through the
+## crosshair. The AK74u (12.28 against 11.04) and the RPK (11.32 against 11.04)
+## are the other two the term catches.
+##
+## Measured across the table, this runs from 5.05 art units on the knife to 19.24
+## on the Ray Gun — a spread of nearly four to one, which is why the rig cannot
+## use one constant and get anything but the middle of the table right.
+##
+## Cached: the rig reads it through the pose, and `_corners()` walks and inflates
+## every part of every shape. That is a load-time cost, not a per-frame one.
+static func sight_height(key: String) -> float:
+	if _sight_cache.has(key):
+		var hit: float = _sight_cache[key]
+		return hit
+	# Zero rather than -INF for a key with no art, so a missing row costs an
+	# unsighted weapon and not a NaN in the camera's transform — the same call the
+	# `muzzle_local` fallback makes. It is also the right floor for real art: a
+	# weapon whose every corner is below its own grip is not a weapon.
+	var top := 0.0
+	var body := body_corners(key)
+	for p: Vector3 in body:
+		top = maxf(top, p.y)
+	var slide := slide_corners(key)
+	for p: Vector3 in slide:
+		top = maxf(top, p.y)
+	_sight_cache[key] = top
+	return top
+
+
 # --- internals ---------------------------------------------------------------
 
 static func _grip(key: String) -> Vector2:
