@@ -64,6 +64,14 @@ const PROJECTILES := preload("res://scripts/dev/checks/projectiles.gd")
 ## looks at pixels is `pwsh tools/frames.ps1`, and it is a windowed pass.
 const FRAME := preload("res://scripts/dev/checks/frame.gd")
 
+## The co-op net layer's headless half: framing, decode() normalisation, presence
+## folding, the room-code alphabet and the Net autoload's contract. It opens NO
+## socket and says so in its own header — the parts that need one were measured by
+## hand and live in notes/net/2026-07-31-realtime-probe.md, which is evidence and
+## not a gate. Same shape of problem as frame.gd: the interesting half needs
+## hardware the suite does not have, so the boundary is stated rather than faked.
+const NET := preload("res://scripts/dev/checks/net.gd")
+
 ## Every check module in scripts/dev/checks/, by filename, and the single place
 ## they are registered. `_registered()` walks the directory and fails if anything
 ## on disk is missing from this list.
@@ -87,6 +95,7 @@ const CHECK_MODULES := {
 	"mapgen.gd": MAPGEN,
 	"projectiles.gd": PROJECTILES,
 	"frame.gd": FRAME,
+	"net.gd": NET,
 }
 
 ## The number of assertions this suite is known to run, minus a small margin for
@@ -122,7 +131,18 @@ const CHECK_MODULES := {
 ## `_flash_geometry`, `_flash_art`, `_flash_materials` and `_flash_drawn`. A
 ## quiescent tree now runs 586, so 585 is the count this check sees on a fully
 ## green run. Raised ADDITIVELY.
-const ASSERTION_FLOOR := 585
+##
+## +91 for co-op multiplayer, reconciled at the integration point rather than by
+## either package alone: +20 for the menu's four new screens (checks/shell.gd's
+## `_menu_multiplayer`), +70 for the net layer's headless half (checks/net.gd), and
+## +1 for splitting the send-budget check into its two halves — the ceiling cannot
+## breach the free tier, AND it still clears the rates it has to carry. A budget of
+## 1 would satisfy the first perfectly while shedding every snapshot in the game,
+## which is why that one is two checks and not one.
+##
+## A quiescent tree now runs 677, so 676 is the count this check sees on a fully
+## green run. Raised ADDITIVELY.
+const ASSERTION_FLOOR := 676
 
 var _pass := 0
 var _fail := 0
@@ -263,6 +283,11 @@ func run(main: Node3D) -> int:
 	# sits before the two sections that DO have an ordering constraint.
 	_mark("frame")
 	FRAME.run(self, main)
+	# Same reasoning as `frame` above, and it earns it the same way: it restores the
+	# rng streams and the session state it drives, so it touches no global state and
+	# has no ordering constraint.
+	_mark("net")
+	NET.run(self, main)
 	# Dead last, and it has to be: the seed sweep rolls MapData's static layout
 	# tables 48 times and re-seeds Rng on every iteration. It puts both back on the
 	# way out, but anything downstream holding a cached wall-buy position would be

@@ -110,14 +110,48 @@ Attach on the first `_process` tick instead. In the shipped game this cannot ari
 the node lives in a live tree — but any future harness that drives the net layer from
 a `SceneTree` script will hit it again.
 
-## Message budget
+## Message budget — CORRECTED, and the first version was 4× low
 
-At 15 Hz host snapshots plus 15 Hz per-client input, a 4-player session is
-`15 + 3 × 15 = 60` messages/second — which the burst test cleared without throttling.
-That is 216,000 messages an hour, so the free tier's monthly allowance is the binding
-constraint on session hours, not the tick rate. Cutting the client input rate is the
-cheapest lever if that ever bites: inputs are far more compressible than snapshots, and
-a client sending at 10 Hz is not perceptibly worse.
+**The original version of this section was wrong and the error decided the player
+count, so it is worth stating plainly.** It costed a 4-player session at
+`15 + 3 × 15 = 60` messages/second by counting only what each client *publishes*.
+
+Supabase does not count publishes. Its
+[limits page](https://supabase.com/docs/guides/realtime/limits) defines an **event**
+as *"a WebSocket message delivered to, or sent from a client."* One broadcast into a
+room of N therefore costs **1 send + (N−1) deliveries = N events**. Fan-out is the
+whole cost and it was missing.
+
+At 15 Hz in both directions, against the free tier's **100 events/second**:
+
+| Players | Host snapshots | Client input | Total | |
+| --- | --- | --- | --- | --- |
+| 2 | 15 × 2 = 30 | 15 × 2 = 30 | **60/s** | fits |
+| 3 | 15 × 3 = 45 | 2 × 15 × 3 = 90 | **135/s** | over |
+| 4 | 15 × 4 = 60 | 3 × 15 × 4 = 180 | **240/s** | 2.4× over |
+
+Exceeding it is not graceful degradation — `tenant_events` **disconnects the
+sockets**, and the client library's automatic reconnect turns that into a loop.
+
+**This is why the game is 2-player.** Four would need ~6 Hz, which is unusable for
+aim even with interpolation, or the Pro plan's 500 events/second. `MAX_PLAYERS` in
+`session.gd` carries the same arithmetic so nobody raises it casually.
+
+### Why the burst test did not catch this
+
+The burst test pushed 30 messages and saw no throttle, which was read as headroom. It
+was not: one publisher and one subscriber makes 30 messages cost ~60 events spread
+over three seconds — nowhere near 100/second. **The probe measured a 2-player load
+and the note drew a 4-player conclusion from it.** The measurement was fine; the
+extrapolation was not.
+
+### Monthly quota, separately
+
+The free tier also allows 2 million events a month. At the 2-player rate of 60
+events/second that is ~9.3 hours of play a month, which is the real ceiling on a
+hobby game and is worth knowing before anyone is surprised by it. Cutting the client
+input rate is the cheapest lever: inputs compress far better than snapshots, and a
+client sending at 10 Hz is not perceptibly worse.
 
 ## Reproducing
 

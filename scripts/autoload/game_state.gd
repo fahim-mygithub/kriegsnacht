@@ -140,6 +140,22 @@ var lure_position := Vector3.INF
 ## NOT by `try_drop()`.
 var trap_clearing := false
 
+## Set only while the host is applying ANOTHER player's damage claim
+## (scripts/net/session_runtime.gd::_apply_dmg).
+##
+## SEPARATE FROM THE OTHER TWO, and for a third reason. `nuke_clearing` and
+## `trap_clearing` both mean "nobody earned this". This one means "somebody earned
+## it and it was not the player at this machine". Points are per-client by design
+## (notes/design/2026-07-31-coop-topology-decision.md), and the host simulates the
+## whole horde including the bodies its teammate is shooting — so without this the
+## host banks the payout for every kill in the room, which is double income for
+## whoever happened to press HOST.
+##
+## Read by add_points() and deliberately NOT by try_drop(), which is exactly the
+## split trap_clearing already draws: canon's drop roll lives in the body's own
+## death callback and does not care who killed it.
+var remote_kill := false
+
 ## Power-ups are earned by points, not by a kill counter (see next_drop_at).
 var points_earned := 0
 var next_drop_at := 2000
@@ -224,6 +240,7 @@ func reset_run() -> void:
 	drop_count = 0
 	nuke_clearing = false
 	trap_clearing = false
+	remote_kill = false
 	lure_position = Vector3.INF
 	box_uses = 0
 	box_spot = 0
@@ -301,7 +318,7 @@ func set_state(s: int) -> void:
 ## payout call sites and a synchronous sweep drives whichever one the death handler
 ## happens to use today. A guard at one of them is a guard the next one walks past.
 func add_points(n: int) -> void:
-	if nuke_clearing or trap_clearing:
+	if nuke_clearing or trap_clearing or remote_kill:
 		return
 	var mult := 2 if dbl_points > 0.0 else 1
 	var gained := n * mult

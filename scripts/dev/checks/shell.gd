@@ -72,6 +72,7 @@ static func run(v: Verify, main: Node3D) -> void:
 	_settings_keeps_the_profile(v)
 	_settings_matches_the_game(v, main)
 	_menu_tree(v, main)
+	_menu_multiplayer(v, main)
 	_reduce_motion(v, main)
 	_captions_and_arrows(v, main)
 	_colour_channels(v, main)
@@ -444,6 +445,441 @@ static func _menu_tree(v: Verify, main: Node3D) -> void:
 		menu.unbind()
 		main.remove_child(menu)
 		menu.queue_free()
+
+
+# --- the co-op screens ----------------------------------------------------------
+
+## WHAT IS AND IS NOT TESTED HERE, stated first because the gap is the important
+## part: NOTHING IN THIS SECTION TOUCHES A NETWORK. There is no socket, no room,
+## no peer and no HTTP request in a `--verify` run, and a fake one would be worse
+## than the gap — it would assert that a mock behaves like a mock. What is
+## exercised is the menu's own machine and the two places it meets `Net` that can
+## be reached without a connection:
+##
+##   * `Net.join_room()` with a malformed code, which the session refuses on shape
+##     alone and BEFORE it touches its HTTPRequest (session.gd:120-128) — a real
+##     call into the real API with a real signal coming back;
+##   * `Net.roster_changed`, emitted here exactly as session.gd:281 emits it.
+##
+## Two readouts are driven with the session's state INJECTED — `_refresh_host(st)`
+## and `_refresh_lobby(st)` take it as an argument for this reason — and two more
+## with `Net._is_host` / `Net._code` written directly and put back. That is setting
+## the integers the UI reads, not simulating a connection: no frame is parsed, no
+## presence is folded and no socket is opened. Everything about the transport
+## itself is asserted in scripts/net/, headlessly and statically, or by playing it.
+##
+## The menu built here binds with a NULL hud on purpose. `bind()` hands the HUD a
+## menu and `unbind()` takes it away again, and once main.gd builds a real menu
+## (see the last check in this function) a probe that did that would leave the real
+## one orphaned behind a HUD that had stopped drawing its own screens.
+static func _menu_multiplayer(v: Verify, main: Node3D) -> void:
+	var menu = MENU.new()
+	menu.name = "MenuCoopCheck"
+	main.add_child(menu)
+	menu.bind(main, null)
+
+	var screens: Dictionary = menu.screens()
+	var missing := ""
+	for name: String in MENU.MP_SCREENS:
+		if not screens.has(name):
+			missing += name + " "
+	v.check("the menu has a multiplayer, a host, a join and a lobby screen",
+		missing.is_empty() and MENU.MP_SCREENS.size() == 4, missing)
+
+	# The rings themselves are walked for closure by `_menu_tree`, which iterates
+	# every screen and therefore covers these four. What that cannot see is a ring
+	# wired to the WRONG controls — a chain of three back buttons closes perfectly.
+	# So this asserts the contents by identity: the control each screen exists for
+	# has to be in its own ring, or the keyboard cannot reach the thing the screen
+	# is for.
+	var rings := {
+		"multiplayer": 3,
+		"host": 2,
+		"join": 3,
+		"lobby": 2,
+	}
+	var wrong := ""
+	for name: String in rings:
+		var ring: Array = menu.chain(name)
+		if ring.size() != int(rings[name]):
+			wrong += "%s(%d) " % [name, ring.size()]
+	if not menu.chain("host").has(menu._host_start):
+		wrong += "host/START "
+	if not menu.chain("join").has(menu._join_field):
+		wrong += "join/field "
+	if not menu.chain("join").has(menu._connect):
+		wrong += "join/CONNECT "
+	if not menu.chain("lobby").has(menu._drop_in):
+		wrong += "lobby/DROP-IN "
+	v.check("each co-op ring holds the controls its screen exists for",
+		wrong.is_empty(), wrong)
+
+	_coop_join_field(v, menu)
+	_coop_readouts(v, menu)
+	_coop_roster(v, menu)
+	_coop_start(v, menu)
+	_coop_name(v, menu)
+	_coop_focus(v, menu)
+	_coop_listeners(v, menu)
+
+	main.remove_child(menu)
+	menu.queue_free()
+
+	# THE HUNK THIS PACKAGE COULD NOT APPLY ITSELF, asserted rather than described.
+	# menu.gd is instantiated in exactly one place in this repository and it is the
+	# line above: `main.gd` never builds one, `scenes/Main.tscn` is a bare Node3D
+	# with one script on it, and hud.gd's `set_menu` is called only from menu.gd's
+	# own `bind()`. So every button this file tests — ENTER THE BUNKER, OPTIONS,
+	# RESUME and now MULTIPLAYER — exists only inside `--verify`, and a player who
+	# loads the game gets hud.gd's older click-anywhere plates instead. This check
+	# fails until main.gd grows the four lines in the multiplayer-menu package's
+	# report.
+	v.check("main builds the menu, so its screens exist for a player and not only here",
+		main.get("menu") != null,
+		"main.gd has no `menu` member; menu.gd is reachable from nothing but this suite")
+
+
+## The one screen with a text field on it, driven the way a keystroke drives it.
+##
+## MEASURED, NOT ASSUMED: on 4.7 neither `set_text()`, the `text` property,
+## `insert_text_at_caret()` nor `delete_text()` emits `text_changed` — only
+## `clear()` does. So a typed character is "buffer first, signal second", and that
+## pair is what is reproduced below. It also means the write-back inside
+## `_on_join_text` cannot currently recurse; the latch there is kept anyway, and
+## the comment on it says which of the two it is.
+static func _coop_join_field(v: Verify, menu) -> void:
+	var f: LineEdit = menu._join_field
+
+	# Every one of these is a real arrival: a hyphenated code read out and typed
+	# back, one with the separators as spaces, a paste that overruns, and a string
+	# with nothing legal in it at all. The expected values come from
+	# phoenix.gd:316-337 — filter to the alphabet, upper-case, clip at CODE_LEN —
+	# and NOT from running the function and writing down what it said.
+	var cases := {
+		"bcdf-23": "BCDF23",
+		"  bc df 23 ": "BCDF23",
+		"BCDF23789": "BCDF23",
+		"aeiou": "",
+		"l01": "",
+	}
+	var bad := ""
+	for raw: String in cases:
+		_type(f, raw)
+		if f.text != String(cases[raw]):
+			bad += "%s->%s " % [raw, f.text]
+	v.check("the join field filters a typed code to the alphabet and writes it back",
+		bad.is_empty(), bad)
+
+	# Both ends. A gate that only ever refuses passes just as well against a field
+	# that has stopped accepting anything at all.
+	_type(f, "BCDF2")
+	var short_refused: bool = menu._connect.disabled
+	_type(f, "BCDF23")
+	var full_offered: bool = not menu._connect.disabled
+	_type(f, "BCDF2A")   # A is not in the alphabet, so this is five characters
+	var filtered_refused: bool = menu._connect.disabled
+	v.check("CONNECT is refused until the code is the right shape and offered when it is",
+		short_refused and full_offered and filtered_refused,
+		"short=%s full=%s filtered=%s" % [short_refused, full_offered, filtered_refused])
+
+	# The slot readout is the only thing on the screen that says how many
+	# characters are still missing, and six is PHX.CODE_LEN rather than a number
+	# chosen here.
+	_type(f, "bcd")
+	var partial: String = menu._join_slots.text
+	_type(f, "bcdf23")
+	var full: String = menu._join_slots.text
+	v.check("the code reads as six slots, filled and empty",
+		partial == "B C D _ _ _" and full == "B C D F 2 3",
+		"partial=%s full=%s" % [partial, full])
+	_type(f, "")
+
+
+## What the engine does when a character is typed: the buffer is written and then
+## the signal is emitted with it. Assigning `text` alone emits nothing (measured),
+## so a test that only assigned would never reach the handler at all.
+static func _type(f: LineEdit, raw: String) -> void:
+	f.text = raw
+	f.text_changed.emit(raw)
+
+
+## The two session-driven readouts, and the one round trip through `Net` that a
+## headless run can honestly make.
+static func _coop_readouts(v: Verify, menu) -> void:
+	var host_was: bool = bool(Net._is_host)
+	var code_was: String = String(Net._code)
+
+	Net._code = "BCDF23"
+	menu._refresh_host(Net.CLAIMING)
+	var claiming: bool = menu._host_start.disabled \
+		and menu._host_status.text.contains("claiming")
+	# The acceptance end: with a code in hand and the channel up, the same screen
+	# has to offer the button it was refusing.
+	Net._is_host = true
+	menu._refresh_host(Net.LOBBY)
+	var ready: bool = not menu._host_start.disabled
+	var reads_out: String = menu._code_labels["host"].text
+	# A guest can never start the run — `Net.start_run()` refuses it outright
+	# (session.gd:158-160) — so the button must not offer to.
+	Net._is_host = false
+	menu._refresh_host(Net.LOBBY)
+	var guest_refused: bool = menu._host_start.disabled
+	v.check("the host screen claims a room before it offers to start it",
+		claiming and ready and guest_refused,
+		"claiming=%s ready=%s guest=%s" % [claiming, ready, guest_refused])
+
+	# The code is read down a voice call, which is the whole reason the alphabet
+	# has no vowels and no L/0/1 (phoenix.gd:52-56). Spaced, and at a size that
+	# cannot be confused with the 16 px subtitle above it.
+	var size: int = menu._code_labels["host"].get_theme_font_size("font_size")
+	v.check("the room code is spelled out large enough to read aloud",
+		reads_out == "B C D F 2 3" and size >= 48,
+		"text=%s size=%d" % [reads_out, size])
+
+	# The lobby's three states, all three asserted: waiting, armed, and a host —
+	# who reaches the run through START and never through DROP IN.
+	Net._is_host = false
+	menu._refresh_lobby(Net.LOBBY)
+	var waiting: bool = menu._drop_in.disabled and menu._lobby_status.text.contains("host")
+	menu._refresh_lobby(Net.IN_RUN)
+	var armed: bool = not menu._drop_in.disabled and menu._drop_in.text == "DROP IN"
+	Net._is_host = true
+	menu._refresh_lobby(Net.IN_RUN)
+	var host_never: bool = menu._drop_in.disabled
+
+	Net._is_host = host_was
+	Net._code = code_was
+	v.check("the lobby arms DROP IN once the host has started, and only for a guest",
+		waiting and armed and host_never,
+		"waiting=%s armed=%s host=%s" % [waiting, armed, host_never])
+
+	# CONSUMER-DRIVEN, AND THE ONLY CROSS-PACKAGE ONE THAT NEEDS NO NETWORK.
+	# `join_room` decides shape locally and refuses before it touches its
+	# HTTPRequest (session.gd:120-128), so this is the real API, the real refusal
+	# and the real `error` signal — not a message emitted by the test. Reading the
+	# label back instead would pass against a session that never emitted anything.
+	menu.show_screen("join")
+	menu._clear_net_error()
+	var offline: bool = int(Net.state()) == Net.OFFLINE
+	var before: String = menu._error_labels["join"].text
+	Net.join_room("XX", "Dempsey")
+	var shown: String = menu._error_labels["join"].text
+	v.check("the session refuses a malformed code and the message lands on the screen",
+		offline and before.is_empty() and not shown.is_empty()
+			and int(Net.state()) == Net.OFFLINE and menu.current() == "join",
+		"offline=%s before=[%s] after=[%s] screen=%s" % [
+			offline, before, shown, menu.current()])
+	menu._clear_net_error()
+
+
+## The roster, driven through the signal session.gd:281 actually emits.
+##
+## NOT ONE ROW COUNT IS WRITTEN DOWN HERE. `Net.MAX_PLAYERS` moved from 4 to 2
+## under this package while it was being written — a broadcast into a room of N
+## costs N events against a 100/second project cap (session.gd:31-55) — and the
+## first draft of this check failed on the change alone, because it seated two
+## players and then looked for an empty row. Everything below is expressed
+## relative to the constant instead, so the day the plan buys a bigger tier this
+## does not have to be edited to stay true.
+static func _coop_roster(v: Verify, menu) -> void:
+	var box: VBoxContainer = menu._roster_boxes["lobby"]
+	var seats: int = int(Net.MAX_PLAYERS)
+	# One occupant, so there is always a free seat to look at whatever the cap is.
+	# The occupant is both host and me, which puts both marks on one row.
+	Net.roster_changed.emit([{"key": "aaa", "name": "Dempsey", "host": true, "me": true}])
+	var built: int = box.get_child_count()
+	var first: Label = box.get_child(0) as Label
+	var empty: Label = box.get_child(built - 1) as Label
+	var reads: bool = first.text.begins_with("Dempsey") and first.text.contains("host") \
+		and first.text.contains("you") and empty.text.contains("empty")
+	v.check("a roster event fills one row per seat, marks the host and marks you",
+		seats >= 2 and built == seats and reads,
+		"cap=%d rows=%d first=[%s] last=[%s]" % [seats, built, first.text, empty.text])
+
+	# The other marking rule, and it is a separate claim: somebody else's row
+	# carries neither mark. Without this, `_rebuild_roster` could be stamping
+	# "(host · you)" on every row and the check above would still pass.
+	Net.roster_changed.emit([
+		{"key": "aaa", "name": "Dempsey", "host": true, "me": false},
+		{"key": "bbb", "name": "Nikolai", "host": false, "me": true},
+	])
+	var theirs: Label = box.get_child(0) as Label
+	var mine: Label = box.get_child(1) as Label
+	v.check("somebody else's row is marked as neither the host nor you",
+		theirs.text.contains("host") and not theirs.text.contains("you")
+			and mine.text.contains("you") and not mine.text.contains("host"),
+		"theirs=[%s] mine=[%s]" % [theirs.text, mine.text])
+
+	# THE LEAK. `queue_free()` without a `remove_child()` first leaves the node in
+	# `get_children()` until the end of the frame, and a presence_state followed by
+	# a presence_diff — the ordinary arrival shape on join — is two roster events in
+	# one frame. So the second rebuild is asserted to have replaced the rows rather
+	# than stacked on top of them, and the originals are asserted to be on their way
+	# out rather than merely detached.
+	Net.roster_changed.emit([{"key": "ccc", "name": "Takeo", "host": true, "me": true}])
+	var after: int = box.get_child_count()
+	var gone: bool = theirs.is_queued_for_deletion() and not box.get_children().has(theirs)
+	var rebuilt: bool = (box.get_child(0) as Label).text.begins_with("Takeo")
+	v.check("a second roster event replaces the rows rather than stacking them",
+		after == seats and gone and rebuilt,
+		"seats=%d gone=%s rebuilt=%s" % [after, gone, rebuilt])
+	Net.roster_changed.emit([])
+
+
+## Starting the run, which is the one thing on these screens that is irreversible.
+static func _coop_start(v: Verify, menu) -> void:
+	var stub := StubMain.new()
+	var main_was = menu.main
+	var state_was: int = Game.state
+	var screen_was: String = menu.current()
+	menu.main = stub
+	# Assigned rather than set through Game.set_state, which would pause the tree
+	# and emit into every listener in the game for the sake of a latch test.
+	Game.state = Game.STATE_TITLE
+
+	# THE BUG THE OPTIONS SCREEN ALREADY SHIPPED ONCE, one screen at a time. Opening
+	# a co-op screen does not move Game.state, so underneath all four the state
+	# still reads TITLE — and hud.gd's click-anywhere poll reads the Input singleton,
+	# which a Control consuming the click does not suppress. Without the guard in
+	# `press_primary`, every click on JOIN A ROOM, on the code field and on LEAVE
+	# would also start the solo run.
+	for name: String in MENU.MP_SCREENS:
+		menu.show_screen(name)
+		menu._acted = false
+		menu.press_primary()
+	v.check("a click on a co-op screen is not a click-anywhere-to-start",
+		stub.starts == 0 and stub.restarts == 0,
+		"starts=%d restarts=%d screens=%s" % [stub.starts, stub.restarts, MENU.MP_SCREENS])
+
+	# And the acceptance end, through the button a guest actually presses. Both
+	# halves matter: the run starts exactly once however many paths reach DROP IN,
+	# and it starts from the HOST's seed — every client re-seeds because opening a
+	# room draws 32 values out of VISUAL for the presence key (session.gd:371-376)
+	# and no two clients draw them at the same moment.
+	var seed_was: int = int(Rng.seed_value)
+	var states := {}
+	for s: StringName in [Rng.SPAWN, Rng.BOX, Rng.DROPS, Rng.ROUNDS, Rng.AI, Rng.VISUAL]:
+		states[s] = Rng.stream(s).state
+	menu.show_screen("lobby")
+	menu._acted = false
+	menu._run_seed = 424242
+	# Through the button's own signal rather than the handler, so a DROP IN that
+	# was built and connected to nothing fails here instead of shipping inert.
+	menu._drop_in.pressed.emit()
+	menu._drop_in.pressed.emit()
+	var once: bool = stub.starts == 1
+	var seeded: bool = int(Rng.seed_value) == 424242
+	# Put the streams back where they were, not merely the seed: `new_run()` clears
+	# and re-derives all six, and the sections after this one draw from them.
+	Rng.new_run(seed_was)
+	for s: StringName in states:
+		Rng.stream(s).state = states[s]
+	v.check("DROP IN starts the run once and re-seeds it from the host's seed",
+		once and seeded, "starts=%d seed=%d" % [stub.starts, Rng.seed_value])
+
+	Game.state = state_was
+	menu.main = main_was
+	menu.show_screen(screen_was)
+
+
+## The display name, which exists because `Settings` cannot hold a string.
+static func _coop_name(v: Verify, menu) -> void:
+	# BO1's four, in the order the game itself lists them. The expected values are
+	# the reference's, not a transcription of what the table happened to contain.
+	var crew := ["Dempsey", "Nikolai", "Takeo", "Richtofen"]
+	var bad := ""
+	for i in crew.size():
+		if MENU._crew_name(i) != String(crew[i]):
+			bad += "%d=%s " % [i, MENU._crew_name(i)]
+	# Wraps rather than running off the end, including for a negative seed — which
+	# `Rng.seed_value` cannot currently be, but `%` on a negative int in GDScript
+	# returns a negative and would index out of the table.
+	var wraps: bool = MENU._crew_name(4) == crew[0] and MENU._crew_name(-1) == crew[1]
+	v.check("the crew names are BO1's four and the pick wraps",
+		bad.is_empty() and wraps, "%s wraps=%s" % [bad, wraps])
+
+	# CONSTRAINT 5. A name picked with `Rng.randi_range(Rng.VISUAL, ...)` would
+	# advance the one stream weapon spread still rides, on every visit to this
+	# menu, for a string that must never touch the simulation. Asserted over all
+	# six streams rather than over VISUAL alone.
+	var states := {}
+	for s: StringName in [Rng.SPAWN, Rng.BOX, Rng.DROPS, Rng.ROUNDS, Rng.AI, Rng.VISUAL]:
+		states[s] = Rng.stream(s).state
+	menu._name_cache = ""
+	var first: String = menu._player_name()
+	var again: String = menu._player_name()
+	var moved := ""
+	for s: StringName in states:
+		if Rng.stream(s).state != states[s]:
+			moved += str(s) + " "
+	v.check("picking a name is stable and draws from no rng stream at all",
+		first == again and not first.is_empty() and moved.is_empty(),
+		"first=%s again=%s perturbed=%s" % [first, again, moved])
+
+
+## Where the keyboard lands when a screen opens.
+static func _coop_focus(v: Verify, menu) -> void:
+	var host_was: bool = bool(Net._is_host)
+	var ring: Array = menu.chain("host")
+	var start: Control = ring[0]
+	var leave: Control = ring[1]
+
+	# Both co-op screens ship their primary control disabled, so ring[0] is
+	# routinely a dead key. A player who arrives on it has no way to know that Tab
+	# is what unsticks them.
+	menu.show_screen("host")
+	Net._is_host = false
+	menu._refresh_host(Net.CLAIMING)
+	menu._focus_first("host")
+	var skipped: bool = leave.has_focus() and not start.has_focus()
+
+	# And the other end, which is the half that would pass against a `_focus_first`
+	# that had stopped focusing anything: once the control is live, the focus has
+	# to land on it.
+	Net._is_host = true
+	menu._refresh_host(Net.LOBBY)
+	menu._focus_first("host")
+	var lands: bool = start.has_focus()
+
+	Net._is_host = host_was
+	v.check("the focus skips a disabled control and lands on it once it is live",
+		skipped and lands, "skipped=%s lands=%s" % [skipped, lands])
+
+
+## The listeners, and the reason this one is worth an assertion at all: `Net` is an
+## autoload that nothing in this suite resets. A menu that leaked its four
+## connections would still be listening after it had been freed, and the first
+## roster or error event after that writes into the Labels of a dead object.
+##
+## Walked from `Net`'s side and by object identity, deliberately. Asking the menu
+## which signals it thinks it connected would pass against a fifth connection that
+## was added and never disconnected — which is exactly the shape this comes back in.
+static func _coop_listeners(v: Verify, menu) -> void:
+	var wanted := ["state_changed", "roster_changed", "error", "run_started"]
+	var absent := ""
+	for name: String in wanted:
+		if _net_hooks(menu, name) == 0:
+			absent += name + " "
+	v.check("binding a menu subscribes it to the session's four signals",
+		absent.is_empty(), absent)
+
+	menu.unbind()
+	var leaked := ""
+	for sig: Dictionary in Net.get_signal_list():
+		var name: String = sig["name"]
+		if _net_hooks(menu, name) > 0:
+			leaked += name + " "
+	v.check("unbind leaves no menu listener on the session",
+		leaked.is_empty(), leaked)
+
+
+static func _net_hooks(menu, signal_name: String) -> int:
+	var n := 0
+	for c: Dictionary in Net.get_signal_connection_list(signal_name):
+		var cb: Callable = c["callable"]
+		if cb.get_object() == menu:
+			n += 1
+	return n
 
 
 # --- accessibility ------------------------------------------------------------

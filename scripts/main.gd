@@ -18,6 +18,14 @@ var player: Player
 var flow: FlowField
 var hud   # hud.gd, a CanvasLayer with bind()/set_prompt()
 
+## menu.gd, a CanvasLayer with bind()/screens()/chain(). Untyped for the reason
+## `hud` is. **This member is asserted by name**: scripts/dev/checks/shell.gd's
+## last co-op check reads `main.get("menu")` and fails while it is null, because
+## until it existed menu.gd was instantiated in exactly one place in the repository
+## and that place was the assertion suite — every screen it draws, including the
+## title button, existed for the tests and not for a player. See `_ready`.
+var menu
+
 ## fx.gd, a Node3D that owns blood, surface debris, bullet holes, blood pools and
 ## tracers. It binds itself to player.impact, player.fired and
 ## player.surface_impact; nothing here drives it after bind().
@@ -38,6 +46,12 @@ var interact    # interaction_system.gd
 var box         # mystery_box.gd
 var atmos       # atmosphere.gd
 var traps       # traps.gd
+
+## session_runtime.gd, and NULL FOR EVERY SINGLE-PLAYER RUN. It is built in
+## `start_game()` only when `Net.is_online()`, so offline there is no node, no
+## tick, no signal connection and no allocation — every co-op line below is a null
+## comparison. Untyped for the reason the six above it are.
+var _session
 
 var _debug := false
 var _debug_t := 0.0
@@ -119,6 +133,26 @@ func _ready() -> void:
 	hud = preload("res://scripts/ui/hud.gd").new()
 	add_child(hud)
 	hud.bind(player, self)
+
+	# THE MENU, WHICH UNTIL THIS LINE EXISTED ONLY INSIDE `--verify`.
+	#
+	# The multiplayer-menu package could not apply this itself — main.gd is not its
+	# file — so it shipped the check instead and wrote what the check is for at
+	# shell.gd's `_menu_multiplayer`: menu.gd was instantiated in exactly one place
+	# in the repository, `main.add_child(menu)` inside that test, and a player who
+	# loaded the game got hud.gd's older click-anywhere plates rather than any of
+	# the screens the suite was asserting against. Landing it here is that hunk.
+	#
+	# AFTER the HUD and before the systems. `menu.bind()` calls `hud.set_menu(self)`
+	# (menu.gd:117-118), which is what stops the HUD drawing its own title and
+	# game-over plates underneath these ones and stops its click-anywhere poll
+	# firing `start_game()` on the same frame the button does — so it cannot run
+	# before the HUD exists. `Game.state` is still its declared default of
+	# STATE_TITLE here (game_state.gd:94), which is the screen `bind` puts up.
+	menu = MENU_SCRIPT.new()
+	menu.name = "Menu"
+	add_child(menu)
+	menu.bind(self, hud)
 
 	_build_systems()
 
@@ -226,6 +260,12 @@ func _ready() -> void:
 	# _warmup_disabled()'s `?warm=off`. A release build gets nothing at all.
 	CONSOLE_SCRIPT.install(self)
 
+	# CO-OP. Below every headless flag, because none of them can be online and
+	# `--verify` has already returned by here — the assertion suite must not be
+	# holding a live connection to anything. Latches the seed and nothing else;
+	# see `_on_run_started`.
+	Net.run_started.connect(_on_run_started)
+
 	# Lets a headless soak test skip the title screen.
 	if "--autostart" in OS.get_cmdline_args():
 		_debug = true
@@ -266,6 +306,98 @@ func _ready() -> void:
 			return
 		_frames_mode = true
 		_arm_shot()
+
+
+## The host's seed, latched from `Net.run_started` and spent in `start_game()`.
+## -1 is "no online run", which is every single-player session.
+var _net_seed := -1
+var _warned_box := false
+
+
+## Latch only. STARTING THE RUN IS NOT THIS SIGNAL'S JOB AND MUST NOT BE.
+##
+## menu.gd owns the gesture, and its reason is a browser rule rather than a
+## preference: `start_game()` asks for pointer lock, WHATWG grants that only inside
+## a real input event, and a client reaches `run_started` off a broadcast with no
+## gesture anywhere near the frame. So the host enters synchronously from its own
+## START press and the client gets a DROP IN button — menu.gd:1247-1276 has the
+## whole argument and hud.gd:1118-1131 is the watchdog that would not save it.
+## main starting the run from here as well would fight that AND double
+## `rounds.begin_run()`.
+##
+## What main does own is the seed, because `start_game()` is where it is spent.
+func _on_run_started(seed_value: int) -> void:
+	_net_seed = seed_value
+
+
+## Puts this client's world on the host's seed, and re-derives the two things
+## `_ready` had already derived from the wrong one.
+##
+## menu.gd's `_enter_run` calls `Rng.new_run(_run_seed)` immediately before
+## `start_game()`, and this repeats it deliberately: `new_run` is idempotent — it
+## sets the seed and clears every stream — and repeating it here is what makes main
+## correct on its own rather than correct because one caller remembered. Its
+## comment (menu.gd:1278-1288) is right about WHY the host has to re-seed too: both
+## processes spend thirty-two VISUAL draws on a presence key at different moments,
+## and VISUAL is the stream weapon spread still rides.
+##
+## WHAT THAT ALONE LEAVES WRONG, which is the part no caller can see. By the time
+## any of this can run, `_ready` has already spent the boot seed twice:
+##
+##   `Game.reset_run()`   draws `next_dog_round` from ROUNDS (game_state.gd:236)
+##   `box.adopt()`        draws the box's starting room from BOX (mystery_box.gd:74)
+##
+## `new_run` resets the streams underneath both, so every client keeps a dog
+## cadence and a box room derived from its OWN boot seed — two players standing in
+## different rooms looking for the same box. They are re-drawn here in the order
+## `_ready` drew them, which is the whole of what makes the redraw agree across
+## four machines (constraint 5: a stream only replays while it is drawn in the same
+## order).
+##
+## TWO IS THE WHOLE LIST TODAY, AND IT IS TWO ONLY BECAUSE THE SEEDED LAYOUT LAYER
+## IS NOT WIRED IN. `MapData.roll_layout()` (map_data.gd:870) moves the perk
+## machines, the wall-buys, the box spots and the door prices off `Rng.ROUNDS` — and
+## the only caller in the repository is `checks/mapgen.gd`. Nothing in `_ready`
+## calls it, so every machine boots the canonical layout and the seed cannot make
+## two clients disagree about it. The day something wires it into the boot path,
+## THIS FUNCTION NEEDS A THIRD RE-DERIVATION and nothing will say so — the symptom
+## is Juggernog in a different alcove on each screen, which reads as a rendering
+## bug rather than as a seeding one.
+##
+## Nothing here runs offline: `_net_seed` is only ever written by `_on_run_started`.
+func _apply_net_seed() -> void:
+	# `is_online()` as well as the latch, because a player who joins a room, leaves
+	# it and then starts a solo run reaches `start_game()` with a stale seed still
+	# held — and would replay a stranger's world without being told.
+	if _net_seed < 0 or not Net.is_online():
+		return
+	Rng.new_run(_net_seed)
+	Game.reset_run()
+	# `reseed()` is a two-line addition to mystery_box.gd reported as a hunk by
+	# this package. Loud rather than silent while it is missing: a box in a
+	# different room on each client is exactly the kind of divergence that reads as
+	# "my friend is lying about where the box is" instead of as a bug.
+	if box.has_method("reseed"):
+		box.reseed()
+	elif not _warned_box:
+		_warned_box = true
+		push_error("[net] mystery_box.gd has no reseed(): every client's box is in "
+			+ "a room drawn from its own boot seed. See this package's report.")
+
+
+## The replication layer, and it exists only for an online run.
+##
+## Built here rather than in `_build_systems()` because the two paths into a run
+## converge here and not there: a host is still OFFLINE when `_ready` runs and only
+## reaches LOBBY later, while a client comes back through `_ready` already IN_RUN.
+## `start_game()` is the one moment both of them pass through with the answer known.
+func _build_session() -> void:
+	if _session != null or not Net.is_online():
+		return
+	_session = SESSION_SCRIPT.new()
+	_session.name = "SessionRuntime"
+	add_child(_session)
+	_session.bind(self, player)
 
 
 ## Both capture flags open with the same phase: let the world settle for
@@ -341,6 +473,13 @@ func start_game() -> void:
 	# and MCP-driven run already takes.
 	if not _shot_active:
 		Player.set_capture(true)
+	# Both no-ops offline: `_net_seed` is -1 until a run_started arrives, and
+	# `_build_session` returns immediately unless `Net.is_online()`. The seed first,
+	# because the session's puppets are built against the world it decides — and
+	# both before the round loop, so a host's very first snapshot is taken by a
+	# layer that already knows where the director is.
+	_apply_net_seed()
+	_build_session()
 	rounds.begin_run()
 
 
@@ -353,6 +492,12 @@ func start_game() -> void:
 ## power-ups, interact, exactly as main.gd's `_process` ran them before the split.
 ## `Game.tick_timers` stays ahead of all of it because `spawn_one` reads
 ## `Game.insta_kill` on the frame it expires.
+##
+## CO-OP ADDS ONE LINE AT THE END AND CHANGES NO ORDER. `_session` is null offline,
+## so every line below reads exactly as it did; and the session tick draws from no
+## `Rng` stream at all, so it can neither reorder nor consume a gameplay draw no
+## matter where it sits. It sits last anyway, because a host's snapshot should
+## describe the horde after this frame's step rather than a frame behind it.
 func _process(dt: float) -> void:
 	if _shot_active:
 		_tick_shot(dt)
@@ -361,7 +506,16 @@ func _process(dt: float) -> void:
 		return
 
 	Game.tick_timers(dt)
-	rounds.tick(dt)
+	# THE HORDE HAS ONE SIMULATOR. On a co-op CLIENT the round director is silent:
+	# the host owns spawn, path, attack and death, and a locally-spawned zombie
+	# would be a body nobody else can see and nobody else can be hurt by. The
+	# client's horde arrives as puppets from session_runtime.gd instead, and its
+	# round number with them.
+	#
+	# `_session == null` is single-player and the host is `simulates_horde()`, so
+	# both of those reach the same call this line has always been.
+	if _session == null or _session.simulates_horde():
+		rounds.tick(dt)
 	# Immediately after the round loop, and the position is part of the contract
 	# rather than a preference: a trap kill routes through `Zombie.died` into the
 	# director's payout path, which draws from the DROPS stream. Here it sees a
@@ -371,6 +525,10 @@ func _process(dt: float) -> void:
 	box.tick(dt)
 	powerups.tick(dt)
 	interact.tick(dt)
+
+	# Outside the contract above, and last. See the note over this function.
+	if _session != null:
+		_session.tick(dt)
 
 	if _debug:
 		_debug_t += dt
@@ -422,6 +580,8 @@ const POWERUPS_SCRIPT := preload("res://scripts/systems/powerup_manager.gd")
 const INTERACT_SCRIPT := preload("res://scripts/systems/interaction_system.gd")
 const BOX_SCRIPT := preload("res://scripts/systems/mystery_box.gd")
 const TRAPS_SCRIPT := preload("res://scripts/systems/traps.gd")
+const SESSION_SCRIPT := preload("res://scripts/net/session_runtime.gd")
+const MENU_SCRIPT := preload("res://scripts/ui/menu.gd")
 
 
 ## The M-WARM control, recorded in notes/perf/README.md. `--no-warmup` natively,

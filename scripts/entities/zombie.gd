@@ -1146,6 +1146,99 @@ func centre() -> Vector3:
 	return global_position + Vector3(0, _height * 0.5, 0)
 
 
+# --- co-op puppetry ----------------------------------------------------------
+#
+# THREE FUNCTIONS, AND THE REST OF THIS FILE DOES NOT CHANGE.
+#
+# The co-op topology (notes/design/2026-07-31-coop-topology-decision.md) puts every
+# zombie on the host. A client renders the horde without simulating it, and the
+# mechanism for that was already here before any of this was written: with `target`
+# null, `_physics_process` above runs `_tick_death`, `_tick_flash` and
+# `_update_view` — the death clock, the damage tint and the atlas row, which is the
+# whole of how a zombie LOOKS — and then returns at `if target == null` before the
+# groan, the barricade, the vault, the steering, the attack test and
+# `move_and_slide`.
+#
+# So a puppet needs exactly two things this file did not expose: somewhere for the
+# network to put it, and a way to end it that is the real death rather than a
+# fabricated one. Both are written by scripts/net/session_runtime.gd and by nothing
+# else, which is the one-writer rule applied across a network.
+
+
+## Which way the body is pointing, in world XZ.
+##
+## On the wire because it is NOT derivable from two positions and the design note's
+## rule is that only derived state may be dropped: a body tearing planks faces the
+## window while standing perfectly still, and one pressed into a wall faces where
+## it is going rather than where it is. Everything that IS derived from it — the
+## atlas row, the mirror, which eye quads light — stays off the wire and is
+## recomputed by `_update_view` on the client.
+func facing() -> Vector2:
+	return _facing
+
+
+## Puts a client-side puppet where the host says it is.
+##
+## Position is written straight rather than through `move_and_slide` for
+## `_tick_vault`'s reason: the host has already resolved this body against the
+## world, and resolving it a second time against a different player's idea of where
+## the walls are is how two clients end up disagreeing about a corner.
+##
+## `_face` and not `_facing =` directly, so the zero-length guard and the
+## normalisation are the same ones every local caller gets.
+func set_remote_pose(pos: Vector3, dir: Vector2) -> void:
+	if target != null:
+		# This body is being simulated locally. Something has both spawned it
+		# through the round director and handed it to the replication layer, and the
+		# two would fight for the transform every frame — a stutter that looks like
+		# a network fault and is not one.
+		push_error("set_remote_pose on a simulated zombie: it has a target")
+		return
+	global_position = pos
+	_face(dir)
+
+
+## Which way the killing blow pushed this body, and how hard.
+##
+## Read by the replication layer at the instant `died` fires, because it is the one
+## thing in the collapse a client cannot derive: it decides which way the corpse
+## slides AND whether the death row is mirrored (`_begin_collapse`, :1073-1096).
+## Reconstructing it as "away from the player" — which is what `_die`'s own
+## fallback does — stopped being right the moment `_apply_hit` began passing a real
+## direction (player.gd:1044), so it has to be read rather than guessed.
+func shove() -> Vector3:
+	return _shove
+
+
+## The host confirmed this body is dead.
+##
+## Routed through the real `_die` rather than through `take_damage`, deliberately.
+## `take_damage` would play the impact cue for a bullet this machine never fired,
+## re-apply the headshot multiplier the host has already applied, and consult
+## `Game.insta_kill`, which is a per-client power-up state that has no business
+## deciding whether somebody else's kill counts. `_die` is the part that is
+## genuinely shared: the slot release, the collision going away, the eyes going
+## out, the death rattle, the strip and the corpse clock that frees the body.
+##
+## The three flags are set BEFORE `_die` because it reads all three: `_last_headshot`
+## suppresses the stagger, `last_cause` picks the shove strength, and `_last_melee`
+## rides `died` out. They are the host's values off the wire, so a corpse falls the
+## same way on every screen instead of falling the way each client would have
+## guessed.
+##
+## `died` is emitted from in there with nothing connected — a puppet is never handed
+## to `round_director._on_zombie_died`, because the payout and the DROPS draw belong
+## to the machine that owns the horde.
+func remote_die(headshot: bool, by_melee: bool, cause: int, from_dir: Vector3) -> void:
+	if state == State.DYING:
+		return
+	hp = 0.0
+	_last_headshot = headshot
+	_last_melee = by_melee
+	last_cause = clampi(cause, 0, Cause.NUKE)
+	_die(from_dir)
+
+
 # --- glowing eyes ------------------------------------------------------------
 
 ## Shared by every zombie alive. A `StandardMaterial3D` per zombie would be 24

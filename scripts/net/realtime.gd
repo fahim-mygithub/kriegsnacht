@@ -54,11 +54,31 @@ enum {
 ## rate-limited, which is a slower way to fail.
 const BACKOFF := [1.0, 2.0, 5.0, 10.0]
 
-## Outbound budget. The relay tolerated a 30-message burst with no throttle during
-## the probe, but a bug that spins the send path would trip a real per-channel limit
-## and the recovery for that is a channel close. A local ceiling turns a runaway loop
-## into dropped frames instead of a dead session.
-const SEND_BUDGET := 40
+## Outbound ceiling, and it is sized to make exceeding the free tier IMPOSSIBLE
+## rather than unlikely.
+##
+## Supabase bills and limits an "event", defined on its own limits page as a message
+## delivered to *or* sent from a client. One publish into a room of N therefore costs
+## N events. With MAX_PLAYERS = 2 and both ends publishing:
+##
+##   worst case events/s = 2 clients x 2 events per publish x SEND_BUDGET
+##                       = 4 x SEND_BUDGET
+##
+## The free tier caps the project at 100 events/second and enforces it by
+## DISCONNECTING the sockets (`tenant_events`), which the client then reconnects
+## into a loop. 4 x 24 = 96, so this value cannot breach it no matter what the layer
+## above asks for.
+##
+## It was 40. An adversarial pass measured the shipped rates at 88 events/s at rest
+## and 208 busy — over the limit — because every budget in the design counted
+## PUBLISHES where the limit counts EVENTS, and none of them counted the host's own
+## `me`. Lowering this is the load-shedding backstop, not the fix: the real fix is
+## folding the host's per-event messages (world / kill / spawn) into the periodic
+## snapshot so the cost stops scaling with what happens in the game. Until that
+## lands, a busy host sheds here — and it sheds SNAPSHOTS, which the next one
+## supersedes, while session_runtime.gd re-queues the batched events that a refusal
+## would otherwise have destroyed.
+const SEND_BUDGET := 24
 const SEND_WINDOW := 1.0
 
 var _ws: WebSocketPeer

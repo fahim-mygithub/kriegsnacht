@@ -1043,7 +1043,23 @@ func _apply_hit(z: Zombie, dmg: float, at: Vector3,
 	# player fallback. That fallback is right for a bullet and wrong for a blast, so
 	# the blast is the caller that has to supply one.
 	var dir := from_dir if from_dir != Vector3.ZERO else (z.centre() - at).normalized()
-	var killed := z.take_damage(dmg, local_y, false, cause, dir)
+	# CO-OP: THE DAMAGE IS A CLAIM, THE FEEDBACK IS NOT.
+	#
+	# On a client the body belongs to the host, so the damage travels and the host
+	# applies it (notes/design/2026-07-31-coop-topology-decision.md). Everything
+	# below this branch stays local and immediate — the hit points, the hitmarker,
+	# the blood — which is what makes a shot feel instant while the death is
+	# confirmed a relay round trip later. That split is the whole reason the latency
+	# is acceptable.
+	#
+	# `_session` is null offline AND on the host, so single-player takes the else
+	# branch exactly as it always has and pays no test beyond one null compare.
+	var killed := false
+	var session: Node = world.get("_session") if world != null else null
+	if session != null and not session.simulates_horde():
+		session.claim_hit(z, dmg, headshot)
+	else:
+		killed = z.take_damage(dmg, local_y, false, cause, dir)
 	if not killed:
 		Game.add_points(Game.PTS_HIT)
 	hit_confirmed.emit(headshot, killed)

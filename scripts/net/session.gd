@@ -28,10 +28,31 @@ const REALTIME := preload("res://scripts/net/realtime.gd")
 const PROJECT_URL := "https://qalanxifxfukkeqdhfqh.supabase.co"
 const PUBLISHABLE_KEY := "sb_publishable_thiF9P-VTYc-GtiQL3V_DQ_c004iNWQ"
 
-## BO1 co-op is four players. Enforced client-side at the lobby: a fifth arrival is
-## told the room is full and leaves. Not enforceable server-side without making the
-## channel private, which would need accounts.
-const MAX_PLAYERS := 4
+## TWO, NOT THE FOUR BO1 ALLOWS, AND THIS IS ARITHMETIC RATHER THAN A PREFERENCE.
+##
+## Supabase bills and rate-limits an "event", which its own limits page defines as a
+## WebSocket message delivered to *or* sent from a client. So one broadcast into a
+## room of N costs 1 send + (N-1) deliveries = N events, not one. The free tier caps
+## the whole project at 100 events/second.
+##
+## At 15 Hz in both directions:
+##   2 players: 15x2 (host snapshots) + 15x2 (one client's input)          =  60/s  OK
+##   3 players: 15x3               + 2x15x3                                 = 135/s  OVER
+##   4 players: 15x4               + 3x15x4                                 = 240/s  2.4x OVER
+## Over the limit is not degradation - `tenant_events` DISCONNECTS the sockets.
+##
+## Four players would need either ~6 Hz (unusable for aim, even interpolated) or the
+## Pro plan's 500 events/second. Raising this constant without one of those buys a
+## room that dies a few seconds after the first round starts.
+##
+## The first draft of this file said 4, and the probe note behind it costed a session
+## at 60 events/second for FOUR players by counting publishes and forgetting fan-out
+## - 4x low. Corrected in notes/net/2026-07-31-realtime-probe.md.
+##
+## Enforced client-side at the lobby: the arriving client counts the roster and
+## leaves if it is surplus. Not enforceable server-side without a private channel,
+## which would need accounts.
+const MAX_PLAYERS := 2
 
 ## How long to wait for the channel before giving up on a join. Generous against a
 ## 23 ms median because the failure being guarded is a dead room, not a slow one, and

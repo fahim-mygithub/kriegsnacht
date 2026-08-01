@@ -157,7 +157,21 @@ static func _pause_gate(v: Verify, main: Node3D) -> void:
 	Game.set_state(Game.STATE_PAUSE)
 	var pause_paused := tree.paused
 	var paused := _gate(main)
+	# THE PLATE MOVED, AND THIS HAS TO FOLLOW IT RATHER THAN NAME ONE OWNER.
+	#
+	# `main.hud._overlay` was the only pause screen in the game when this was
+	# written. It is not any more: main.gd now builds menu.gd, and `hud.set_menu()`
+	# turns the HUD's own overlay off outright — hud.gd:1540-1552 says so in as
+	# many words, because the menu draws the title, pause and game-over plates with
+	# buttons on them and two of each would be worse than none.
+	#
+	# So reading the HUD alone asserted a true thing about the build that had no
+	# menu and reports a MISSING PAUSE SCREEN on the build that has one. The check
+	# is unchanged in intent — something that says "paused" is on screen — and the
+	# menu is asked first because when it exists it is the authority.
 	var overlay_up: bool = main.hud._overlay.visible
+	if main.get("menu") != null:
+		overlay_up = String(main.menu.current()) == "pause"
 
 	Game.set_state(Game.STATE_TITLE)
 	var title_paused := tree.paused

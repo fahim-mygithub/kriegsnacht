@@ -22,14 +22,47 @@ extends CanvasLayer
 ## points-economy hint from the title card (html:258-300), the pause plate
 ## (html:303-334) and the five game-over statistics (html:3205-3215) — of which
 ## this port tracks three; see `_stats()`.
+##
+## FOUR SCREENS HAVE NO ANCESTOR AT ALL. `multiplayer`, `host`, `join` and `lobby`
+## are new: kriegsnacht.html is single-player and has nothing to copy. They are
+## modelled on the reference instead — BO1 co-op is a room, a code, and one player
+## who starts it — and they are recorded here as a deliberate departure rather than
+## left to read as an invention. The room they draw lives in the `Net` autoload;
+## this file holds none of it.
+##
+## NOTHING HERE HARD-CODES THE ROOM SIZE. BO1 seats four and this port seats
+## `Net.MAX_PLAYERS`, which is two because a broadcast into a room of N costs N
+## events against a 100/second project cap (session.gd:31-55). Every seat count,
+## every empty row and the subtitle on the first screen are read off that constant,
+## so the day the plan moves it, this file follows without being touched.
 
 ## The HUD owns the palette and this file borrows it rather than re-declaring the
 ## same nine colours next to it. Preload rather than the class name: a freshly
 ## added script is not in the class registry until the editor rescans.
 const HUD := preload("res://scripts/ui/hud.gd")
 
+## The room-code alphabet and the two functions that police it. Preloaded rather
+## than reached for through `Net`: they are pure statics with no session behind
+## them (phoenix.gd:1-11), so the join field can validate a keystroke without the
+## autoload existing at all.
+const PHX := preload("res://scripts/net/phoenix.gd")
+
 ## html:3225 — the epitaph bands, carried over unchanged.
 const EPITAPH := [[15, "Legend"], [10, "Veteran"], [5, "Overrun"], [0, "Devoured"]]
+
+## The four co-op screens, and the set `_on_net_state` is allowed to switch
+## between. A session transition must never move a player who is mid-run, in the
+## options or on the pause plate — the room can go OFFLINE at any moment and a
+## screen change on top of a live game is worse than no screen change at all.
+const MP_SCREENS := ["multiplayer", "host", "join", "lobby"]
+
+## THE PORT HAS NO NAME ENTRY AND THIS PACKAGE CANNOT GROW ONE. `Settings` holds a
+## bool, an int or a float and refuses everything else: DEFAULTS declares the type
+## of each key by example (settings.gd:49-58) and `_clean` has arms for exactly
+## those three (settings.gd:172-195). Adding TYPE_STRING is a change to a file this
+## package does not own, so the name is derived instead — see `_player_name()` —
+## and the hunk that would let a player type one is in this package's report.
+const CREW := ["Dempsey", "Nikolai", "Takeo", "Richtofen"]
 
 ## html:3216-3222, with two corrections. The ancestor's "knifing is a one-hit kill
 ## for the first four rounds" is false in both codebases — the knife does 150
@@ -101,6 +134,27 @@ var _tip: Label
 var _best: Label
 var _value_labels := {}
 
+# --- co-op ---------------------------------------------------------------------
+## One error line and one roster column per co-op screen, keyed by screen name: a
+## screen is its own Control subtree, so a single shared Label could only ever be
+## inside one of them.
+var _error_labels := {}
+var _roster_boxes := {}
+var _code_labels := {}
+var _host_status: Label
+var _host_start: Button
+var _lobby_status: Label
+var _drop_in: Button
+var _join_field: LineEdit
+var _join_slots: Label
+var _connect: Button
+## Re-entrancy latch on the join field's write-back. See `_on_join_text`.
+var _join_guard := false
+## The host's seed, held between `run_started` arriving and the player pressing
+## DROP IN — which on a client are two different frames, deliberately.
+var _run_seed := 0
+var _name_cache := ""
+
 
 func _ready() -> void:
 	# Above the HUD (layer 1, unset) and below the debug console (128), so the
@@ -114,6 +168,13 @@ func bind(main_node, hud_node) -> void:
 	hud = hud_node
 	_build()
 	Game.state_changed.connect(_on_state)
+	# The session is an AUTOLOAD and outlives both this node and the scene reload
+	# behind `restart()` (session.gd:5-8), so these four are the one place a menu
+	# and a room meet — and every one of them has to come back out in `unbind()`.
+	Net.state_changed.connect(_on_net_state)
+	Net.roster_changed.connect(_on_net_roster)
+	Net.error.connect(_on_net_error)
+	Net.run_started.connect(_on_run_started)
 	# The HUD stops drawing its own screen text and stops treating a click as
 	# "start the game" — otherwise the title button and the HUD's poll both fire
 	# start_game() on the same frame and the first round begins twice.
@@ -127,9 +188,21 @@ func bind(main_node, hud_node) -> void:
 ## as it found it. Without this the check would leave a second Game.state_changed
 ## listener and a HUD that had stopped drawing its own screens behind it, and
 ## every assertion after it would be running against a different game.
+## THE NET LISTENERS ARE THE HALF THAT BITES. `Game` is reset by the next check
+## that touches it, but `Net` is an autoload that nothing in the suite resets — a
+## leaked listener here survives every later section, and the first roster or
+## error event would then be written into the Labels of a freed menu. Enumerated
+## rather than listed by hand so a fifth connection added later cannot be
+## forgotten; scripts/dev/checks/shell.gd asserts the same thing from the outside,
+## by walking Net's signals and looking for callables that point at this object.
 func unbind() -> void:
 	if Game.state_changed.is_connected(_on_state):
 		Game.state_changed.disconnect(_on_state)
+	for sig: Signal in [Net.state_changed, Net.roster_changed, Net.error, Net.run_started]:
+		for c: Dictionary in sig.get_connections():
+			var cb: Callable = c["callable"]
+			if cb.get_object() == self:
+				sig.disconnect(cb)
 	if hud != null:
 		hud.set_menu(null)
 	hud = null
@@ -174,6 +247,10 @@ func _build() -> void:
 	add_child(_root)
 
 	_build_title()
+	_build_multiplayer()
+	_build_host()
+	_build_join()
+	_build_lobby()
 	_build_pause()
 	_build_options()
 	_build_over()
@@ -274,6 +351,13 @@ func _build_title() -> void:
 	start.pressed.connect(_on_start)
 	col.add_child(start)
 
+	# Between the solo start and the options, which is where the reference puts it
+	# and also the honest ranking: this is a co-op mode bolted to a game that is
+	# playable alone, not the other way round.
+	var coop := _button("MULTIPLAYER")
+	coop.pressed.connect(_open_multiplayer)
+	col.add_child(coop)
+
 	var opts := _button("OPTIONS")
 	opts.pressed.connect(_open_options.bind("title"))
 	col.add_child(opts)
@@ -288,7 +372,7 @@ func _build_title() -> void:
 	_best = _title("", 15, HUD.SODIUM)
 	col.add_child(_best)
 
-	var chain: Array[Control] = [start, opts]
+	var chain: Array[Control] = [start, coop, opts]
 	_chain("title", chain)
 
 
@@ -307,6 +391,250 @@ func _keys_grid() -> HBoxContainer:
 			col.add_child(line)
 		row.add_child(col)
 	return row
+
+
+# --- the co-op screens ---------------------------------------------------------
+#
+# THE ROOM IS NOT HELD HERE. `Net` owns the code, the token, the roster and the
+# state; this file draws them and sends four verbs back (host, join, leave,
+# start). That split is not tidiness — a session outlives the run and survives
+# `restart()`'s scene reload (session.gd:5-8), so a menu that held any of it would
+# lose the room the first time somebody died.
+#
+# ALL FOUR ARE MODAL. The options screen is modal because a click behind it would
+# reach the player and resume the run (see `_screen`); these are modal for the
+# neighbouring reason — the join screen owns a text field, and a stray click that
+# lands behind the plate takes the focus off it while the player is mid-code.
+
+
+func _build_multiplayer() -> void:
+	var col := _screen("multiplayer", true)
+	col.add_child(_title("MULTIPLAYER", 56))
+	# Read off the session rather than written out, for the reason in this file's
+	# header: the cap is an events-per-second calculation and not a design number.
+	col.add_child(_title("%d to a bunker" % int(Net.MAX_PLAYERS), 16, HUD.BONE_DIM))
+
+	var host := _button("HOST A ROOM")
+	host.pressed.connect(_on_host_pressed)
+	col.add_child(host)
+
+	var join := _button("JOIN A ROOM")
+	join.pressed.connect(_on_join_pressed)
+	col.add_child(join)
+
+	var back := _button("BACK")
+	back.pressed.connect(_on_mp_back)
+	col.add_child(back)
+
+	col.add_child(_error_label("multiplayer"))
+	var chain: Array[Control] = [host, join, back]
+	_chain("multiplayer", chain)
+
+
+func _build_host() -> void:
+	var col := _screen("host", true)
+	col.add_child(_title("YOUR ROOM", 40))
+	col.add_child(_title("read this out", 15, HUD.BONE_DIM))
+
+	# 72 px and spaced glyph by glyph, because this code gets READ ALOUD. The
+	# alphabet has already dropped the vowels and the L/0/1 that get mis-heard
+	# (phoenix.gd:52-56); the spacing is the other half of the same job — it is
+	# what stops a reader running two glyphs together into one shape. SODIUM
+	# rather than BONE: it is the one thing on this screen the player is looking
+	# for.
+	var code := _title("", 72, HUD.SODIUM)
+	_code_labels["host"] = code
+	col.add_child(code)
+
+	_host_status = _title("", 16, HUD.BONE_DIM)
+	col.add_child(_host_status)
+	col.add_child(_roster_box("host"))
+
+	_host_start = _button("START THE RUN")
+	_host_start.pressed.connect(_on_host_start)
+	col.add_child(_host_start)
+
+	var leave := _button("LEAVE")
+	leave.pressed.connect(_on_leave)
+	col.add_child(leave)
+
+	col.add_child(_error_label("host"))
+	var chain: Array[Control] = [_host_start, leave]
+	_chain("host", chain)
+
+
+func _build_join() -> void:
+	var col := _screen("join", true)
+	col.add_child(_title("JOIN A ROOM", 40))
+	col.add_child(_title("type the code you were read", 15, HUD.BONE_DIM))
+
+	# The slot readout, above the field rather than inside it: a player who has
+	# typed four of six needs to see that two are missing, and a text field can
+	# only show what is in it.
+	_join_slots = _title("", 48, HUD.SODIUM)
+	col.add_child(_join_slots)
+
+	_join_field = LineEdit.new()
+	_join_field.name = "JoinCode"
+	_join_field.focus_mode = Control.FOCUS_ALL
+	_join_field.alignment = HORIZONTAL_ALIGNMENT_CENTER
+	_join_field.placeholder_text = "ROOM CODE"
+	_join_field.custom_minimum_size = Vector2(320, 40)
+	_join_field.add_theme_font_size_override("font_size", 22)
+	# THE ONLY CONTROL IN THIS FILE WITH NO HELPER BEHIND IT, so it borrows the
+	# buttons' two styleboxes rather than growing a third visual language. Found by
+	# rendering the screen and looking at it: on Godot's default theme the field
+	# came out a pale grey box with a white caret, which against a rust-bordered
+	# plate reads as a browser widget that has leaked through the game.
+	_join_field.add_theme_stylebox_override("normal",
+		_button_style(Color(0, 0, 0, 0.35), HUD.RUST))
+	_join_field.add_theme_stylebox_override("focus",
+		_button_style(Color(0.10, 0.09, 0.07, 0.6), HUD.SODIUM))
+	_join_field.add_theme_color_override("font_color", HUD.BONE)
+	_join_field.add_theme_color_override("font_placeholder_color", HUD.ALT_DIM)
+	_join_field.add_theme_color_override("caret_color", HUD.SODIUM)
+	_join_field.add_theme_color_override("font_selected_color", HUD.ASH)
+	_join_field.add_theme_color_override("selection_color", HUD.SODIUM)
+	# DELIBERATELY NO `max_length`. Six looks right and is wrong: the filter is
+	# what lets "bcdf-23", "bcdf 23" and "BCDF23" all arrive as BCDF23
+	# (phoenix.gd:316-337), and a hard length cap would eat the seventh keystroke
+	# of a hyphenated code before the filter ever saw it. `sanitise_code` clips.
+	_join_field.text_changed.connect(_on_join_text)
+	_join_field.text_submitted.connect(_on_join_submit)
+	col.add_child(_join_field)
+
+	_connect = _button("CONNECT")
+	_connect.pressed.connect(_on_connect)
+	col.add_child(_connect)
+
+	var back := _button("BACK")
+	back.pressed.connect(_on_join_back)
+	col.add_child(back)
+
+	col.add_child(_error_label("join"))
+	var chain: Array[Control] = [_join_field, _connect, back]
+	_chain("join", chain)
+	_refresh_join()
+
+
+func _build_lobby() -> void:
+	var col := _screen("lobby", true)
+	col.add_child(_title("THE ROOM", 40))
+	var code := _title("", 48, HUD.SODIUM)
+	_code_labels["lobby"] = code
+	col.add_child(code)
+
+	_lobby_status = _title("", 16, HUD.BONE_DIM)
+	col.add_child(_lobby_status)
+	col.add_child(_roster_box("lobby"))
+
+	# THE NON-HOST'S OWN GESTURE, and the reason it is a button at all is written
+	# out in full at `_on_run_started`. Disabled until the host has started; the
+	# label says which of the two it currently is, because a dead button with no
+	# explanation reads as a broken one.
+	_drop_in = _button("DROP IN")
+	_drop_in.pressed.connect(_on_drop_in)
+	col.add_child(_drop_in)
+
+	var leave := _button("LEAVE")
+	leave.pressed.connect(_on_leave)
+	col.add_child(leave)
+
+	col.add_child(_error_label("lobby"))
+	var chain: Array[Control] = [_drop_in, leave]
+	_chain("lobby", chain)
+
+
+## One error line per co-op screen. Every message is written to all four
+## (`_set_net_error`) and only the visible one is ever read — which is both
+## cheaper than routing by `_current` and more robust, because an error raised on
+## the frame before a screen change is still there when the player arrives.
+##
+## The minimum size is held whether or not there is a message, so the plate does
+## not grow under the cursor the moment the room service says no.
+func _error_label(screen: String) -> Label:
+	var l := _title("", 15, HUD.BLOOD_LIT)
+	l.custom_minimum_size = Vector2(360, 20)
+	l.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	_error_labels[screen] = l
+	return l
+
+
+## Sized for a full room from the start, for the same reason: a lobby that grows
+## a row every time somebody joins moves LEAVE under the cursor of a player who
+## was reaching for START.
+func _roster_box(screen: String) -> VBoxContainer:
+	var box := VBoxContainer.new()
+	box.add_theme_constant_override("separation", 4)
+	box.custom_minimum_size = Vector2(320, 26.0 * float(int(Net.MAX_PLAYERS)))
+	_roster_boxes[screen] = box
+	return box
+
+
+## Rebuilt whole rather than diffed. Four rows is not worth a diff, and a diff
+## would need row identity that presence does not promise: a client that
+## reconnects comes back under a fresh presence key (session.gd:245-248) and would be
+## a new row either way.
+##
+## REMOVE THEN FREE, IN THAT ORDER. `queue_free()` alone leaves the node in
+## `get_children()` until the end of the frame, so two roster events in one frame
+## — which `presence_state` immediately followed by a `presence_diff` is, and it
+## is the ordinary arrival shape on join (realtime.gd:233-238) — would stack a
+## second set of rows underneath the first and leak them both.
+func _rebuild_roster(players: Array) -> void:
+	for screen: String in _roster_boxes:
+		var box: VBoxContainer = _roster_boxes[screen]
+		for c: Node in box.get_children():
+			box.remove_child(c)
+			c.queue_free()
+		# Empty seats are drawn rather than omitted: "one of two" is the fact a player
+		# wants while they are waiting, and the ceiling is enforced by the ARRIVING
+		# client rather than by the room (session.gd:268-280) — so drawing the empty
+		# seats is also drawing the rule that fills them.
+		for i in int(Net.MAX_PLAYERS):
+			var row: Label
+			if i < players.size():
+				var p: Dictionary = players[i]
+				var marks: Array[String] = []
+				if bool(p.get("host", false)):
+					marks.append("host")
+				if bool(p.get("me", false)):
+					marks.append("you")
+				var suffix := "" if marks.is_empty() else "   (%s)" % "  ·  ".join(marks)
+				row = _title(str(p.get("name", "?")) + suffix, 18, HUD.BONE)
+			else:
+				row = _title("— empty —", 18, HUD.ALT_DIM)
+			box.add_child(row)
+
+
+## The code as six slots, which is one function for two jobs: on the host screen
+## it spaces a full code out for reading aloud, and on the join screen the blanks
+## are how a player sees how many characters are left. Padded rather than
+## clipped — `sanitise_code` has already guaranteed no more than CODE_LEN.
+func _slots(code: String) -> String:
+	var out: Array[String] = []
+	for i in int(PHX.CODE_LEN):
+		out.append(code[i] if i < code.length() else "_")
+	return " ".join(out)
+
+
+## BO1's four, picked by the seed the process booted with.
+##
+## NOT A DRAW. `Rng.seed_value` is already random per process and reading it
+## consumes nothing, where `Rng.randi_range(Rng.VISUAL, ...)` here would advance
+## the one stream weapon spread still rides (constraint 5's recorded violation) on
+## every visit to this menu. Two players can land on the same crewman; the roster
+## marks your own row, and the fix is a real name box — see the Settings hunk in
+## this package's report.
+func _player_name() -> String:
+	if _name_cache.is_empty():
+		_name_cache = _crew_name(int(Rng.seed_value))
+	return _name_cache
+
+
+## Split out from the cache so it can be asserted across seeds.
+static func _crew_name(seed_value: int) -> String:
+	return String(CREW[absi(seed_value) % CREW.size()])
 
 
 func _build_pause() -> void:
@@ -510,6 +838,12 @@ func show_screen(name: String) -> void:
 		_refresh_title()
 	elif name == "pause":
 		_refresh_pause()
+	elif name == "host":
+		_refresh_host()
+	elif name == "lobby":
+		_refresh_lobby()
+	elif name == "join":
+		_refresh_join()
 	_focus_first.call_deferred(name)
 
 
@@ -528,7 +862,19 @@ func _focus_first(name: String) -> void:
 	var ring: Array = _chains.get(name, [])
 	if ring.is_empty():
 		return
+	# A DISABLED CONTROL IS NOT SOMEWHERE THE FOCUS MAY LAND. Both co-op screens
+	# put their primary affordance at the head of the ring and ship it disabled —
+	# START THE RUN until the room has a code, DROP IN until the host has started —
+	# so the first control of the ring is routinely a dead key, and a keyboard
+	# player who arrives on it has to guess that Tab is what unsticks them. Falls
+	# back to ring[0] if every control is disabled, because a focus somewhere is
+	# better than a focus nowhere.
 	var first: Control = ring[0]
+	for c: Control in ring:
+		if c is BaseButton and (c as BaseButton).disabled:
+			continue
+		first = c
+		break
 	if is_instance_valid(first) and first.is_inside_tree():
 		first.grab_focus()
 
@@ -554,9 +900,23 @@ func _on_state(s: String) -> void:
 ## `pause` during play, so there is no collision here. Handled rather than left to
 ## fall through because a player who opened the options from the pause screen has
 ## no other way back on the keyboard.
+##
+## The two co-op screens that back out on Escape are the two that own nothing: the
+## menu itself and the code field. "host" and "lobby" deliberately do NOT, because
+## backing out of those means `leave_room()` — releasing a code three other people
+## have already been read — and a key that is right next to the one a player has
+## been mashing to pause is not where that belongs.
 func _unhandled_input(event: InputEvent) -> void:
-	if _current == "options" and event.is_action_pressed("ui_cancel"):
+	if not event.is_action_pressed("ui_cancel"):
+		return
+	if _current == "options":
 		_close_options()
+		get_viewport().set_input_as_handled()
+	elif _current == "multiplayer":
+		_on_mp_back()
+		get_viewport().set_input_as_handled()
+	elif _current == "join":
+		_on_join_back()
 		get_viewport().set_input_as_handled()
 
 
@@ -632,6 +992,83 @@ func _refresh_options() -> void:
 				l.text = ""
 
 
+## Both co-op refreshes are pure functions of the session's state, and they take
+## it as an argument for one reason: `Net.state()` cannot be moved off OFFLINE
+## without a live socket, so this is the seam scripts/dev/checks/shell.gd drives
+## the readouts through. The default is the only thing the game ever passes.
+func _refresh_host(st := -1) -> void:
+	if st < 0:
+		st = int(Net.state())
+	var code: Label = _code_labels["host"]
+	code.text = _slots(str(Net.code()))
+	# if/elif rather than `match`, because a match pattern has to be a constant the
+	# parser can fold and `Net.CLAIMING` is an attribute read on an autoload.
+	if st == Net.CLAIMING:
+		# The window in which there is no code yet: the row is being INSERTed
+		# against a UNIQUE constraint, which is the one job the rooms table exists
+		# to do (notes/net/2026-07-31-realtime-probe.md, "claiming a code without a
+		# race"). Nothing to read out and nothing to start.
+		_host_status.text = "claiming a room…"
+	elif st == Net.CONNECTING:
+		_host_status.text = "opening the channel…"
+	elif st == Net.LOBBY:
+		_host_status.text = "waiting for the others"
+	elif st == Net.IN_RUN:
+		_host_status.text = "the run has begun"
+	else:
+		_host_status.text = ""
+	# `Net.start_run()` refuses anything but a joined host (session.gd:158-160), so
+	# the button is disabled on exactly the condition the session would refuse —
+	# rather than on a second, drifting copy of the rule.
+	_host_start.disabled = not (st == Net.LOBBY and bool(Net.is_host()))
+
+
+func _refresh_lobby(st := -1) -> void:
+	if st < 0:
+		st = int(Net.state())
+	var code: Label = _code_labels["lobby"]
+	code.text = _slots(str(Net.code()))
+	# One writer for the drop-in button, and it is the session rather than the
+	# `run_started` handler: a client that is IN_RUN and is not the host is exactly
+	# the client that has been told to come in and has not come in yet.
+	var armed: bool = st == Net.IN_RUN and not bool(Net.is_host())
+	_drop_in.disabled = not armed
+	_drop_in.text = "DROP IN" if armed else "WAITING FOR THE HOST"
+	if armed:
+		_lobby_status.text = "the host has started"
+		return
+	if st == Net.CHECKING:
+		_lobby_status.text = "checking that code…"
+	elif st == Net.CONNECTING:
+		_lobby_status.text = "opening the channel…"
+	elif st == Net.LOBBY:
+		_lobby_status.text = "waiting for the host"
+	else:
+		_lobby_status.text = ""
+
+
+func _refresh_join() -> void:
+	var typed: String = _join_field.text
+	_join_slots.text = _slots(typed)
+	# SHAPE ONLY. Whether a room with this code EXISTS is the server's answer and
+	# a client that tries to decide it locally is a client that will one day refuse
+	# a real room (phoenix.gd:303-305).
+	_connect.disabled = not bool(PHX.is_valid_code(typed))
+
+
+func _set_net_error(message: String) -> void:
+	for screen: String in _error_labels:
+		var l: Label = _error_labels[screen]
+		l.text = message
+
+
+## Cleared when the player does something, never on a state change. `_fail()`
+## takes the session OFFLINE and *then* emits the message (session.gd:351-355), so
+## clearing on OFFLINE would wipe the one thing the player needs to read.
+func _clear_net_error() -> void:
+	_set_net_error("")
+
+
 func _commas(n: int) -> String:
 	var s := str(absi(n))
 	var out := ""
@@ -700,3 +1137,173 @@ func _on_choice(index: int, key: String) -> void:
 func _on_slide(value: float, key: String) -> void:
 	Settings.set_value(key, value)
 	_refresh_options()
+
+
+# --- what the co-op buttons do ---------------------------------------------------
+
+func _open_multiplayer() -> void:
+	_clear_net_error()
+	show_screen("multiplayer")
+
+
+func _on_mp_back() -> void:
+	_clear_net_error()
+	show_screen("title")
+
+
+func _on_host_pressed() -> void:
+	_clear_net_error()
+	# Shown before the call rather than after it: `host_room()` emits CLAIMING
+	# synchronously and `_on_net_state` only follows the session while a co-op
+	# screen is up — which "multiplayer" is, so either order works today. This
+	# order also puts the player somewhere legible if the session refuses the
+	# request outright (it does, if a room is already open).
+	show_screen("host")
+	Net.host_room(_player_name())
+
+
+func _on_join_pressed() -> void:
+	_clear_net_error()
+	show_screen("join")
+
+
+func _on_join_back() -> void:
+	_clear_net_error()
+	show_screen("multiplayer")
+
+
+## THE WRITE-BACK IS GUARDED AND THE GUARD IS MEASURED, NOT ASSUMED. Probed on
+## 4.7: neither `set_text()`, nor the property, nor `insert_text_at_caret()`, nor
+## `delete_text()` re-emits `text_changed` — only `clear()` does — so on this
+## engine the latch closes nothing. It stays because it costs one bool and the
+## failure it prevents is unbounded recursion inside a text field, which is a
+## stack overflow rather than a wrong pixel.
+func _on_join_text(raw: String) -> void:
+	if _join_guard:
+		return
+	_join_guard = true
+	var clean: String = PHX.sanitise_code(raw)
+	if clean != raw:
+		_join_field.text = clean
+		# Without this the caret snaps to 0 on every rejected keystroke and the
+		# next character is typed in front of the code rather than after it.
+		_join_field.caret_column = clean.length()
+	_join_guard = false
+	_refresh_join()
+
+
+## Enter in the field is the same verb as the button, and refused on the same
+## condition — reading `_connect.disabled` rather than re-testing the code, so
+## there is one gate and not two that can drift.
+func _on_join_submit(_text: String) -> void:
+	if not _connect.disabled:
+		_on_connect()
+
+
+## No `show_screen` here on purpose. `join_room` refuses a malformed code with an
+## error and NO state change (session.gd:126-128), so a screen change made here
+## would drop the player into an empty lobby holding a message about a code they
+## are no longer looking at. The screen follows the session, in `_on_net_state`.
+func _on_connect() -> void:
+	_clear_net_error()
+	Net.join_room(_join_field.text, _player_name())
+
+
+func _on_leave() -> void:
+	_clear_net_error()
+	# → OFFLINE → `_on_net_state` → the multiplayer screen. The host also releases
+	# its code on the way out (session.gd:145-148).
+	Net.leave_room()
+
+
+## Net emits `run_started` synchronously from inside this call (session.gd:162-164),
+## so `_on_run_started` runs while this button press is still on the stack — which
+## is the whole reason the pointer capture inside `start_game()` is legal. Nothing
+## on this path may be deferred.
+func _on_host_start() -> void:
+	_clear_net_error()
+	Net.start_run()
+
+
+func _on_drop_in() -> void:
+	_enter_run()
+
+
+# --- what the session says -------------------------------------------------------
+
+## ONE WRITER FOR WHICH CO-OP SCREEN IS UP, and it is the session rather than the
+## buttons. Each button calling `show_screen` itself gives two authors for
+## `_current`, and they disagree at exactly the moment the player needs the screen
+## to be right — when the server has refused something.
+func _on_net_state(s: int) -> void:
+	# A session transition must never move a player who is mid-run, in the options
+	# or on the pause plate. The room can go OFFLINE at any moment.
+	if not MP_SCREENS.has(_current):
+		return
+	if s == Net.OFFLINE:
+		show_screen("multiplayer")
+	elif s == Net.IN_RUN:
+		# `_on_run_started` owns this one: the host is already entering the run and
+		# the client needs its lobby left up with DROP IN armed on it.
+		_refresh_host()
+		_refresh_lobby()
+	else:
+		show_screen("host" if bool(Net.is_host()) else "lobby")
+
+
+func _on_net_roster(players: Array) -> void:
+	_rebuild_roster(players)
+
+
+func _on_net_error(message: String) -> void:
+	_set_net_error(message)
+
+
+## THE POINTER LOCK IS THE WHOLE PROBLEM, AND THE HOST AND THE CLIENT ARE NOT IN
+## THE SAME SITUATION.
+##
+## The host reaches here synchronously from its own START THE RUN press
+## (session.gd:158-164), so the browser's transient activation is still live and
+## `start_game()`'s `requestPointerLock` is granted — the same rule menu.gd:1086-1091
+## already lives by.
+##
+## The client reaches here off a broadcast (session.gd:284-294). There is no user
+## gesture anywhere near that frame, WHATWG grants activation only to a real input
+## event, and a capture asked for without one is refused. The player would land in
+## the bunker with a free cursor, no camera control and no way back: hud.gd's
+## re-capture watchdog arms only once a lock has been OBSERVED (hud.gd:1118-1131),
+## so with a lock that was never granted it never arms, and the click-anywhere path
+## is gated on STATE_TITLE / STATE_OVER and so has already stopped running.
+##
+## So the client is handed a button and drops in on its own press. It costs the
+## client the second it takes to read one line and press one key; it is the only
+## version of this that works in a browser. `Net.is_host()` is the exact
+## discriminator — it is precisely the flag that decides which of the two code
+## paths in session.gd emitted this signal.
+func _on_run_started(seed_value: int) -> void:
+	_run_seed = seed_value
+	if bool(Net.is_host()):
+		_enter_run()
+		return
+	# `_refresh_lobby` arms DROP IN off the session's own IN_RUN, so this only has
+	# to make sure the lobby is the screen that is up.
+	show_screen("lobby")
+
+
+## EVERY CLIENT RE-SEEDS FROM THE HOST'S SEED, THE HOST INCLUDED, and that is not
+## a formality on the host's side. Opening a room draws thirty-two values out of
+## Rng.VISUAL for the presence key (session.gd:371-376), and the host draws them at
+## a different moment from every client — so the two processes arrive at START THE
+## RUN with VISUAL in different places, and VISUAL is the stream weapon spread
+## still rides (constraint 5's recorded violation). `new_run()` clears every stream
+## and rebuilds all six from the one seed, which is the only thing that puts them
+## level.
+##
+## Latched on `_acted` like every other primary action in this file: DROP IN and
+## hud.gd's click-anywhere poll can both land in one frame.
+func _enter_run() -> void:
+	if _acted or main == null:
+		return
+	_acted = true
+	Rng.new_run(_run_seed)
+	main.start_game()

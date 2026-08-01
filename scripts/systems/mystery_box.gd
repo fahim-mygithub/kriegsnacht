@@ -76,6 +76,23 @@ func adopt(entry: Dictionary) -> void:
 	_place(Game.box_spot)
 
 
+## Re-rolls the starting room from the BOX stream and moves the box to it.
+##
+## For a co-op CLIENT, which learns the run's seed from the host only AFTER adopt()
+## has already spent its own boot seed. Without this, every client's box sits in a
+## room drawn from its own seed and two players hunt the same box in different
+## rooms — see main.gd::_apply_net_seed, which drives this.
+##
+## Re-enters adopt() rather than duplicating the roll, because this has to make the
+## SAME draw at the SAME point in the BOX stream, and a second copy of that
+## expression is a second thing that can drift out of step with the first
+## (constraint 6).
+func reseed() -> void:
+	if _entry.is_empty():
+		return
+	adopt(_entry)
+
+
 func state() -> String:
 	return _state
 

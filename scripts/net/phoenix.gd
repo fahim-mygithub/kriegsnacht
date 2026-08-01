@@ -34,8 +34,13 @@ const VSN := "1.0.0"
 ## network fault.
 const SYSTEM_TOPIC := "phoenix"
 
-## Under 25 s, with room for a missed frame. The server closes an idle socket at 25 s;
-## sending at 15 s means one dropped heartbeat is survivable and two are not.
+## Under 25 s, with 10 s of margin. The server closes an idle socket at 25 s.
+##
+## THE MARGIN ABSORBS A STALLED FRAME OR A BACKGROUNDED TAB, NOT A LOST BEAT — an
+## earlier version of this comment claimed one dropped heartbeat was survivable, and
+## the arithmetic refutes it: two periods is 30 s, which is past the close. It is also
+## the wrong worry. WebSocket is TCP, so a frame is never dropped, only delayed; what
+## this margin actually buys is room for the delay.
 const HEARTBEAT_PERIOD := 15.0
 
 ## Channel topics are namespaced so a room code can never collide with some other
@@ -170,10 +175,15 @@ static func _frame(topic: String, event: String, ref: String, join_ref: String,
 ## broadcast looks exactly like a successful join.
 ##
 ## EVERY NUMBER IN THE RETURNED PAYLOAD IS A FLOAT. Godot's JSON parser hands back
-## TYPE_FLOAT for whole numbers, so a zombie id written as `4` arrives as `4.0` and
-## `payload["id"] == 4` is false while `int(payload["id"]) == 4` is true. Consumers
-## must cast at the boundary. This is not hypothetical: it failed two assertions in
-## this file's own probe before it was written down.
+## TYPE_FLOAT for whole numbers, so a zombie id written as `4` arrives as `4.0`.
+##
+## `payload["id"] == 4` is TRUE — GDScript compares int and float numerically, and an
+## earlier version of this comment claimed otherwise. What actually breaks is
+## everything that is not `==`: `{4: zombie}.has(payload["id"])` is FALSE, because a
+## float key never matches an int key, so any per-id entity table misses every single
+## lookup; and `str(payload["id"])` is "4.0", not "4". Consumers must cast at the
+## boundary. Measured rather than reasoned about — scripts/dev/checks/net.gd::_numbers
+## asserts each of these so the correction cannot quietly regress.
 static func decode(text: String, join_ref_sent: String) -> Dictionary:
 	var out := {
 		"kind": KIND_UNKNOWN, "event": "", "payload": {}, "ref": "", "topic": "", "reason": "",
