@@ -110,6 +110,54 @@ Attach on the first `_process` tick instead. In the shipped game this cannot ari
 the node lives in a live tree — but any future harness that drives the net layer from
 a `SceneTree` script will hit it again.
 
+## The web export, verified in a real browser — and the bug it exposed
+
+Everything above was taken against the **desktop** binary. That proves the protocol
+and the service; it does not prove the target. The shipped GitHub Pages build was
+therefore driven by hand in Chrome, which settled the largest open risk in the
+design and immediately found a defect nothing headless could have.
+
+| | |
+| --- | --- |
+| `HTTPRequest` in the web export | **Works.** HOST A ROOM returned the code `ZK68G2`. |
+| The claim reached the real database | **Yes** — `room_exists('ZK68G2')` answered `true` from an independent client. |
+| `WebSocketPeer` in the web export | **Works.** The channel joined, presence resolved, and the lobby armed START THE RUN. |
+| The lobby | Rendered `Takeo (host · you)` and one `— empty —` seat, reading `MAX_PLAYERS` correctly. |
+
+So the web export can open a socket to Supabase Realtime. That risk is closed.
+
+### A BACKGROUNDED TAB LOSES THE ROOM
+
+Left alone for roughly a minute while unfocused, the session died and the menu
+reported *"Lost the connection to the room."* An independent client that joined the
+same code moments later saw `presence_state -> []` — the host was already gone.
+
+The cause is not the relay and not the code. **Godot's web main loop runs on
+`requestAnimationFrame`, and Chrome throttles or halts rAF on a tab that is not
+foreground.** No main loop means `realtime.gd::_process` never runs, which means the
+15 s heartbeat never goes out, and the server closes an idle socket at 25 s.
+
+`PROCESS_MODE_ALWAYS` does not help here and it is worth being precise about why: it
+defends against `get_tree().paused`, which is a *tree* state. This is the *engine*
+not being ticked at all. The two failure modes look identical from inside GDScript
+and only one of them is fixable from there.
+
+Consequences, unfixed and ranked:
+
+1. Alt-tabbing for ~30 seconds ends the session. For a co-op game people play while
+   talking on Discord in another window, this is the difference between working and
+   not.
+2. The failure is at least *clean* — `realtime.gd` climbs its backoff ladder, gives
+   up, and `session.gd` reports a player-facing sentence rather than hanging on a
+   dead socket. That half behaved exactly as designed.
+
+The fix is to move the heartbeat off the engine's frame loop entirely — a
+`setInterval` on the JS side via `JavaScriptBridge`, which Chrome throttles far less
+aggressively than rAF (to roughly 1 Hz, and only to 1/min after several minutes
+hidden, against a 25 s budget). `save_store.gd` is the precedent for reaching the
+browser this way. Until that lands, co-op requires the tab to stay foreground, and
+nothing in the UI says so.
+
 ## Message budget — CORRECTED, and the first version was 4× low
 
 **The original version of this section was wrong and the error decided the player
