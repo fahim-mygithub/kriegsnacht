@@ -26,6 +26,12 @@ Rng="*res://scripts/autoload/rng.gd"
 Game="*res://scripts/autoload/game_state.gd"
 Sfx="*res://scripts/autoload/sfx.gd"
 Settings="*res://scripts/autoload/settings.gd"
+; The co-op room: a code, a host, a roster. AFTER Rng, because session.gd draws its
+; presence key from Rng.VISUAL at _ready time and autoloads initialise in this order.
+; An autoload rather than a child of main because a session outlives the run --
+; main.restart() reloads the whole scene, which would destroy a node under main and
+; take the room down with it mid-lobby.
+Net="*res://scripts/net/session.gd"
 MCPScreenshot="*res://addons/godot_mcp/mcp_screenshot_service.gd"
 MCPInputService="*res://addons/godot_mcp/mcp_input_service.gd"
 MCPGameInspector="*res://addons/godot_mcp/mcp_game_inspector_service.gd"
