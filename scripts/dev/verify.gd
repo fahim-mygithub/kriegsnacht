@@ -142,7 +142,12 @@ const CHECK_MODULES := {
 ##
 ## A quiescent tree now runs 677, so 676 is the count this check sees on a fully
 ## green run. Raised ADDITIVELY.
-const ASSERTION_FLOOR := 676
+##
+## +2 for the web pulse (checks/net.gd): a hidden tab still beats before the idle
+## close, and the pulse is frequent enough to be what delivers that beat. Both are
+## arithmetic — the BEHAVIOUR they stand for is only true in a browser, and is
+## covered by the backgrounded-tab pass recorded in the probe note.
+const ASSERTION_FLOOR := 678
 
 var _pass := 0
 var _fail := 0

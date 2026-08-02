@@ -81,6 +81,31 @@ const BACKOFF := [1.0, 2.0, 5.0, 10.0]
 const SEND_BUDGET := 24
 const SEND_WINDOW := 1.0
 
+## THE WEB PULSE, AND IT EXISTS BECAUSE A BACKGROUNDED TAB USED TO LOSE THE ROOM.
+##
+## Godot's web main loop runs on `requestAnimationFrame`, and Chrome throttles rAF to
+## nothing on a tab that is not foreground. No main loop means `_process` never runs,
+## which means the heartbeat never goes out, and the server closes an idle socket at
+## 25 s. MEASURED in Chrome against the shipped build: leave the tab unfocused for
+## about a minute and the session dies with "Lost the connection to the room" —
+## notes/net/2026-07-31-realtime-probe.md.
+##
+## `PROCESS_MODE_ALWAYS` above does NOT help here, and the distinction is worth being
+## precise about: that defends against `get_tree().paused`, which is a *tree* state.
+## This is the *engine* not being ticked at all. From inside GDScript the two look
+## identical and only one of them is fixable from there.
+##
+## `setInterval` survives what rAF does not — Chrome clamps a hidden tab's timers to
+## about 1 Hz, which is ample against a 25 s budget. IT IS NOT UNLIMITED: after
+## roughly five minutes hidden, "intensive throttling" drops timers to about once a
+## minute and the heartbeat lapses again. So this buys a tab backgrounded for
+## minutes, not hours — which is the case that actually happens, because the thing
+## people do is alt-tab to read the room code to somebody.
+##
+## Native builds never install it: `OS.has_feature("web")` is false, there is no
+## bridge, and the frame loop was never throttled in the first place.
+const PULSE_MS := 5000
+
 var _ws: WebSocketPeer
 var _state := IDLE
 var _url := ""
@@ -95,12 +120,19 @@ var _ref := 0
 var _join_ref := ""
 
 var _roster := {}
-var _hb := 0.0
+## WALL CLOCK (msec), not an accumulated dt, because the heartbeat now has TWO
+## drivers — the frame loop and the web pulse. Accumulating in both double-counts;
+## accumulating in one leaves the other unable to tell whether a beat is owed.
+var _hb_at := 0
 var _attempt := 0
 var _retry_in := 0.0
 var _sent_in_window := 0
 var _window := 0.0
 var _dropped_sends := 0
+
+## Web only, and null everywhere else. Held rather than passed straight to the
+## bridge because `create_callback` does not retain it — see `_install_pulse`.
+var _pulse_cb: JavaScriptObject
 
 
 func _ready() -> void:
@@ -119,6 +151,7 @@ func open_channel(project_url: String, apikey: String, code: String, presence_ke
 	_attempt = 0
 	_roster = {}
 	set_process(true)
+	_install_pulse()
 	_dial()
 
 
@@ -145,6 +178,7 @@ func close_channel() -> void:
 		_ws.close()
 	_state = CLOSED
 	set_process(false)
+	_clear_pulse()
 
 
 func roster() -> Dictionary:
@@ -164,6 +198,8 @@ func dropped_sends() -> int:
 func _dial() -> void:
 	_ws = WebSocketPeer.new()
 	_state = CONNECTING
+	# So the first beat is owed one full period from the dial rather than immediately.
+	_hb_at = Time.get_ticks_msec()
 	var err := _ws.connect_to_url(_url)
 	if err != OK:
 		# A malformed URL fails here rather than asynchronously. Retrying would just
@@ -197,7 +233,7 @@ func _process(dt: float) -> void:
 			if _state == CONNECTING:
 				_send_join()
 			_pump()
-			_beat(dt)
+			_beat_if_due()
 		WebSocketPeer.STATE_CLOSED:
 			_on_socket_closed()
 		_:
@@ -210,12 +246,77 @@ func _send_join() -> void:
 	_ws.send_text(PHX.join_frame(_topic, _join_ref, _presence_key))
 
 
-func _beat(dt: float) -> void:
-	_hb += dt
-	if _hb < PHX.HEARTBEAT_PERIOD:
+## Idempotent and safe to call from either driver — see `_hb_at`.
+func _beat_if_due() -> void:
+	var now := Time.get_ticks_msec()
+	if now - _hb_at < int(PHX.HEARTBEAT_PERIOD * 1000.0):
 		return
-	_hb = 0.0
+	_hb_at = now
 	_ws.send_text(PHX.heartbeat_frame(_next_ref()))
+
+
+# --- the web pulse -----------------------------------------------------------
+
+## A `setInterval` on the JS side that pokes the socket when the frame loop cannot.
+## See PULSE_MS for why this is needed and what it does not buy.
+##
+## `save_store.gd` is the precedent for reaching the browser this way, and its reason
+## for routing through `eval()` rather than `get_interface()` holds here too: the
+## whole call is wrapped so a browser that refuses any of it fails as a return value
+## rather than as an uncatchable exception on the JS side.
+func _install_pulse() -> void:
+	if not OS.has_feature("web"):
+		return
+	# Held on the instance because the bridge does not retain it: a collected callback
+	# turns the interval into a silent no-op, which is exactly the bug being fixed.
+	_pulse_cb = JavaScriptBridge.create_callback(_on_pulse)
+	var window: JavaScriptObject = JavaScriptBridge.get_interface("window")
+	if window == null:
+		return
+	window.__kn_pulse = _pulse_cb
+	# The previous interval is cleared first. session.gd builds a FRESH channel node
+	# for every join (`_open`), so without this a second lobby in one page load would
+	# leave the first one's interval running against a freed callback.
+	JavaScriptBridge.eval("""
+		(function () {
+			if (window.__kn_pulse_id) { clearInterval(window.__kn_pulse_id); }
+			window.__kn_pulse_id = setInterval(function () {
+				if (window.__kn_pulse) { window.__kn_pulse(); }
+			}, %d);
+		})();
+	""" % PULSE_MS, true)
+
+
+func _clear_pulse() -> void:
+	if not OS.has_feature("web"):
+		return
+	JavaScriptBridge.eval("""
+		if (window.__kn_pulse_id) {
+			clearInterval(window.__kn_pulse_id);
+			window.__kn_pulse_id = 0;
+		}
+		window.__kn_pulse = null;
+	""", true)
+	_pulse_cb = null
+
+
+## Deliberately does the MINIMUM: poll, so the socket's state and inbound queue
+## advance, and beat if one is owed. It does not `_pump()` — dispatching game
+## messages into a tab that is not rendering would drive the session from outside the
+## frame loop, and there is nothing to draw the result on. The packets sit in the
+## queue and `_process` drains them on the first real frame after the tab comes back.
+func _on_pulse(_args: Array) -> void:
+	if _ws == null or _state == CLOSED or _state == IDLE:
+		return
+	_ws.poll()
+	if _state == READY and _ws.get_ready_state() == WebSocketPeer.STATE_OPEN:
+		_beat_if_due()
+
+
+## The interval outlives this node otherwise, and session.gd frees the channel on
+## every leave.
+func _exit_tree() -> void:
+	_clear_pulse()
 
 
 func _pump() -> void:

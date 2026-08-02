@@ -142,21 +142,46 @@ defends against `get_tree().paused`, which is a *tree* state. This is the *engin
 not being ticked at all. The two failure modes look identical from inside GDScript
 and only one of them is fixable from there.
 
-Consequences, unfixed and ranked:
+Consequences, as found:
 
-1. Alt-tabbing for ~30 seconds ends the session. For a co-op game people play while
+1. Alt-tabbing for ~30 seconds ended the session. For a co-op game people play while
    talking on Discord in another window, this is the difference between working and
    not.
-2. The failure is at least *clean* — `realtime.gd` climbs its backoff ladder, gives
-   up, and `session.gd` reports a player-facing sentence rather than hanging on a
+2. The failure was at least *clean* — `realtime.gd` climbed its backoff ladder, gave
+   up, and `session.gd` reported a player-facing sentence rather than hanging on a
    dead socket. That half behaved exactly as designed.
 
-The fix is to move the heartbeat off the engine's frame loop entirely — a
-`setInterval` on the JS side via `JavaScriptBridge`, which Chrome throttles far less
-aggressively than rAF (to roughly 1 Hz, and only to 1/min after several minutes
-hidden, against a 25 s budget). `save_store.gd` is the precedent for reaching the
-browser this way. Until that lands, co-op requires the tab to stay foreground, and
-nothing in the UI says so.
+### FIXED — the heartbeat now runs off a JS timer
+
+`realtime.gd::PULSE_MS` installs a `setInterval` through `JavaScriptBridge` that
+polls the socket and beats if one is owed. `save_store.gd` is the precedent for
+reaching the browser this way. Chrome *clamps* a hidden tab's timers to roughly 1 Hz
+rather than halting them the way it halts rAF, so a beat still lands well inside the
+25 s close.
+
+Two things changed alongside it, and both are load-bearing:
+
+- **The beat is on wall clock, not accumulated `dt`.** There are now two drivers —
+  the frame loop and the pulse — and accumulating in both double-counts while
+  accumulating in one leaves the other unable to tell whether a beat is owed.
+  `_hb_at` is a `Time.get_ticks_msec()` stamp and `_beat_if_due()` is idempotent.
+- **The pulse deliberately does not `_pump()`.** Dispatching game messages into a
+  tab that is not rendering would drive the session from outside the frame loop with
+  nothing to draw the result on. Packets queue and `_process` drains them on the
+  first real frame back.
+
+**WHAT IT DOES NOT BUY, stated plainly.** After roughly five minutes hidden, Chrome's
+*intensive* throttling drops timers to about once a minute, which is not enough
+against a 25 s budget. So this covers a tab backgrounded for minutes, not hours —
+which is the case that actually happens, because the thing people do is alt-tab to
+read the room code to somebody. A tab left hidden for ten minutes will still lose the
+room, and nothing in the UI says so.
+
+The arithmetic is asserted in `checks/net.gd` ("a hidden tab still beats before the
+idle close", "the web pulse fires several times per heartbeat period"), both
+controlled by sweeping `PULSE_MS`: at 20000 both fail; at 6000 only the frequency one
+does. The arithmetic is all the suite can reach — the *behaviour* is a browser fact
+and is verified by hand, below.
 
 ## Message budget — CORRECTED, and the first version was 4× low
 

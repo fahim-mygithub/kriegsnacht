@@ -154,6 +154,22 @@ var _fired := false
 var _warned_claim := false
 var _warned_flag := false
 
+## COUNTERS FOR THE CO-OP GATE, and they count the thing rather than the attempt.
+##
+## Each is incremented at the point the work actually lands — a claim after the host
+## has applied the damage, a death after `remote_die` has been called on a real body,
+## a puppet after `Zombie.create` has returned one. `tools/coop.ps1` asserts on them
+## across two processes, and a counter that ticked on the *intent* would let a broken
+## apply path pass the gate it exists to fail.
+##
+## Nothing in the game reads these. See `stats()`.
+var _n_claims_applied := 0
+var _n_puppets_spawned := 0
+var _n_puppet_deaths := 0
+var _n_world_applied := 0
+var _last_world_round := -1
+var _n_world_sent := 0
+
 
 ## Called by main.gd immediately after the run starts, and only when
 ## `Net.is_online()`.
@@ -173,6 +189,45 @@ func bind(main_node, player_node: Player) -> void:
 	if not _host:
 		_player.hit_confirmed.connect(_on_local_hit)
 	_sync_roster(Net.players())
+
+
+## What this client actually saw, for the two-process gate in tools/coop.ps1.
+##
+## READ-ONLY AND NOT PART OF THE GAME. It exists because the three files in this
+## package — this one, replication.gd and remote_player.gd — had no coverage at all,
+## and an adversarial pass proved it by sabotaging seven constants across them while
+## the suite stayed green. The suite cannot close that on its own: what these files
+## do is only true across two processes and a relay, and `--verify` has neither.
+##
+## The counts are the LANDED ones (see the vars) and the live figures are read off
+## the tree rather than off a bookkeeping dictionary, so a puppet that was recorded
+## and never built is a puppet this does not report.
+func stats() -> Dictionary:
+	var moving := 0
+	for key: String in _avatars.keys():
+		var rec: Dictionary = _avatars[key]
+		var node = rec["node"]
+		# `visible` is the load-bearing bit. `_sync_roster` builds every avatar hidden
+		# and only `_drive` turns one on, and only once it has a pose to write — so a
+		# visible avatar is proof that a `me` message crossed the wire and was applied,
+		# which is exactly the claim a roster count cannot make.
+		if is_instance_valid(node) and node.visible:
+			moving += 1
+	return {
+		"host": _host,
+		"avatars": _avatars.size(),
+		"avatars_posed": moving,
+		"puppets_live": _puppets.size(),
+		"puppets_spawned": _n_puppets_spawned,
+		"puppet_deaths": _n_puppet_deaths,
+		"claims_applied": _n_claims_applied,
+		"claims_pending": _pending_claims.size(),
+		"world_applied": _n_world_applied,
+		"world_round": _last_world_round,
+		"world_sent": _n_world_sent,
+		"world_sig": _world_sig,
+		"dropped_sends": _chan.dropped_sends() if _chan != null and is_instance_valid(_chan) else -1,
+	}
 
 
 ## Whether the round director may run on this machine. False on a co-op client,
@@ -468,9 +523,25 @@ func _send_world() -> void:
 		String(",").join(boards.map(func(n: int) -> String: return str(n)))]
 	if sig == _world_sig:
 		return
+	# LATCHED ONLY ON A SEND THAT WAS ACCEPTED, and this order is the whole fix.
+	#
+	# `send()` returns false when the second's budget is spent, and this is the one
+	# message in the file with NO successor to carry its contents: `snap` supersedes
+	# itself, `kill` and `dmg` re-queue through `_keep`, and a refused `world` used
+	# to be gone for the rest of the run — because the signature had already been
+	# latched, so the next tick computed the same one, matched, and returned.
+	#
+	# FOUND BY tools/coop.ps1, not by reading. The host forced round 3, reported
+	# `dropped_sends: 1`, and the client sat on round 1 for the remaining fifteen
+	# seconds. The drop is not bad luck either: a round change is the busiest tick
+	# there is — spawns and kills batch onto the same frame as the world change, and
+	# `tick()` sends `world` LAST, so the message that cannot be recovered is
+	# structurally the first one the budget refuses.
+	if not _chan.send(REPL.EV_WORLD,
+			REPL.encode_world(Game.round_no, Game.power_on, doors, boards)):
+		return
 	_world_sig = sig
-	_chan.send(REPL.EV_WORLD,
-		REPL.encode_world(Game.round_no, Game.power_on, doors, boards))
+	_n_world_sent += 1
 
 
 ## Which barricade a body belongs to, from where it is standing.
@@ -632,6 +703,7 @@ func _apply_kill(k: Dictionary) -> void:
 			var a := float(row["dir"])
 			dir = Vector3(cos(a), 0.0, sin(a))
 		z.remote_die(bool(row["headshot"]), bool(row["melee"]), int(row["cause"]), dir)
+		_n_puppet_deaths += 1
 
 
 ## CLIENT ONLY. The round, the barricades and the doors.
@@ -654,7 +726,9 @@ func _apply_world(w: Dictionary) -> void:
 	for i in _main.map.door_open.size():
 		if (doors & (1 << i)) != 0 and _main.map.door_open[i] == 0:
 			_main.world.open_door(i)
-	_apply_round(int(w.get("round", 0)))
+	_n_world_applied += 1
+	_last_world_round = int(w.get("round", 0))
+	_apply_round(_last_world_round)
 
 
 ## The round number is the host's, because the round loop is.
@@ -767,6 +841,10 @@ func _apply_dmg(d: Dictionary) -> void:
 		Game.set("remote_kill", true)
 		z.take_damage(float(row["amount"]), hit_y)
 		Game.set("remote_kill", false)
+		# After the apply, not before the loop: a claim naming an id the host has never
+		# heard of, or a body already dying, is a claim that did NOT land. The gate
+		# asserts that damage crosses the wire, so it has to count arrivals.
+		_n_claims_applied += 1
 
 
 ## THE CHECK THAT FAILS UNTIL THE player.gd HUNK LANDS.
@@ -870,6 +948,7 @@ func _spawn_puppet(id: int, type_code: int, pal: int, speed: float) -> void:
 	add_child(z)
 	z.set_meta("net_id", id)
 	_puppets[id] = {"node": z, "samples": [], "type": type_code, "missing": 0}
+	_n_puppets_spawned += 1
 
 
 func _free_puppet(id: int) -> void:

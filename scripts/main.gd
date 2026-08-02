@@ -266,6 +266,15 @@ func _ready() -> void:
 	# see `_on_run_started`.
 	Net.run_started.connect(_on_run_started)
 
+	# `--coop host` / `--coop join <CODE>`: the two-process gate. It drives a real
+	# room over the real relay, so it must sit after the connection above and after
+	# every headless-only flag has had its chance to return — but it is itself happy
+	# headless, because nothing in it waits on a rendered frame. tools/coop.ps1 runs
+	# the pair; scripts/dev/coop_probe.gd says what it proves and what it costs.
+	if COOP_PROBE.wanted():
+		COOP_PROBE.install(self)
+		return
+
 	# Lets a headless soak test skip the title screen.
 	if "--autostart" in OS.get_cmdline_args():
 		_debug = true
@@ -582,6 +591,7 @@ const BOX_SCRIPT := preload("res://scripts/systems/mystery_box.gd")
 const TRAPS_SCRIPT := preload("res://scripts/systems/traps.gd")
 const SESSION_SCRIPT := preload("res://scripts/net/session_runtime.gd")
 const MENU_SCRIPT := preload("res://scripts/ui/menu.gd")
+const COOP_PROBE := preload("res://scripts/dev/coop_probe.gd")
 
 
 ## The M-WARM control, recorded in notes/perf/README.md. `--no-warmup` natively,

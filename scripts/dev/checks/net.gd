@@ -829,12 +829,44 @@ static func _reconnect(v: Verify) -> void:
 	# THE 25 SECOND CLOSE. The server closes an idle socket at 25 s, so the beat
 	# has to be comfortably inside it — this is the constant whose failure mode is
 	# a session that dies on its own after half a minute and looks like the
-	# player's internet. The margin is what absorbs a stalled frame or a
-	# backgrounded tab, not a lost packet: WebSocket is TCP and nothing is dropped.
+	# player's internet. The margin absorbs a stalled frame, not a lost packet:
+	# WebSocket is TCP and nothing is dropped.
+	#
+	# THIS COMMENT USED TO SAY "a stalled frame OR A BACKGROUNDED TAB" AND THAT HALF
+	# WAS WRONG. A backgrounded tab does not run late by a margin; it stops. Chrome
+	# halts requestAnimationFrame on a tab that is not foreground, and rAF is the
+	# whole of Godot's web main loop — so `_process` does not slip, it never runs
+	# again, and no margin of any size covers it. Measured in Chrome against the
+	# shipped build: the session died and the menu read "Lost the connection to the
+	# room". The next check is the one that covers it.
 	v.check("the heartbeat period leaves real margin against the 25 s idle close",
 		PHX.HEARTBEAT_PERIOD > 0.0 and PHX.HEARTBEAT_PERIOD < IDLE_CLOSE
 			and IDLE_CLOSE - PHX.HEARTBEAT_PERIOD >= 5.0,
 		"period=%.1f close=%.1f" % [PHX.HEARTBEAT_PERIOD, IDLE_CLOSE])
+
+	# THE HIDDEN TAB, which the margin above cannot reach. realtime.gd::PULSE_MS is
+	# a JS `setInterval`, which Chrome CLAMPS to roughly 1 Hz on a hidden tab rather
+	# than halting the way it halts rAF. So the worst case beat is one full period,
+	# plus one pulse interval of latency, plus the clamp's own second — and that sum
+	# is what has to stay inside the close.
+	#
+	# The clamp figure is Chrome's documented hidden-page timer throttling, not a
+	# measurement of ours. What IS measured is that the pulse keeps a backgrounded
+	# tab's room alive at all; see notes/net/2026-07-31-realtime-probe.md.
+	const HIDDEN_CLAMP := 1.0
+	var hidden_worst: float = PHX.HEARTBEAT_PERIOD + (float(REALTIME.PULSE_MS) / 1000.0) + HIDDEN_CLAMP
+	v.check("a hidden tab still beats before the idle close",
+		hidden_worst < IDLE_CLOSE,
+		"worst=%.1fs close=%.1fs" % [hidden_worst, IDLE_CLOSE])
+
+	# And the pulse has to be frequent enough to BE the thing that delivers a beat.
+	# Bounded at both ends: a pulse of zero would satisfy "fires often enough" while
+	# spinning the browser, and one longer than a third of the period cannot land a
+	# beat on time under the clamp.
+	v.check("the web pulse fires several times per heartbeat period",
+		REALTIME.PULSE_MS > 0
+			and REALTIME.PULSE_MS * 3 <= int(PHX.HEARTBEAT_PERIOD * 1000.0),
+		"pulse=%dms period=%.0fms" % [REALTIME.PULSE_MS, PHX.HEARTBEAT_PERIOD * 1000.0])
 
 	# THE SEND CEILING MUST MAKE A DISCONNECT ARITHMETICALLY IMPOSSIBLE.
 	#

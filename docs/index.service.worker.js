@@ -4,7 +4,7 @@
 // Incrementing CACHE_VERSION will kick off the install event and force
 // previously cached resources to be updated from the network.
 /** @type {string} */
-const CACHE_VERSION = '1785555174|2872315';
+const CACHE_VERSION = '1785635092|4024334';
 /** @type {string} */
 const CACHE_PREFIX = 'Kriegsnacht-sw-cache-';
 const CACHE_NAME = CACHE_PREFIX + CACHE_VERSION;
