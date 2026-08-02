@@ -88,6 +88,8 @@ var _role := ""
 var _code := ""
 var _t := 0.0
 var _wall := 0.0
+## BUDGET unless `--coop <role> ... <seconds>` overrode it. See `install`.
+var _budget := BUDGET
 var _running := false
 var _done := false
 var _seed := -1
@@ -113,8 +115,15 @@ static func wanted() -> bool:
 	return "--coop" in OS.get_cmdline_args()
 
 
-## `--coop host` / `--coop join <CODE>`. Installed from main.gd below every headless
-## flag, for the reason stated there: none of those can be online.
+## `--coop host [seconds]` / `--coop join <CODE> [seconds]`. Installed from main.gd
+## below every headless flag, for the reason stated there: none of those can be
+## online.
+##
+## The optional seconds override BUDGET. tools/coop.ps1 never passes it — the gate
+## wants one fixed duration so its numbers are comparable run to run. It exists for
+## driving one side BY HAND against the other: pairing the desktop build with the
+## shipped web export needs a window long enough for a person to click through a
+## lobby, and 45 seconds is not it.
 static func install(main_node: Node) -> void:
 	var args := OS.get_cmdline_args()
 	var i := args.find("--coop")
@@ -127,12 +136,16 @@ static func install(main_node: Node) -> void:
 	probe.name = "CoopProbe"
 	probe._main = main_node
 	probe._role = role
+	var secs_at := i + 2
 	if role == "join":
 		probe._code = args[i + 2] if i + 2 < args.size() else ""
 		if probe._code.is_empty():
 			push_error("[coop] --coop join needs a room code")
 			main_node.get_tree().quit(2)
 			return
+		secs_at = i + 3
+	if secs_at < args.size() and args[secs_at].is_valid_float():
+		probe._budget = maxf(5.0, args[secs_at].to_float())
 	main_node.add_child(probe)
 
 
@@ -196,7 +209,10 @@ func _process(dt: float) -> void:
 		return
 	_wall += dt
 	if not _running:
-		if _wall > DEADLINE:
+		# Scaled with the budget, because an overridden budget means a HUMAN is
+		# driving the other end — clicking through a lobby in a browser takes longer
+		# than the 75 s that is generous for a second process.
+		if _wall > maxf(DEADLINE, _budget):
 			_fail("timed out waiting for the peer (%.0fs)" % _wall)
 		return
 
@@ -208,7 +224,7 @@ func _process(dt: float) -> void:
 		_bumped = true
 		_main.rounds.force_round(ROUND_TO)
 		_say("ROUND %d" % ROUND_TO)
-	if _t >= BUDGET:
+	if _t >= _budget:
 		_report()
 
 

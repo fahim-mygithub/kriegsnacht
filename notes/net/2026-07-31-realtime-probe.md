@@ -155,9 +155,14 @@ Consequences, as found:
 
 `realtime.gd::PULSE_MS` installs a `setInterval` through `JavaScriptBridge` that
 polls the socket and beats if one is owed. `save_store.gd` is the precedent for
-reaching the browser this way. Chrome *clamps* a hidden tab's timers to roughly 1 Hz
-rather than halting them the way it halts rAF, so a beat still lands well inside the
-25 s close.
+reaching the browser this way.
+
+**Chrome throttles a hidden tab's timers by raising their MINIMUM interval to one
+second — it does not halt them the way it halts rAF.** That distinction is the whole
+fix, and it means a 5 s pulse is not slowed at all. Measured in the shipped build
+with the tab hidden for 129 s: **25 fires, inter-arrival 4993–5007 ms**, i.e. exactly
+on schedule. The clamp only bites on timers asking for less than a second, which this
+is not.
 
 Two things changed alongside it, and both are load-bearing:
 
@@ -170,18 +175,54 @@ Two things changed alongside it, and both are load-bearing:
   nothing to draw the result on. Packets queue and `_process` drains them on the
   first real frame back.
 
-**WHAT IT DOES NOT BUY, stated plainly.** After roughly five minutes hidden, Chrome's
-*intensive* throttling drops timers to about once a minute, which is not enough
-against a 25 s budget. So this covers a tab backgrounded for minutes, not hours —
-which is the case that actually happens, because the thing people do is alt-tab to
-read the room code to somebody. A tab left hidden for ten minutes will still lose the
-room, and nothing in the UI says so.
+### Verified end to end, by an observer that is not the browser
+
+The host was claimed **in the shipped web build** and the tab was then left hidden and
+untouched — no screenshots, because a screenshot can force a paint and would have
+been the thing keeping the tab alive rather than the pulse. An independent Node
+client then joined the same code:
+
+| | before the fix | after |
+| --- | --- | --- |
+| `room_exists` | `true` | `true` |
+| `presence_state` | **`[]`** | **`['e676d855']`** |
+| saw the browser host | **false** | **true** |
+| the game said | *"Lost the connection to the room."* | lobby intact, START THE RUN armed |
+
+The before column is the original defect run, recorded above. Same code path, same
+service, opposite outcome, and the observer is a separate process that cannot have
+woken the tab.
+
+### The five-minute limit I predicted did not happen
+
+**This was written as a known limitation and the measurement overturned it.** The
+claim was: Chrome's *intensive* throttling drops a hidden page's timers to roughly
+once a minute after about five minutes, so the pulse would stop clearing the 25 s
+close and a long-hidden tab would still lose its room.
+
+Tested rather than left as reasoning. The same hosted room, tab hidden and untouched
+throughout, watched by an independent client:
+
+| Hidden for | Host in presence? |
+| --- | --- |
+| 129 s | yes |
+| **550 s (9.2 min)** | **yes — no `leave` event at any point** |
+
+So the cliff at five minutes did not materialise. **The mechanism is not established
+and this note will not guess at one** — plausible candidates are Chrome exempting
+pages holding an active WebSocket from intensive throttling, or Godot's audio context
+marking the tab audible, and neither was isolated. What is established is the
+observation.
+
+**What is still unknown**: anything beyond ten minutes, other browsers, and mobile,
+where background tabs are frozen far more aggressively. Do not restate 9.2 minutes as
+"it works indefinitely" — that would be the same mistake in the other direction.
 
 The arithmetic is asserted in `checks/net.gd` ("a hidden tab still beats before the
 idle close", "the web pulse fires several times per heartbeat period"), both
 controlled by sweeping `PULSE_MS`: at 20000 both fail; at 6000 only the frequency one
 does. The arithmetic is all the suite can reach — the *behaviour* is a browser fact
-and is verified by hand, below.
+and is verified by hand, above.
 
 ## Message budget — CORRECTED, and the first version was 4× low
 

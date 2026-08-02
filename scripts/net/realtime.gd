@@ -95,12 +95,19 @@ const SEND_WINDOW := 1.0
 ## This is the *engine* not being ticked at all. From inside GDScript the two look
 ## identical and only one of them is fixable from there.
 ##
-## `setInterval` survives what rAF does not — Chrome clamps a hidden tab's timers to
-## about 1 Hz, which is ample against a 25 s budget. IT IS NOT UNLIMITED: after
-## roughly five minutes hidden, "intensive throttling" drops timers to about once a
-## minute and the heartbeat lapses again. So this buys a tab backgrounded for
-## minutes, not hours — which is the case that actually happens, because the thing
-## people do is alt-tab to read the room code to somebody.
+## `setInterval` survives what rAF does not. Chrome throttles a hidden tab's timers by
+## raising their MINIMUM interval to one second — it does not halt them — so a 5 s
+## pulse is not slowed at all. Measured in the shipped build with the tab hidden for
+## 129 s: 25 fires, inter-arrival 4993-5007 ms.
+##
+## THE LIMIT PREDICTED HERE DID NOT MATERIALISE. This comment used to say that
+## "intensive throttling" would drop timers to once a minute after about five minutes
+## hidden and the heartbeat would lapse again. Measured instead: a room hosted in the
+## shipped web build survived 550 s (9.2 minutes) hidden and untouched with no
+## presence leave at any point. The mechanism is not established — Chrome may exempt
+## a page holding an open WebSocket, or the audio context may mark the tab audible —
+## so no upper bound is claimed in either direction. See
+## notes/net/2026-07-31-realtime-probe.md.
 ##
 ## Native builds never install it: `OS.has_feature("web")` is false, there is no
 ## bridge, and the frame loop was never throttled in the first place.
