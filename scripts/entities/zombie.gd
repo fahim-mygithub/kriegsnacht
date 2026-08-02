@@ -321,6 +321,27 @@ var _height := 1.82
 var _hit_flash := 0.0
 var _groan_timer := 0.0
 
+## PER-BODY TINT, so a horde stops reading as three clones. The atlas ships three
+## corpse palettes (`ZPAL`, html:844-848) and a round of 24 draws from them, so
+## eight bodies on screen are pixel-identical to eight others. This is the
+## cheapest thing that breaks that up: no new art, no atlas row, no draw call, and
+## it costs one Color multiply in the three places that already write `modulate`.
+##
+## MULTIPLICATIVE, WHICH IS WHY IT NEEDS NO COLOUR-SPACE CONVERSION. `modulate`
+## scales the albedo the sprite samples; it is not a colour being authored into
+## the frame, so CLAUDE.md's display-versus-linear rule does not bite — the same
+## reason `_tick_flash` can already multiply by Color(1.6, 0.55, 0.42) without
+## converting anything. Get this wrong in the other direction and it is the third
+## black frame.
+##
+## THE BOUNDS ARE NARROW ON PURPOSE. The three palettes are the enemy's identity
+## and a wide roll would invent a fourth. +-9% of value with a +-4% warm/cool skew
+## reads as "another corpse", not "another kind of corpse".
+const TINT_VALUE_MIN := 0.91
+const TINT_VALUE_MAX := 1.09
+const TINT_SKEW := 0.04
+var _tint := Color(1.0, 1.0, 1.0)
+
 ## The atlas. `_anim` is the cycle without its bearing suffix, because every
 ## animation change has to be able to re-issue the same cycle on a new row.
 var _anim := "walk"
@@ -472,6 +493,14 @@ func _ready() -> void:
 	if walk_frames > 1:
 		_sprite.frame = Rng.randi_range(Rng.VISUAL, 0, walk_frames - 1)
 		_sprite.frame_progress = Rng.randf(Rng.VISUAL)
+
+	# Cosmetic, so VISUAL — a gameplay stream here would break seed reproducibility
+	# for the sake of a shade. BOTH draws happen unconditionally, in this order, so
+	# every body advances the stream by exactly two however the roll lands; a
+	# conditional draw is how a cosmetic desynchronises a seeded run.
+	var tint_v := Rng.randf_range(Rng.VISUAL, TINT_VALUE_MIN, TINT_VALUE_MAX)
+	var tint_skew := Rng.randf_range(Rng.VISUAL, -TINT_SKEW, TINT_SKEW)
+	_tint = Color(tint_v + tint_skew, tint_v, tint_v - tint_skew)
 
 	_groan_timer = Rng.randf_range(Rng.VISUAL, 1.0, GROAN_MAX)
 	_reroll_offset()
@@ -843,7 +872,11 @@ func _goal_point() -> Vector2:
 func _tick_flash(dt: float) -> void:
 	if _hit_flash > 0.0:
 		_hit_flash = maxf(0.0, _hit_flash - dt * 11.0)
-	var c := Color(1.0, 1.0, 1.0)
+	# Starts from `_tint`, not white. All three writers of `_sprite.modulate` — this
+	# one, `_begin_collapse` and the corpse fade in `_tick_death` — have to carry it
+	# or the body reverts to the flat palette on the first frame after any of them
+	# runs, which is every frame it is alive.
+	var c := _tint
 	if Game.insta_kill > 0.0:
 		c = c.lerp(Color(1.6, 0.55, 0.42), 0.35)
 	if _hit_flash > 0.0:
@@ -1069,7 +1102,9 @@ func _begin_collapse() -> void:
 	# PNG from the walk strip — outlining one with the other's alpha would trace a
 	# figure that is no longer there.
 	_play("death")
-	_sprite.modulate = Color(1.0, 1.0, 1.0)
+	# `_tint`, not white — this clears the hit flash and the Insta-Kill wash, which
+	# is what the line is for, without also clearing the per-body tint.
+	_sprite.modulate = _tint
 	# WHICH WAY IT TOPPLES. The death strip rotates the body one way only
 	# (`g.rotate(t*1.32)`, html:995), so mirroring the row is the only lever
 	# there is — and it is the right one: a body should fall away from what hit
@@ -1131,7 +1166,11 @@ func _tick_death(dt: float) -> void:
 		# is a main-thread GLSL compile in the middle of a fight. So the corpse
 		# sinks into the dark instead, which on this map is what a body does.
 		var a := _death_timer / CORPSE_FADE
-		_sprite.modulate = Color(a, a, a)
+		# Written per channel rather than `_tint * a`, because Color * float scales
+		# alpha too and this sprite's alpha is a discard threshold, not a blend —
+		# see the paragraph above. The tint rides the fade instead of being dropped
+		# by it, so a corpse sinks into the dark as the body it was.
+		_sprite.modulate = Color(_tint.r * a, _tint.g * a, _tint.b * a)
 		# The rim is a second draw of the same quad through an ADDITIVE shader, so
 		# `modulate` cannot reach it and a faded body would keep a full-brightness
 		# outline — a wireframe ghost. Its energy lives in a material shared by

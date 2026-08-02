@@ -135,8 +135,15 @@ function walkerTurned(g, p, o, yaw) {
 
 	// shadow. Longer front-to-back than side to side, which is why it barely
 	// narrows in profile rather than collapsing to the torso's width.
+	//
+	// Pinned to y=63 and shrinking with the bob, matching the `zombie-shadow`
+	// patch in extract.js — `base` is 62-bob, so placing it at base+1 lifted the
+	// contact shadow off the floor with the body and the walker floated. 63 is
+	// what base+1 evaluated to at bob=0, so an unbobbed frame is unchanged.
 	g.fillStyle = 'rgba(0,0,0,.34)';
-	g.beginPath(); g.ellipse(0, base + 1, P.ell(13, 9), 3.4, 0, 0, TAU); g.fill();
+	g.beginPath();
+	g.ellipse(0, 63, P.ell(13 - o.bob * 0.9, 9 - o.bob * 0.6), 3.4 - o.bob * 0.35, 0, 0, TAU);
+	g.fill();
 
 	// --- legs. The ancestor swings them in the screen plane (html:859-871),
 	// which only reads as a stride head-on; here the foot swings fore and aft in
@@ -170,15 +177,35 @@ function walkerTurned(g, p, o, yaw) {
 	// in-plane rotation, because a rotation about the view axis cannot turn: at
 	// 90 degrees the ancestor's reach would still be drawn across the chest
 	// instead of out in front of the body, which is the whole tell of a zombie.
-	const reachZ = 12 + o.reach * 9;
+	//
+	// THE IN-PLANE ANGLE IS DERIVED, NOT COPIED. `armAngle` reproduces the
+	// ancestor's own arm rotation as patched by `zombie-arms` in extract.js, and
+	// the body-space x of each joint is where that rotation puts it at yaw 0 —
+	// which IS row 0, the walker's anchor row, drawn by zombieBody itself. Get
+	// this wrong and the hands jump sideways the moment a zombie turns 45
+	// degrees. It is written as the same expression rather than the same numbers
+	// so that the next person to retune the pose only has to find one of them:
+	// checks/enemies.gd asserts the two agree at yaw 0.
+	//
+	// z is the half the ancestor cannot express at all. A flat front view has no
+	// way to say "forward", so `reachZ` carries the whole reach into depth: small
+	// at a walk, where the arms hang at the hips, and large at a lunge.
+	const reachZ = 5 + o.reach * 16;
 	const arms = [-1, 1].map((side) => {
+		const A = side * (0.10 + o.reach * 0.40) + o.swing * 0.16;
+		const sn = Math.sin(A), cs = Math.cos(A);
+		// `ly` is distance down the arm from the shoulder, in the ancestor's own
+		// local units: 0 shoulder, 10 elbow, 19 the top of the hand rect
+		// (html:912-916). Canvas rotate(A) sends local (0,ly) to (-ly*sin A, ly*cos A).
+		const ax = (ly) => side * 8.5 - ly * sn;
+		const ay = (ly) => base - 40 + ly * cs;
 		const sz = side * 1.6;                       // one shoulder slightly ahead
 		return {
 			side,
-			sx: P.x(side * 8.5, sz), sy: base - 40,
-			ex: P.x(side * 6.8, sz + reachZ * 0.42), ey: base - 31,
-			hx: P.x(side * -8.0, sz + reachZ), hy2: base - 24,
-			depth: P.d(side * 2.0, sz + reachZ * 0.5),
+			sx: P.x(ax(0), sz), sy: ay(0),
+			ex: P.x(ax(10), sz + reachZ * 0.42), ey: ay(10),
+			hx: P.x(ax(19), sz + reachZ), hy2: ay(19),
+			depth: P.d(ax(10), sz + reachZ * 0.5),
 			torn: o.tornArm && side === 1,
 		};
 	}).sort((a, b) => a.depth - b.depth);
@@ -215,30 +242,45 @@ function walkerTurned(g, p, o, yaw) {
 	g.fillRect(-shw, base - 24, shw * 2, 5);
 
 	if (seesFace) {
-		// open coat over a ruined chest, html:882-895
-		g.fillStyle = p.skin; faceRect(g, P, Z_TORSO, -3.5, base - 40, 7, 17);
+		// open coat over a ruined chest, html:882-895 as patched by `zombie-ribs`.
+		// The geometry has to track that patch: this row and row 0 are the same
+		// chest, and the necktie the patch exists to kill was WORSE here, because
+		// the lapels foreshorten away at 45 degrees and leave the stripes with
+		// nothing framing them.
+		g.fillStyle = p.skin; faceRect(g, P, Z_TORSO, -5, base - 40, 10, 17);
 		if (o.ribs) {
-			g.fillStyle = p.wound; faceRect(g, P, Z_TORSO, -3.5, base - 36, 7, 10);
-			g.fillStyle = '#C9C3AE';
-			for (let i = 0; i < 3; i++) faceRect(g, P, Z_TORSO, -3, base - 35 + i * 3, 6, 1.4);
+			g.fillStyle = p.wound; faceRect(g, P, Z_TORSO, -5, base - 36, 10, 8);
+			g.fillStyle = '#8E876F';
+			for (let i = 0; i < 3; i++) {
+				faceRect(g, P, Z_TORSO, i % 2 ? 1.2 : -4.6, base - 35 + i * 2.4, 3.4, 1.2);
+			}
 		}
 		g.fillStyle = p.clothD;
 		faceRect(g, P, Z_TORSO, -9, base - 42, 3.5, 23);
 		faceRect(g, P, Z_TORSO, 5.5, base - 42, 3.5, 23);
 		g.fillStyle = 'rgba(84,10,12,.6)';
-		faceRect(g, P, Z_TORSO, -2, base - 30, 4, 9);
-		faceRect(g, P, Z_TORSO, -4, base - 26, 3, 5);
+		faceRect(g, P, Z_TORSO, -8.2, base - 30, 4.5, 7);
+		faceRect(g, P, Z_TORSO, 2.2, base - 27, 4, 5);
 	} else {
 		// The back of the coat. Nothing here is ported — the ancestor never drew
-		// one — so it is deliberately the plainest thing on the sprite: a seam and
-		// a shoulder-blade shadow, enough to read as "turned away" at 20 m and no
-		// more, because detail invented for a view the reference shows you for
-		// half a second is detail nobody asked for.
+		// one — so it stays the plainest thing on the sprite. But "plainest" had
+		// become "nothing": at 22% black the shoulder blades did not survive the
+		// tonemap and rows 3 and 4 rendered as a flat slab with a ball on top, the
+		// arms hidden behind the torso and no shoulder line at all. Widened,
+		// dropped to sit under the shoulder rather than beside it, and taken to
+		// 30% — still the quietest surface here, now a legible one.
 		g.fillStyle = p.clothD;
 		faceRect(g, P, -Z_TORSO, -1.2, base - 42, 2.4, 23);
-		g.fillStyle = 'rgba(0,0,0,.22)';
-		faceRect(g, P, -Z_TORSO, -8, base - 40, 5, 9);
-		faceRect(g, P, -Z_TORSO, 3, base - 40, 5, 9);
+		g.fillStyle = 'rgba(0,0,0,.30)';
+		faceRect(g, P, -Z_TORSO, -8.4, base - 38, 6.4, 11);
+		faceRect(g, P, -Z_TORSO, 2.0, base - 38, 6.4, 11);
+		if (o.ribs) {
+			// It went all the way through. Gated on `ribs` for the same reason the
+			// front is (html:980, `ribs: p!==ZPAL[1]`): palette 1 has no chest wound,
+			// so it must not have an exit wound either.
+			g.fillStyle = 'rgba(84,10,12,.5)';
+			faceRect(g, P, -Z_TORSO, -3.6, base - 33, 7.2, 9);
+		}
 	}
 
 	for (const A of arms) if (A.depth >= torsoDepth) drawArm(A);

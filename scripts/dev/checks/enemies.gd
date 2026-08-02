@@ -14,6 +14,27 @@ extends RefCounted
 ## What is deliberately not here: whether the four new bearings look like the same
 ## zombie. No assertion can see that and pretending otherwise is worse than the
 ## gap — it is `--shot`, from several yaws, and the atlas has been through it.
+##
+## AND NEITHER IS THE ARM POSE, which is the one a player actually reported. The
+## walker shipped with its arms folded across its chest (`zombie-arms` in
+## tools/gen/extract.js has the geometry); three metrics were tried against the
+## before and after art and NONE of them discriminates, so none of them is here:
+##
+##   widest skin span below the chest   21 px bug -> 16-18 px fixed. Real, but the
+##       WRONG WAY ROUND from the obvious prediction — crossed forearms lie
+##       diagonally and span wider than hands at the hips do — and a 3 px gap that
+##       any retune of the pose would erase.
+##   scanlines with two separated skin runs   7-8 bug -> 9-11 fixed. Overlapping.
+##   skin on the centreline   4-5 bug -> 4-9 fixed, i.e. HIGHER after the fix,
+##       because the same package widened the bare chest and the chest is skin.
+##
+## The honest reading is that no cheap pixel statistic separates "arms at the hips"
+## from "arms across the chest" on this sprite, and a check that cannot separate
+## them would be decoration of exactly the kind this file exists to avoid. What
+## does guard the pose is the generator: `EXPECTED_SHA` pins the whole patched
+## extraction and each patch must match its anchor exactly once, so dropping or
+## editing `zombie-arms` fails `node tools/gen/extract.js --report` loudly. The
+## visual half is `--shot` and the frames gate.
 
 const ZOMBIE := preload("res://scripts/entities/zombie.gd")
 
@@ -60,6 +81,9 @@ static func run(v: Verify, main: Node3D) -> void:
 	_bearings(v)
 	_eyes_from_behind(v, main)
 	_walk_cycle(v, main)
+	_six_poses(v)
+	_per_body_tint(v, main)
+	_tint_is_cosmetic(v, main)
 	_leg_shots(v, main)
 	_corpses(v, main)
 	_lure(v, main)
@@ -494,6 +518,158 @@ static func _walk_cycle(v: Verify, main: Node3D) -> void:
 		z.queue_free()
 	v.check("a wave does not spawn in lockstep on frame 0", starts.size() >= 3,
 		"16 spawns started on %d distinct frames" % starts.size())
+
+
+## THE SIX-FRAME WALK CYCLE WAS THREE IMAGES, and shipped that way from Milestone 1
+## until 2026-08-02. `swing` was sin(ph), `reach` was sin(ph) and `bob` was
+## |cos(ph)| — every driver symmetric about ph=90 and 270 degrees — so six phase
+## samples of them could only fold into three poses. Measured on the art that
+## shipped: frame 0 == frame 3, frame 1 == frame 2, frame 4 == frame 5, byte-identical.
+## The `zombie-walk-phase` patch in tools/gen/extract.js adds a cos(ph) term to
+## `lean`, which is symmetric about 0 and 180 instead and therefore cannot fold
+## where the others do.
+##
+## READ THROUGH `SpriteLib.frames_for`, which is the loader the game itself calls,
+## and through `get_frame_texture().get_image()`, which is the AtlasTexture region
+## the Sprite3D actually samples. Hashing the PNG off disk would pass just as
+## happily against a SpriteFrames that sliced every row at the wrong offset.
+##
+## THE OTHER TWO CYCLES ARE HERE TO KEEP THIS HONEST. A "count the distinct frames"
+## check that only ever looks at `walk` would pass identically against a build
+## where every strip in the game had collapsed to one frame, or where the hash
+## simply never collided. attack must be 2 of 2 and death 4 of 4, and those two
+## come from a different code path in `makeZombieSet` that this patch does not touch.
+static func _six_poses(v: Verify) -> void:
+	for pal in 3:
+		var n := _distinct_cells("zombie", pal, "walk", 0)
+		v.check("palette %d walks in six distinct poses, not three" % pal, n == 6,
+			"%d distinct of 6 (3 means the phase functions have folded again)" % n)
+
+	var atk := _distinct_cells("zombie", 0, "attack", 0)
+	var die := _distinct_cells("zombie", 0, "death", 0)
+	v.check("the attack cycle is still two distinct frames", atk == 2, "%d of 2" % atk)
+	v.check("the death cycle is still four distinct frames", die == 4, "%d of 4" % die)
+
+
+## Distinct images among one animation's cells, counted on the pixels the sprite
+## samples rather than on the file they came from.
+static func _distinct_cells(kind: String, pal: int, anim: String, view: int) -> int:
+	var sf := SpriteLib.frames_for(kind, pal)
+	var anim_id := SpriteLib.anim_name(anim, view)
+	var seen := {}
+	for i in sf.get_frame_count(anim_id):
+		var tex: Texture2D = sf.get_frame_texture(anim_id, i)
+		if tex == null:
+			continue
+		var img: Image = tex.get_image()
+		if img == null:
+			continue
+		seen[img.get_data()] = true
+	return seen.size()
+
+
+## A HORDE READ AS THREE CLONES. The atlas ships three palettes and a round of 24
+## draws from them, so eight bodies on screen were pixel-identical to eight others.
+## `Zombie._tint` is the fix.
+##
+## DRIVEN THROUGH `_tick_flash`, which is the function that actually puts a colour
+## on the sprite on every frame a body is alive. Reading `_tint` back would assert
+## that a field holds what was written to it — the field is not what the player
+## sees, and the two writers that clobbered it in the first draft of this change
+## (`_begin_collapse` and the corpse fade) would both have passed such a check.
+static func _per_body_tint(v: Verify, main: Node3D) -> void:
+	var made: Array[Zombie] = []
+	var lo := 9.0
+	var hi := -9.0
+	var out_of_bounds := 0
+	for i in 16:
+		var z := Zombie.create("zombie", 0, 1, false)
+		main.add_child(z)
+		z._tick_flash(0.0)
+		var c := z._sprite.modulate
+		lo = minf(lo, c.g)
+		hi = maxf(hi, c.g)
+		# r and b carry the warm/cool skew either side of g, so their legal range is
+		# the value range widened by the skew. 1e-4 for float noise, nothing more.
+		if c.g < Zombie.TINT_VALUE_MIN - 1e-4 or c.g > Zombie.TINT_VALUE_MAX + 1e-4 \
+				or c.r < Zombie.TINT_VALUE_MIN - Zombie.TINT_SKEW - 1e-4 \
+				or c.r > Zombie.TINT_VALUE_MAX + Zombie.TINT_SKEW + 1e-4:
+			out_of_bounds += 1
+		made.append(z)
+
+	# 16 uniform draws over a 0.18-wide range span 15/17 of it on average, so 0.10
+	# is a floor a working roll clears comfortably and a dead one cannot reach at
+	# all. This is the ACCEPTANCE half: without it the bounds check below passes
+	# perfectly against a build where every body is exactly 1.0.
+	v.check("sixteen bodies of one palette are sixteen shades", hi - lo >= 0.10,
+		"value spread %.3f across 16 spawns (0 means the roll is gone)" % (hi - lo))
+	# And the REFUSAL half: narrow enough that it cannot invent a fourth palette.
+	v.check("no body strays outside the declared tint range", out_of_bounds == 0,
+		"%d of 16 outside [%.2f, %.2f] +- skew" % [
+			out_of_bounds, Zombie.TINT_VALUE_MIN, Zombie.TINT_VALUE_MAX])
+
+	# The other two writers of `_sprite.modulate`. Both reset it, and both had to be
+	# taught the tint; a corpse that reverts to the flat palette the instant it is
+	# shot is the bug this pair exists to catch.
+	var z0: Zombie = made[0]
+	var tint := z0._tint
+	z0._begin_collapse()
+	v.check("the tint survives the collapse",
+		z0._sprite.modulate.is_equal_approx(tint),
+		"modulate=%s tint=%s" % [z0._sprite.modulate, tint])
+
+	z0._death_timer = Zombie.CORPSE_FADE * 0.5
+	z0._tick_death(0.0)
+	var faded := z0._sprite.modulate
+	# Bounded at both ends again: the corpse must actually be darkening (or this
+	# says nothing at all), AND the channel ratio the tint is made of must be intact.
+	v.check("a corpse still fades", faded.g < tint.g * 0.75,
+		"faded.g=%.3f tint.g=%.3f" % [faded.g, tint.g])
+	v.check("...and fades as the body it was, not as a grey one",
+		v.near(faded.r * tint.g, faded.g * tint.r, 1e-4),
+		"faded=%s tint=%s" % [faded, tint])
+
+	for z in made:
+		z.queue_free()
+
+
+## CLAUDE.md constraint 5: a cosmetic draw must not advance a gameplay stream, or
+## the seeded-run layer stops reproducing. This is the consumer-driven form of it —
+## it does not ask which stream the code names, it asks what happens to a body when
+## you move one stream and hold the others still.
+##
+## Rewinding the five gameplay streams to a snapshot and moving only VISUAL: if the
+## tint really is on VISUAL the two bodies differ in colour and agree in speed. Move
+## the tint draw onto Rng.AI and the first check fails immediately, because both
+## bodies would then replay the same rewound AI sequence and come out the same shade.
+static func _tint_is_cosmetic(v: Verify, main: Node3D) -> void:
+	var gameplay: Array[StringName] = [Rng.SPAWN, Rng.BOX, Rng.DROPS, Rng.ROUNDS, Rng.AI]
+	var snap := {}
+	for s: StringName in gameplay:
+		snap[s] = Rng.stream(s).state
+
+	Rng.stream(Rng.VISUAL).state = 11111
+	var a := Zombie.create("zombie", 0, 5, false)
+	main.add_child(a)
+	var a_tint: Color = a._tint
+	var a_speed: float = a.speed
+
+	for s: StringName in gameplay:
+		var was: int = snap[s]
+		Rng.stream(s).state = was
+	Rng.stream(Rng.VISUAL).state = 99999
+	var b := Zombie.create("zombie", 0, 5, false)
+	main.add_child(b)
+
+	v.check("the tint moves when only the cosmetic stream moves",
+		not a_tint.is_equal_approx(b._tint),
+		"a=%s b=%s (equal means the roll is on a gameplay stream)" % [a_tint, b._tint])
+	v.check("...and the body itself does not",
+		v.near(a_speed, b.speed, 1e-6),
+		"speeds %.4f vs %.4f — a cosmetic roll has shifted a gameplay one" % [a_speed, b.speed])
+
+	a.queue_free()
+	b.queue_free()
 
 
 ## Deliberately does NOT re-seed. Round 2 is walkers only and round 30 has no

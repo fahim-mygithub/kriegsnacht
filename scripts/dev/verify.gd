@@ -151,7 +151,19 @@ const CHECK_MODULES := {
 ## +2 for the shell's click (checks/shell.gd `_shell_click_is_not_a_run`): the
 ## refusal, and the game-over acceptance that keeps the refusal from passing against
 ## a poll that has simply died. This one stands for a defect that reached a player.
-const ASSERTION_FLOOR := 680
+##
+## +12 for the zombie art pass (checks/enemies.gd): 5 for the walk cycle being six
+## distinct poses rather than the three it shipped as — three palettes plus the
+## attack and death cycles, which come from a code path the patch does not touch
+## and are what stops "count the distinct frames" from passing against a build
+## where everything collapsed; 5 for the per-body tint, driven through the writer
+## the player sees and bounded at both ends (a spread wide enough to prove the roll
+## is alive, a range narrow enough that it cannot invent a fourth palette, and the
+## corpse fade asserted to BOTH darken and keep the tint); 2 for the tint being on
+## the cosmetic stream, put as a differential rather than as a name so that moving
+## it to Rng.AI fails rather than reads the same. The arm pose those changes exist
+## for is NOT among them and enemies.gd's header says why.
+const ASSERTION_FLOOR := 692
 
 var _pass := 0
 var _fail := 0
