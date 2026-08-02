@@ -121,9 +121,9 @@ var _options_from := "title"
 var _current := ""
 
 ## One-shot latch on the primary action for the frame it fires in. Two paths
-## reach it — the button, and the HUD's click-anywhere poll that web/shell.html's
-## single gesture drives — and on the game-over screen both would land: the poll
-## on the mouse press, the button on the release. `restart()` defers a
+## reach it — the button, and the HUD's click-anywhere poll, which since the poll
+## narrowed to the game-over screen is the one screen where both land: the poll on
+## the mouse press, the button on the release. `restart()` defers a
 ## `reload_current_scene()` without moving Game.state, so the second call would
 ## queue a second reload of a scene that is already being replaced.
 var _acted := false
@@ -210,9 +210,10 @@ func unbind() -> void:
 
 
 ## The primary action of whatever screen is up: begin the run, or start another.
-## Called by the big button AND by hud.gd's click-anywhere poll, which is the
-## gesture web/shell.html forwards to the canvas — see `_acted` for why the two
-## cannot both be allowed to land.
+## Called by the big button on either screen, and on the game-over screen also by
+## hud.gd's click-anywhere poll — see `_acted` for why the two cannot both be
+## allowed to land. The title screen no longer reaches here from a bare click, and
+## `_poll_menu_click` carries the reason.
 func press_primary() -> void:
 	if _acted or main == null:
 		return

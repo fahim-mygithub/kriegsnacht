@@ -72,6 +72,7 @@ static func run(v: Verify, main: Node3D) -> void:
 	_settings_keeps_the_profile(v)
 	_settings_matches_the_game(v, main)
 	_menu_tree(v, main)
+	_shell_click_is_not_a_run(v, main)
 	_menu_multiplayer(v, main)
 	_reduce_motion(v, main)
 	_captions_and_arrows(v, main)
@@ -445,6 +446,80 @@ static func _menu_tree(v: Verify, main: Node3D) -> void:
 		menu.unbind()
 		main.remove_child(menu)
 		menu.queue_free()
+
+
+## THE DEFECT THIS IS NAMED FOR SHIPPED, AND IT SHIPPED ONLY ON THE WEB.
+## web/shell.html dispatches a synthetic mousedown at the canvas to resume the
+## audio driver, and hud.gd's click-anywhere poll read that as "press the primary
+## button" — so every browser player went from the loading page into a solo run
+## without the title screen ever being drawn. MULTIPLAYER and OPTIONS were on that
+## screen. Reported against the live GitHub Pages build and reproduced there.
+##
+## Driven through `hud._menu_click()` rather than through `press_primary()`,
+## because press_primary was never the broken part — it did exactly what it was
+## asked. The CALLER is the thing under test, and a check that called press_primary
+## here would have passed against the shipped bug.
+##
+## WHAT THIS DOES NOT COVER, stated because the gap is real: the line above
+## `_menu_click`, which is the `is_action_just_pressed` gate. That needs a frame
+## boundary and a check is one synchronous call inside a physics frame — measured
+## here at physics frame 1, `Input.action_press("fire")` leaves
+## `is_action_just_pressed` reading false, and so does `parse_input_event` followed
+## by `flush_buffered_events`. The gate is one unchanged line of Godot's own API;
+## the branch below it is where the defect lived.
+##
+## BOUNDED AT BOTH ENDS in one drive. The refusal on its own passes just as well
+## against a poll that has stopped working altogether, and that poll is still the
+## only way off the game-over screen for a player whose hand is on the mouse.
+static func _shell_click_is_not_a_run(v: Verify, main: Node3D) -> void:
+	var hud: Node = main.get("hud")
+	var menu = main.get("menu")
+	var borrowed := false
+	if menu == null:
+		menu = MENU.new()
+		menu.name = "ShellClickCheck"
+		main.add_child(menu)
+		menu.bind(main, hud)
+		borrowed = true
+
+	var stub := StubMain.new()
+	var main_was = menu.main
+	var menu_was = hud._menu
+	var state_was: int = Game.state
+	var screen_was: String = menu.current()
+	menu.main = stub
+	hud.set_menu(menu)
+
+	# Assigned rather than set through Game.set_state, which would pause the tree
+	# and emit into every listener in the game — the same reason `_menu_tree` does.
+	Game.state = Game.STATE_TITLE
+	menu.show_screen("title")
+	menu._acted = false
+	hud._menu_click()
+
+	Game.state = Game.STATE_OVER
+	menu.show_screen("over")
+	menu._acted = false
+	hud._menu_click()
+
+	v.check("a click the player did not aim at a button does not start a run",
+		stub.starts == 0,
+		"starts=%d — the web shell's audio click would begin a solo run and the "
+			% stub.starts + "title screen (MULTIPLAYER, OPTIONS) would never be seen")
+	v.check("the same click still restarts from the game-over screen",
+		stub.restarts == 1,
+		"restarts=%d (expected 1; 0 means the poll is inert and the refusal above "
+			% stub.restarts + "proves nothing)")
+
+	Game.state = state_was
+	menu.main = main_was
+	menu.show_screen(screen_was)
+	if borrowed:
+		menu.unbind()
+		main.remove_child(menu)
+		menu.queue_free()
+	# After unbind(), which nulls it on its way out.
+	hud.set_menu(menu_was)
 
 
 # --- the co-op screens ----------------------------------------------------------

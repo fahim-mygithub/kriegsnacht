@@ -147,7 +147,11 @@ const CHECK_MODULES := {
 ## close, and the pulse is frequent enough to be what delivers that beat. Both are
 ## arithmetic — the BEHAVIOUR they stand for is only true in a browser, and is
 ## covered by the backgrounded-tab pass recorded in the probe note.
-const ASSERTION_FLOOR := 678
+##
+## +2 for the shell's click (checks/shell.gd `_shell_click_is_not_a_run`): the
+## refusal, and the game-over acceptance that keeps the refusal from passing against
+## a poll that has simply died. This one stands for a defect that reached a player.
+const ASSERTION_FLOOR := 680
 
 var _pass := 0
 var _fail := 0

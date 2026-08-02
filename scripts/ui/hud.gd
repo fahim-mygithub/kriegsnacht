@@ -367,11 +367,9 @@ func bind(p: Player, g: Node3D) -> void:
 
 ## menu.gd hands itself over here. Two things change: this file stops drawing its
 ## own title/pause/over plates, because the menu draws better ones with real
-## buttons on them, and the click-anywhere poll below routes to the menu instead
-## of straight to main. The poll is NOT removed — it is the gesture the port has
-## taught since Milestone 1, it is what the web shell's one click drives, and
-## `press_primary()` is idempotent for exactly the case where the click also
-## landed on the menu's own button.
+## buttons on them, and `_poll_menu_click` narrows to the game-over screen — the
+## title screen's three buttons become the only way into a run, for the reason
+## written out over that function. Unbinding restores both.
 func set_menu(m) -> void:
 	_menu = m
 	# Re-run the state handler either way: binding has to hide this file's own
@@ -1149,21 +1147,65 @@ func _process(dt: float) -> void:
 		elif _resume_armed:
 			Game.set_state(Game.STATE_PLAY)
 
-	# Click anywhere to begin, which the port has taught since Milestone 1 and
-	# which web/shell.html's one gesture drives: the shell dispatches a mousedown
-	# at the canvas from inside the real click, so the run starts and the pointer
-	# lock is asked for while the browser's transient activation is still live.
-	# With a menu bound this routes through it rather than around it — otherwise a
-	# click that landed on ENTER THE BUNKER would fire start_game() twice in one
-	# frame and begin round one twice. press_primary() is guarded for that.
-	if Game.state == Game.STATE_TITLE or Game.state == Game.STATE_OVER:
-		if Input.is_action_just_pressed("fire") or Input.is_action_just_pressed("interact"):
-			if _menu != null:
-				_menu.press_primary()
-			elif Game.state == Game.STATE_TITLE:
-				game.start_game()
-			else:
-				game.restart()
+	_poll_menu_click()
+
+
+## CLICK-ANYWHERE SURVIVES ON THE GAME-OVER SCREEN AND NOWHERE ELSE. The title
+## screen's exemption is a DELIBERATE DEPARTURE from the ancestor, which begins a
+## run from a click on either overlay (html:1043, `canvas.onmousedown`).
+##
+## The ancestor's title screen had exactly one action on it, so "click anywhere"
+## and "press the only button" were the same sentence. This one has three, and on
+## the web there is a fourth click the player never aimed: web/shell.html dispatches
+## a mousedown at the canvas to resume the audio driver, and while the title screen
+## honoured click-anywhere that synthetic gesture pressed ENTER THE BUNKER. A
+## browser player therefore went from the loading page straight into a solo run and
+## never saw MULTIPLAYER or OPTIONS at all — reported against the live GitHub Pages
+## build, reproduced there, and the reason this function exists.
+##
+## That is the THIRD defect shaped "a click nobody aimed at the primary button
+## pressed it anyway": the mouse-sensitivity slider starting a run and every co-op
+## screen doing the same are the other two, both guarded inside `press_primary()`.
+## Those guards stay — but a guard that has to enumerate every screen is one new
+## screen away from failing again, so the source is removed as well.
+##
+## The game-over screen keeps the gesture: it still has one action a player wants in
+## a hurry, and no shell click arrives in that state to misfire.
+##
+## The null-menu fallback is NOT dead code. `set_menu` is called from menu.gd's
+## `bind()`, so a build that has not wired a menu has no buttons at all and this
+## poll is its only way out of either screen.
+##
+## SPLIT IN TWO SO THE HALF THAT BROKE CAN BE ASSERTED. `is_action_just_pressed`
+## is true only on the frame the press arrives, and a `--verify` check is a
+## synchronous call inside one physics frame with no frame boundary to cross:
+## measured in situ at physics frame 1, neither `Input.action_press` nor
+## `parse_input_event` + `flush_buffered_events` makes it read true. So the Input
+## read stays here, uncovered and unchanged, and everything that decides what a
+## click MEANS — which is the part that shipped wrong — moves into `_menu_click`,
+## which checks/shell.gd drives directly.
+func _poll_menu_click() -> void:
+	if Input.is_action_just_pressed("fire") or Input.is_action_just_pressed("interact"):
+		_menu_click()
+
+
+## What a click means on the screen that is up. See `_poll_menu_click` for why the
+## title screen is not in this list and for the two lines that are not covered.
+func _menu_click() -> void:
+	if Game.state != Game.STATE_TITLE and Game.state != Game.STATE_OVER:
+		return
+	if _menu == null:
+		if Game.state == Game.STATE_TITLE:
+			game.start_game()
+		else:
+			game.restart()
+		return
+	# A menu is bound, so the title screen's own buttons are the way in and this
+	# click was not aimed at any of them. press_primary() is still the route for the
+	# game-over screen, and is still guarded for the case where the click also
+	# landed on the menu's button in the same frame.
+	if Game.state == Game.STATE_OVER:
+		_menu.press_primary()
 
 
 ## Pausing never re-captures. Resume is a click, which is the only gesture that

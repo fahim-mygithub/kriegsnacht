@@ -324,7 +324,12 @@ html, body {
 	</div>
 
 	<div id="action">
-		<button id="play" type="button">Enter the bunker</button>
+		<!-- NOT "Enter the bunker" — that is the game's own primary button, one
+		     screen further in, and this page having the same words on it is what
+		     made a player report the title screen as missing its multiplayer
+		     option. This button opens the door; the menu behind it decides what
+		     kind of night it is going to be. -->
+		<button id="play" type="button">Open the door</button>
 		<div id="track"><div id="fill"></div></div>
 		<div id="pct">Loading&hellip;</div>
 	</div>
@@ -345,7 +350,7 @@ html, body {
 
 <script src="index.js"></script>
 <script>
-const GODOT_CONFIG = {"args":[],"canvasResizePolicy":2,"emscriptenPoolSize":8,"ensureCrossOriginIsolationHeaders":true,"executable":"index","experimentalVK":false,"fileSizes":{"index.pck":9422000,"index.wasm":39509339},"focusCanvas":true,"gdextensionLibs":[],"godotPoolSize":4,"serviceWorker":"index.service.worker.js"};
+const GODOT_CONFIG = {"args":[],"canvasResizePolicy":2,"emscriptenPoolSize":8,"ensureCrossOriginIsolationHeaders":true,"executable":"index","experimentalVK":false,"fileSizes":{"index.pck":9423632,"index.wasm":39509339},"focusCanvas":true,"gdextensionLibs":[],"godotPoolSize":4,"serviceWorker":"index.service.worker.js"};
 const GODOT_THREADS_ENABLED = false;
 const engine = new Engine(GODOT_CONFIG);
 
@@ -387,8 +392,8 @@ const engine = new Engine(GODOT_CONFIG);
 	// on the wire does not skew it.
 	function onProgress(current, total) {
 		// The loader's rAF pump can deliver one more callback after startGame has
-		// already resolved, which overwrote the "click to lock the mouse" line with
-		// a byte count the instant it appeared.
+		// already resolved, which overwrote the ready line below with a byte count
+		// the instant it appeared.
 		if (ready) {
 			return;
 		}
@@ -408,7 +413,11 @@ const engine = new Engine(GODOT_CONFIG);
 		ready = true;
 		fill.style.width = '100%';
 		play.classList.add('ready');
-		pct.textContent = 'Sound on. Click to lock the mouse.';
+		// Says what is actually behind the button. The old line ("click to lock the
+		// mouse") described a click that went straight into a solo run, which is
+		// the behaviour this page no longer has — and naming co-op here is the
+		// cheapest possible fix for "I only had one option".
+		pct.textContent = 'Sound on. Solo and co-op are both on the menu inside.';
 		// So a keyboard player who tabbed here does not lose their place when the
 		// engine's `focusCanvas` grabs focus on start.
 		play.focus({ preventScroll: true });
@@ -477,20 +486,27 @@ const engine = new Engine(GODOT_CONFIG);
 
 	// THE ONE GESTURE, and the whole reason this page has a button on it.
 	//
-	// Three things need a user gesture and a browser will grant them only from
-	// inside one: resuming the AudioContext, requesting pointer lock, and (in
-	// practice) starting a run at all. Doing them from three separate clicks is
-	// the stock experience — click the canvas for audio, click again because the
-	// lock was refused, and never find out why.
+	// A browser resumes an AudioContext only from inside a user gesture, and until
+	// something does, the game runs silent — which for this one is a mechanic and
+	// not a polish item, because the groan behind you is how you know. So the gate
+	// exists to collect exactly one deliberate click and spend it on the audio
+	// driver.
 	//
-	// The click is FORWARDED rather than acted on here. Dispatching a mousedown
-	// at the canvas puts it through the engine's own input path, which is what
-	// resumes the audio driver (DisplayServerWeb's mouse callback calls
-	// OS_Web::resume_audio) and what hud.gd's click-anywhere poll reads to begin
-	// the run — and `Player.set_capture(true)` then asks for the lock from inside
-	// Godot's own frame, still within the browser's transient-activation window,
-	// which is five seconds and not one task. Doing the pointer lock from here
-	// instead would leave the engine believing it had not been granted.
+	// The click is FORWARDED rather than acted on here. Dispatching a mousedown at
+	// the canvas puts it through the engine's own input path, and it is
+	// DisplayServerWeb's mouse callback that calls OS_Web::resume_audio — there is
+	// no supported way to reach that from out here.
+	//
+	// IT LANDS IN THE CORNER, ON PURPOSE, AND THE CENTRE SHIPPED A BUG. This page
+	// hands over to the game's title screen, which is a centred panel of real
+	// buttons; a synthetic press at the middle of the canvas is a press on whichever
+	// of them the current window size happens to put there. The corner is the one
+	// point on the canvas that no menu ever occupies. (Audio resume does not care
+	// where the click was — only that the engine saw one.)
+	//
+	// POINTER LOCK IS NOT ASKED FOR HERE and no longer needs to be. The player's own
+	// click on ENTER THE BUNKER is a fresh gesture with its own transient activation,
+	// and menu.gd asks from inside it; see the comment over `_on_start`.
 	//
 	// mouseup goes to the WINDOW and mousedown to the CANVAS, because that is
 	// where the engine listens for each (godot.js: `add(canvas, 'mousedown')`,
@@ -508,8 +524,8 @@ const engine = new Engine(GODOT_CONFIG);
 			bubbles: true,
 			cancelable: true,
 			view: window,
-			clientX: r.left + r.width / 2,
-			clientY: r.top + r.height / 2,
+			clientX: r.left + 2,
+			clientY: r.top + 2,
 			button: 0,
 			detail: 1,
 		};
