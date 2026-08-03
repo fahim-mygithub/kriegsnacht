@@ -191,6 +191,22 @@ const LAMP_ROOM := 0
 const VM_RECT_HIP := Rect2i(770, 470, 190, 200)
 const VM_RECT_ADS := Rect2i(600, 359, 80, 177)
 
+## The hip viewmodel's silhouette with margin, for probes that must look at the
+## WORLD and not at the gun in front of it. Deliberately a SECOND constant rather
+## than a widened `VM_RECT_HIP`, and the distinction is the reason both exist:
+## `VM_RECT_HIP` is the window `gun_px` and `gun_mean` are measured IN, so growing
+## it changes what those probes report and re-blesses two scenarios; this one is a
+## window other probes are measured OUTSIDE, so it wants margin and costs nothing
+## by having it. Widening one to serve both would couple a viewmodel measurement to
+## a zombie measurement, and the next weapon that changes size would move both.
+##
+## Measured, not guessed: differencing `ref/horde.png` against `current/horde.png`
+## after the iron sights landed puts every changed pixel in the frame inside
+## `x[774..944] y[464..584]` — 909 samples at a 2 px stride, and ZERO of them left
+## of x = 700. Eight pixels of margin on each side of that, which also covers the
+## `spawn` silhouette Stage 1 measured at `x 778..952 y 463..674`.
+const VM_RECT_HIP_KEEPOUT := Rect2i(766, 455, 194, 226)
+
 ## Chroma margins for the two colour masks, in DISPLAY code fractions (the frame
 ## is sRGB-encoded and a hue test does not need decoding — it is a comparison
 ## between channels of the same pixel, and the encode is monotonic and identical
@@ -967,19 +983,40 @@ static func _probe_silhouette(img: Image, bare: Image) -> Dictionary:
 ## Swept by sabotaging RIM_ENERGY in zombie.gd and re-capturing this scenario,
 ## which is how the shipped value was chosen in the first place (zombie.gd:1396):
 ##
+## RE-SWEPT 2026-08-03 with the viewmodel excluded (see the keep-out below). The
+## numbers moved by a factor of three and the OLD ONES ARE KEPT UNDERNEATH,
+## because the difference between them is the finding.
+##
+##   RIM_ENERGY  rim_frac   rim_mean   rim_over_body   rim_frac/body_frac
+##   0.00        0.000000   0.0000     0.0000          0.000000
+##   0.16        0.000225   0.0109     0.0614          0.000434
+##   0.30        0.000854   0.0554     0.2955          0.001649   <- shipped
+##   0.62        0.002776   0.3070     1.5519          0.005742   <- the defect
+##
+## **WITH THE RIM SWITCHED OFF, `rim_frac` IS NOW EXACTLY ZERO**, and every one of
+## the four columns is strictly monotone. That is the whole point of the keep-out
+## and it is worth more than the drift that led to it.
+##
+## What it replaced, and why that mattered:
+##
 ##   RIM_ENERGY  rim_frac   rim_mean   rim_over_body   frame mean
 ##   0.00        0.00260    0.0718     0.480           0.019876
 ##   0.16        0.00302    0.0630     0.407           0.020561
-##   0.30        0.00409    0.0654     0.395           0.021754   <- shipped
-##   0.62        0.00633    0.2138     1.247           0.025854   <- the defect
+##   0.30        0.00409    0.0654     0.395           0.021754
+##   0.62        0.00633    0.2138     1.247           0.025854
 ##
-## `rim_over_body` and `rim_mean` are NON-MONOTONE at the bottom: with the rim
-## switched off completely the ratio is 0.480, HIGHER than the shipped 0.395,
-## because what is left in the cold mask is a hundred stray pixels of something
-## else whose mean has nothing to do with the effect. A gate that bounded the rim
-## only by that ratio would pass a build with no rim in it at all — which is the
-## exact shape of failure §1 of the audit is about, and it was found here by
-## running the control rather than by trusting the metric.
+## The old note read those and concluded that `rim_over_body` and `rim_mean` were
+## NON-MONOTONE at the bottom — the ratio being 0.480 with the rim off, HIGHER than
+## the shipped 0.395 — and blamed "a hundred stray pixels of something else whose
+## mean has nothing to do with the effect". **That something else was the gun.** The
+## rim rect is x[495..783]; the hip viewmodel starts at x = 774; the 18 px of grey
+## slide inside the rect is 3.7% of its area and was supplying 59% of every pixel
+## the probe called rim, because `_is_cold` cannot tell gun metal from a cold rim.
+##
+## So the non-monotonicity was never a property of the effect. It was an object in
+## front of it, and the old floor of 0.00260-with-the-rim-off was that object's
+## silhouette. The diagnosis in the old note was right about the symptom and wrong
+## about the cause, and it cost the gate its ability to fail on a build with no rim.
 ##
 ## `rim_frac` — how much of the sprite's own rect reads cold — is monotone across
 ## the whole sweep and moves by 36% when the rim goes out and 55% when it doubles.
@@ -992,8 +1029,14 @@ static func _probe_rim(main: Node3D, img: Image) -> Dictionary:
 		return {}
 	var cam: Camera3D = main.player.camera()
 	var r := _sprite_rect(cam, _rim_target, 4)
-	var cold := FRAME_STATS.masked(img, r, _is_cold)
-	var warm := FRAME_STATS.masked(img, r, _is_warm)
+	# THE GUN IS NOT THE ZOMBIE. Both masks skip the viewmodel's own keep-out, or a
+	# weapon that merely got BIGGER reads here as a rim that got DIMMER — which is
+	# what happened when the iron sights landed and is the one drift in that package
+	# that looked like a regression and was not. The sweep at the top of this comment
+	# is what `rim_frac` means; a number contaminated by an object in front of the
+	# zombie does not sit anywhere on it.
+	var cold := FRAME_STATS.masked(img, r, _is_cold, VM_RECT_HIP_KEEPOUT)
+	var warm := FRAME_STATS.masked(img, r, _is_warm, VM_RECT_HIP_KEEPOUT)
 	var cm: float = cold["mean"]
 	var wm: float = warm["mean"]
 	var cf: float = cold["frac"]

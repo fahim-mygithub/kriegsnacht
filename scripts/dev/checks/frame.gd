@@ -635,18 +635,29 @@ static func _relations(v: Verify) -> void:
 	v.check("the golden file declares the rim relations the gate turns on",
 		rim.size() == 2, "found %d" % rim.size())
 
+	# RE-MEASURED 2026-08-03, all four rows, after `_probe_rim` started excluding the
+	# viewmodel. They are not a retune: the old rows were read through a probe whose
+	# rect contained 18 px of the gun's grey slide, and `_is_cold` counts gun metal as
+	# rim. See `shot_setup._probe_rim` for the before-and-after sweep and the arithmetic.
+	#
+	# THE ROW THAT MATTERS IS `switched_off`, AND IT IS WHY THIS RE-MEASUREMENT WAS
+	# WORTH DOING. It used to read rim_frac 0.002600 — two thirds of the shipped
+	# 0.004090 — so "the rim is switched off entirely" and "the rim is working" were
+	# 1.6x apart and a band had to thread between them. It is now EXACTLY 0.000000
+	# against a shipped 0.000854, so the gate fails on a build with no rim by an
+	# infinite margin rather than a hairline one.
 	var shipped := {"horde": {"probes": {
-		"rim_mean": 0.065390, "body_mean": 0.165430,
-		"rim_frac": 0.004090, "body_frac": 0.504230}}}
+		"rim_mean": 0.055360, "body_mean": 0.187351,
+		"rim_frac": 0.000854, "body_frac": 0.517469}}}
 	var too_bright := {"horde": {"probes": {
-		"rim_mean": 0.213819, "body_mean": 0.171496,
-		"rim_frac": 0.006333, "body_frac": 0.470769}}}
+		"rim_mean": 0.306957, "body_mean": 0.197800,
+		"rim_frac": 0.002776, "body_frac": 0.483479}}}
 	var too_dim := {"horde": {"probes": {
-		"rim_mean": 0.063010, "body_mean": 0.154880,
-		"rim_frac": 0.003020, "body_frac": 0.505340}}}
+		"rim_mean": 0.010884, "body_mean": 0.177399,
+		"rim_frac": 0.000225, "body_frac": 0.518538}}}
 	var switched_off := {"horde": {"probes": {
-		"rim_mean": 0.071800, "body_mean": 0.149500,
-		"rim_frac": 0.002600, "body_frac": 0.500280}}}
+		"rim_mean": 0.000000, "body_mean": 0.173901,
+		"rim_frac": 0.000000, "body_frac": 0.511935}}}
 	v.check("the committed bounds accept the shipped RIM_ENERGY of 0.30",
 		FRAME_STATS.relations(shipped, rim).is_empty(),
 		str(FRAME_STATS.relations(shipped, rim)))

@@ -260,14 +260,30 @@ static func rect_mean(img: Image, r: Rect2i) -> float:
 ## `pred` is a Callable per pixel, so this is for RECTANGLES, not for frames: a
 ## full 1280x720 pass would be 921600 Callable invocations. Every caller here
 ## passes a rect a few hundred pixels on a side.
-static func masked(img: Image, r: Rect2i, pred: Callable) -> Dictionary:
+## `exclude` removes a rectangle from consideration ENTIRELY — not from the hits
+## but from the denominator as well, which is the whole point and the easy thing to
+## get wrong. `frac` is `hits / total`; drop pixels from the numerator only and a
+## mask that is merely OCCLUDED reads as a mask that has DIMMED, which is exactly
+## the false regression this parameter was added to stop. See `_probe_rim` in
+## `shot_setup.gd`: the viewmodel grew by 8% when the iron sights landed, covered a
+## corner of the zombie the rim is measured on, and moved `rim_frac` 0.0034 -> 0.0021
+## on a frame whose zombies were PIXEL-IDENTICAL — proven by differencing the two
+## captures, which showed not one changed pixel left of x = 700.
+static func masked(img: Image, r: Rect2i, pred: Callable,
+		exclude := Rect2i()) -> Dictionary:
 	var clip := r.intersection(Rect2i(0, 0, img.get_width(), img.get_height()))
+	# Intersected with the clip first, so a caller passing a rect that only partly
+	# overlaps cannot subtract more area than is actually there and drive `total`
+	# negative — `frac` would then be nonsense rather than merely wrong.
+	var skip := clip.intersection(exclude)
 	var sum := 0.0
 	var hits := 0
 	var ysum := 0.0
-	var total := maxi(clip.size.x * clip.size.y, 0)
+	var total := maxi(clip.size.x * clip.size.y - skip.size.x * skip.size.y, 0)
 	for y in range(clip.position.y, clip.position.y + clip.size.y):
 		for x in range(clip.position.x, clip.position.x + clip.size.x):
+			if skip.has_point(Vector2i(x, y)):
+				continue
 			var c := img.get_pixel(x, y)
 			if pred.call(c):
 				sum += luma(c)
