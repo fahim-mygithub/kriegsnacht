@@ -185,6 +185,82 @@ const FLASH_TIME := 0.05
 ## `_on_fired` for why the spin is a counter and not a clock or a draw.
 const GOLDEN_ANGLE := 2.39996322972865332
 
+
+## MUZZLE SMOKE AND BARREL HEAT ARE ONE QUAD AND ONE SCALAR, NOT TWO EFFECTS.
+##
+## Each shot does `_smoke = max(_smoke, PUFF) + HEAT_GAIN`, clamped to 1, and every
+## frame does `_smoke -= DECAY * dt`. A single shot reaches the PUFF floor and shows
+## a wisp; sustained fire from a weapon whose interval is shorter than
+## HEAT_GAIN / DECAY accumulates past it and lingers after the trigger releases,
+## which is the RPK / M16 / PM-63 read this exists for. Size and alpha are functions
+## of that one scalar and nothing integrates.
+##
+## WHY A QUAD AND NOT A `GPUParticles3D`. Fill rate is NOT the binding cost and the
+## first framing had it backwards: a puff at 20% of screen height is 1.8% of a
+## 1280x720 frame for one quad, which would not register. The binding cost is a
+## `ParticleProcessMaterial` — one main-thread GLSL process-shader compile on every
+## page load, per `fx.gd:40-43`'s own words — and smoke cannot share `FAM_DUST`'s,
+## because gravity lives on the process material and dust falls at +4.0 while smoke
+## has to hang. A quad costs +0 process shaders and is reachable by the ordinary
+## warm-up pass, which draws each registered material on a plain `MeshInstance3D`.
+##
+## A single PERSISTENT quad re-kicked per shot also puts exactly 1 on screen at any
+## fire rate, which removes the concurrency question rather than bounding it: a
+## per-shot puff with a 0.45 s life would be 7.5 of them at 1000 rpm.
+
+## html:2581, `{r:70,g:64,b:58,spd:3,up:2,life:.9,size:.09,grav:1.5}` — the second
+## of the two bursts the ancestor's explosion spends, and smoke by every property
+## it has: gravity 1.5 against `spawnParticles`' default of 11, life 0.9 s, no
+## glow. BORROWED ACROSS EFFECTS AND SAID SO: the ancestor spends it on explosions,
+## never on a muzzle, and it never uses the word "smoke" — `grep -c -i smoke
+## kriegsnacht.html` is 0. There is no ancestor SMOKE preset to cite as a peer of
+## BLOOD / SPLINT / SPARK / EMBER, and nobody may later cite one.
+##
+## DISPLAY space, NOT converted. Smoke OCCLUDES rather than emits, so constraint 6's
+## "a BLEND_ADD surface is a light contribution and must be converted" does not
+## reach it — and the five-row sweep at the top of this file measured that the
+## engine decodes `albedo_color` anyway. Hand-converting would drop this to
+## (0.0612, 0.0513, 0.0423), which is the exact confusion that shipped both black
+## frames.
+const SMOKE_COLOR := Color(0.2745, 0.2510, 0.2275)
+
+## ALL FOUR OF THESE ARE INVENTED. Nothing sourced says how much smoke a muzzle
+## makes, and BO1's own figures are not public. What they are chosen against:
+##
+## PUFF is the floor one shot reaches, and it is what makes a single trigger pull
+## show a wisp rather than nothing. HEAT_GAIN over DECAY is the accumulation
+## THRESHOLD, and it is the number that actually decides behaviour: a weapon
+## accumulates only while its shot interval is under HEAT_GAIN / DECAY = 0.109 s.
+## That splits the roster where it should — PM-63 0.060 s, MP40 0.068 s, M16
+## 0.081 s, AK-74u 0.085 s, RPK 0.086 s all build heat; the M1911 at 0.143 s and
+## both shotguns at 0.35 s and up never do, and a pistol that smoked like a
+## squad automatic would be the wrong read. DECAY 1.1/s also sets how long the
+## barrel stays hazy after the trigger releases: 0.91 s from a saturated bore.
+const SMOKE_PUFF := 0.25
+const SMOKE_HEAT_GAIN := 0.12
+const SMOKE_DECAY := 1.1
+
+## The quad's width as a fraction of SCREEN HEIGHT, from the wisp to the saturated
+## bore. `no_depth_test` is what makes this a BUDGET rather than a free constant —
+## the puff repaints whatever is behind it for as long as it lives, where the flash
+## gets away with the same flag by living 0.05 s. At 0.20 of screen height a disc
+## covers (pi/4)(0.20)^2 / (16/9) = 1.8% of a 16:9 frame, and the halo gradient's
+## alpha falls from 0.95 at the centre to 0 at the rim, so at SMOKE_ALPHA the
+## worst-case mean repaint is well under 1% of the frame for under a second. That
+## is the derivation; the first draft's 0.16-0.26 was sized against fill rate,
+## which this file has already shown is not the binding cost.
+const SMOKE_W_MIN := 0.10
+const SMOKE_W_SPAN := 0.10
+## Peak opacity, multiplied by both `_smoke` and the texture's own falloff. Above
+## roughly 0.5 the puff stops reading as smoke and starts reading as a grey card
+## over the room.
+const SMOKE_ALPHA := 0.45
+## Behind the flash. Two transparent quads at the same anchor and the same depth
+## sort by AABB centre and NOTHING states which lands first, so it is set rather
+## than left to the sorter: the flash is the brighter and much shorter event and
+## belongs on top. The flash materials keep the default 0.
+const SMOKE_PRIORITY := -1
+
 var _player: Player
 ## viewmodel.gd, for flash_anchor(). Untyped for the same reason main.gd's handle
 ## is: the script is attached at runtime, so the compiler only knows Node3D.
@@ -199,6 +275,15 @@ var _muzzle_t := 0.0
 ## Shots fired since this node was built, and nothing else reads it. The burst's
 ## orientation, and only that.
 var _flash_n := 0
+
+var _smoke_quad: MeshInstance3D
+var _smoke_mat: StandardMaterial3D
+## Barrel heat, 0 to 1. The whole state of the smoke effect.
+var _smoke := 0.0
+## The depth the last shot was fired at, re-used by the per-frame re-anchor so the
+## puff sits at the same distance the flash did. Seeded with `player.gd:837`'s own
+## 0.35 m so the first frame after a shot cannot read an uninitialised depth.
+var _smoke_dist := 0.35
 
 ## Built once per process and shared, like lighting.gd's fixture texture: a
 ## texture generated at startup costs one upload and nothing after, where a
@@ -251,6 +336,58 @@ func _setup_muzzle() -> void:
 	_muzzle_quad = _flash_quad(quad, _muzzle_mat, "MuzzleHalo")
 	_burst_mat = _flash_material(FLASH_HOT, _burst_texture())
 	_burst_quad = _flash_quad(quad, _burst_mat, "MuzzleBurst")
+
+	_smoke_mat = _smoke_material()
+	_smoke_quad = _flash_quad(quad, _smoke_mat, "MuzzleSmoke")
+
+
+## The smoke's material, and every line of it is a decision rather than a detail.
+##
+## UNSHADED. Style rule 3 is flat values and the flash's own material is unshaded,
+## but the load-bearing reason is narrower: a LIT puff would be the authored colour
+## times the room's lighting, its brightest channel would no longer be pinned at
+## SMOKE_COLOR's 0.2745, and the argument below that it cannot bloom would need
+## re-deriving under a torch. The five-row `albedo_color` sweep at the top of this
+## file was also made on an unshaded material.
+##
+## BLEND_MIX, and the failure mode to reject explicitly is BLEND_ADD. Smoke
+## occludes; it does not emit. Making it additive to fake it catching the flash
+## would push overlapping pixels across `GLOW_THRESHOLD` 0.92 and put a bloomed
+## grey blob on the muzzle. As mixed, its brightest channel is 0.2745 and
+## BLEND_MIX can only pull a pixel toward that, so it cannot bloom at all and
+## nothing has to be done to stop it. (`fx.gd:613` uses BLEND_ADD for sparks,
+## which is right for sparks and wrong for this.)
+##
+## `no_depth_test`, for the reason the flash gives at length above: the anchor is a
+## FAKE depth, and MEASURED without the flag the M1911's slide covered the whole
+## burst. A depth-tested puff at 0.35 m is swallowed exactly the same way. The
+## price is that SMOKE_W_SPAN becomes a repaint budget rather than a free constant,
+## which is where that constant's derivation comes from.
+##
+## The texture is `_halo_texture()` VERBATIM — a white radial gradient with the
+## whole falloff in alpha, already static and already shared, so this effect costs
+## zero new textures. Alpha carries no transfer function, so it does not matter
+## whether an RGBA8 image is decoded as sRGB.
+##
+## Fog is left ON, which is the opposite call from the flash and for the opposite
+## reason: the flash is a light source and fog grey over a light source is
+## backwards, while smoke is matter in the air. It is the call `fx.gd`'s debris
+## material makes, in that file's words.
+func _smoke_material() -> StandardMaterial3D:
+	var m := StandardMaterial3D.new()
+	m.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
+	m.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
+	m.blend_mode = BaseMaterial3D.BLEND_MODE_MIX
+	m.albedo_color = SMOKE_COLOR
+	m.albedo_texture = _halo_texture()
+	m.texture_filter = BaseMaterial3D.TEXTURE_FILTER_LINEAR
+	m.disable_receive_shadows = true
+	# Planar and turned to face the camera, so only one of its two triangles can be
+	# front-facing whichever way it is wound — the same call the flash makes.
+	m.cull_mode = BaseMaterial3D.CULL_DISABLED
+	m.no_depth_test = true
+	m.render_priority = SMOKE_PRIORITY
+	return m
 
 
 ## Unshaded, additive, and NOT billboarded — see `_place_flash` for why the
@@ -355,6 +492,14 @@ func _on_fired(at: Vector3) -> void:
 	_place_flash(_burst_quad, cam, flash_at, halo * FLASH_BURST_FRAC, spin)
 	_muzzle_t = FLASH_TIME
 
+	# The heat accumulator, and NOTHING ELSE. The quad is not placed here: it is
+	# re-anchored every frame in `_process`, which is the load-bearing idea in the
+	# whole design and the reason this line is two statements rather than a call to
+	# a placement function. `max` before `+` is what gives one shot a floor and
+	# sustained fire an accumulation from wherever it already was.
+	_smoke = minf(maxf(_smoke, SMOKE_PUFF) + SMOKE_HEAT_GAIN, 1.0)
+	_smoke_dist = dist
+
 
 ## The halo's width as a fraction of SCREEN HEIGHT, for a size roll of `u` in
 ## [0, 1). Its own function so the suite can drive the real one headlessly — the
@@ -408,10 +553,17 @@ func _place_flash(q: MeshInstance3D, cam: Camera3D, at: Vector3,
 	q.visible = true
 
 
-## The flash is the only thing in this file with a clock, and it is the reason
-## this node processes at all. Pausable like the rest of the world: a 50 ms flash
-## frozen behind the pause overlay is the same frozen frame everything else is.
+## TWO CLOCKS, AND THE GUARD HAS TO BE PER-EFFECT. This used to read
+## `if _muzzle_t <= 0.0: return` with the whole body inside it, which was correct
+## while the flash was the only thing here with a clock. Smoke written after that
+## guard would freeze the instant FLASH_TIME's 0.05 s elapsed — the puff would
+## appear on the shot and then hang on screen for the rest of the match. The smoke
+## tick therefore runs FIRST and the flash keeps its own early-out.
+##
+## Pausable like the rest of the world: a 50 ms flash frozen behind the pause
+## overlay is the same frozen frame everything else is.
 func _process(dt: float) -> void:
+	_tick_smoke(dt)
 	if _muzzle_t <= 0.0:
 		return
 	_muzzle_t -= dt
@@ -419,6 +571,76 @@ func _process(dt: float) -> void:
 		_muzzle_light.visible = false
 		_muzzle_quad.visible = false
 		_burst_quad.visible = false
+
+
+## Decay, then RE-ANCHOR FROM SCRATCH. The anchor is recomputed here rather than
+## stored at the shot, and that is the whole design.
+##
+## `flash_anchor()` returns a WORLD point that happens to project onto the drawn
+## barrel for the camera pose at the instant of the call — it solves screen
+## position and says nothing about persistence. The flash gets away with placing it
+## once because it lives 0.05 s. A puff living most of a second does not, and the
+## dominant error is not drift: the anchor is a world point while the weapon is a
+## view-space object re-projected in a vertex shader, so a 180-degree flick in
+## 0.3 s sweeps the anchor clean off the screen while the barrel has not moved at
+## all. Drift is real too — the ancestor's own `up: 2` m/s over 0.9 s would be 190%
+## of screen height at this depth.
+##
+## So all apparent motion is carried as growth and fade, and there is NO rise term.
+## The first draft asked for "a small camera-local rise"; it was dropped
+## deliberately, because a rise is invented, unmeasured, and would turn the
+## re-anchor assertion into "the position equals the anchor plus a term computed
+## the way the implementation computes it" — which is the recompute-the-formula
+## shape this project has already been caught by. Growth and fade carry the motion
+## and the anchor equality stays exact.
+##
+## And NOT by parenting the quad to the viewmodel. `_measure()` sweeps authored
+## `gunart` corners and never walks the scene tree, so a quad under `WeaponMesh`
+## would add geometry near the lens that `max_screen_radius()` structurally cannot
+## see — the no-clip assertion would stay green while being false, and with lateral
+## terms weighted by ratio^2 = 2.096 a 5 cm quad is 25 mm of half-width against
+## 8 mm of margin. Re-anchoring keeps smoke out of the hierarchy by construction.
+func _tick_smoke(dt: float) -> void:
+	if _smoke <= 0.0:
+		return
+	_smoke = maxf(_smoke - SMOKE_DECAY * dt, 0.0)
+	if _smoke <= 0.0:
+		_smoke_quad.visible = false
+		return
+	var cam: Camera3D = _player.camera()
+	var at: Vector3 = _viewmodel.flash_anchor(_smoke_dist)
+	var size := flash_size(smoke_frac(_smoke), _smoke_dist, cam.fov)
+	# The camera's own basis with the size scaled into the two in-plane columns,
+	# exactly as `_place_flash` does it — and with no spin, because a radial
+	# gradient has none to show.
+	var b := cam.global_transform.basis
+	b.x *= size
+	b.y *= size
+	_smoke_quad.global_transform = Transform3D(b, at)
+	# ALPHA ONLY, and the hue is read back OFF THE MATERIAL rather than rebuilt from
+	# SMOKE_COLOR. One writer per value: `_smoke_material()` authors the hue once and
+	# this owns the opacity.
+	#
+	# THE EARLIER FORM REBUILT `Color(SMOKE_COLOR.r, .g, .b, alpha)` HERE, AND THAT
+	# MADE THE COLOUR-SPACE DECISION UNASSERTABLE. MEASURED: with
+	# `_smoke_material()` wrapping SMOKE_COLOR in `srgb_to_linear()` — the exact
+	# sabotage that stands for the confusion which shipped two black frames — the
+	# suite came back 734 passed, 1 failed and the colour check was GREEN, because
+	# the first `_process` step overwrote the material's authored hue with the
+	# constant again. Reading it back is what makes the authored value the thing
+	# under test.
+	var c: Color = _smoke_mat.albedo_color
+	c.a = SMOKE_ALPHA * _smoke
+	_smoke_mat.albedo_color = c
+	_smoke_quad.visible = true
+
+
+## The puff's width as a fraction of SCREEN HEIGHT for a heat of `h`. Its own
+## static function for the same reason `flash_frac` is one: the windowed gate
+## photographs one heat per capture and could never see the range, so the suite
+## drives this headlessly instead.
+static func smoke_frac(h: float) -> float:
+	return SMOKE_W_MIN + SMOKE_W_SPAN * clampf(h, 0.0, 1.0)
 
 
 ## Is a flash up right now? The `flash_hip` / `flash_ads` capture scenarios wait
@@ -447,13 +669,37 @@ func burst_quad() -> MeshInstance3D:
 	return _burst_quad
 
 
+## The smoke quad, and it exists for the same reason `burst_quad()` does, one
+## generation later: this file has already shipped a layer that was created,
+## materialled and never drawn, with `--verify` 580 green and no failed relation
+## behind it. Reading the LIVE node is the only thing that separates "the smoke is
+## implemented" from "the smoke reaches the screen" — `checks/systems.gd` drives
+## `visible`, the basis-column width and `global_position` off this handle.
+func smoke_quad() -> MeshInstance3D:
+	return _smoke_quad
+
+
+## Barrel heat, 0 to 1. The whole state of the effect, exposed so an assertion can
+## say what it is rather than infer it from a quad's size.
+func smoke_heat() -> float:
+	return _smoke
+
+
 ## The materials this file owns, for the warm-up pass. Same shape as
 ## fx.materials(), lighting.materials() and world.materials(), so main.gd can hand
 ## the pass every material in the game without knowing where any of them came from.
-## BOTH layers, or the first shot of a match compiles the burst's variant
-## mid-fight.
+## ALL THREE layers, or the first shot of a match compiles a variant mid-fight.
+##
+## And this accessor is the ONLY thing standing between the smoke and a
+## first-trigger-pull hitch, in BOTH directions. `verify.gd:1039-1052` builds its
+## `wanted` set from these accessors and its `seen` set from the warm pass, then
+## reports members of `wanted` missing from `seen` — so a material never DECLARED
+## here is never in `wanted`, is never missed, and `main.gd:174` feeds the warm
+## pass from this same accessor, which means an undeclared material is absent from
+## both sides and no existing assertion can see it. `checks/systems.gd` asserts the
+## other direction: that the material the LIVE quad was handed appears in this list.
 func materials() -> Array:
-	return [_muzzle_mat, _burst_mat]
+	return [_muzzle_mat, _burst_mat, _smoke_mat]
 
 
 # --- the flash's art ----------------------------------------------------------

@@ -103,6 +103,40 @@ const HURT_IGNORE := 0.4
 const KICK_SPRING := 46.0
 const KICK_DAMP := 11.0
 
+## What one shot puts into the spring, as a fraction of the weapon's `kick`. Was an
+## unnamed 0.55 sitting in the middle of `_shoot`; it is named because the bracket
+## below multiplies it and two unlabelled factors on one line is how a retune goes
+## wrong.
+const KICK_IMPULSE := 0.55
+
+## The ceiling on the aim excursion, and BO1's own: `CG_KickAngles` integrates the
+## kick and clamps the result at +-10 degrees (M5 F20, Tier 1). The port had no
+## clamp at all on this spring, while `viewmodel.gd`'s KICK_MAX has capped the
+## *weapon* spring since Milestone 1 with a comment that argues the case exactly —
+## "an MP40 puts 1.1 into the velocity every 68 ms, faster than the spring bleeds
+## it, so sustained fire climbs". The two springs share their stiffness and damping
+## and were diverging under precisely the load that comment describes.
+##
+## MEASURED against the real integrator at 60 Hz, top of the bracket, held down:
+## m1911 7.9 deg, thundergun 9.9 deg, pm63 12.5 deg, m14 12.8 deg, mp40 13.6 deg,
+## ak74u 13.9 deg, rpk 14.8 deg, m16 15.6 deg. So this bites on every automatic and
+## on nothing that fires one round at a time — a single shot's peak is about
+## 0.052 rad per unit of impulse, which is 3.1 degrees on the loudest single-shot
+## row. That asymmetry is the point: the clamp is a bound on sustained fire, not a
+## flattening of the recoil.
+const KICK_MAX := deg_to_rad(10.0)
+
+## The golden-ratio conjugate, used to walk the per-shot kick bracket. See
+## `_kick_impulse` for why this is a counter and not a draw.
+const KICK_PHI := 0.6180339887498949
+
+## Below this ground speed BO1 does not treat the player as moving for spread
+## purposes at all: `bg_aimSpreadMoveSpeedThreshold` is 11 units/s, and a unit is an
+## inch, so 11 * 0.0254 = 0.2794 m/s (M5 F17, Tier 1). Against this project's
+## `SPEED` of 3.15 that is 8.9% of a walk — low enough that it only excludes the
+## frame or two either side of a standing start, which is what it is for.
+const BLOOM_MOVE_MIN := 0.28
+
 const BOB_POS := 9.4
 const BOB_ROLL := 13.0
 const BOB_SLOW := 2.2
@@ -180,15 +214,40 @@ const CONE_RADIUS := 4.57
 ## the hip.
 const ADS_FOV_MULT := 0.75
 
-## BO1's iron-sight raise is about a quarter of a second. `move_toward` rather than
-## a lerp, for the reason viewmodel.gd gives at SWAY_RATE: a lerp is asymptotic and
-## never actually arrives.
+## BO1's iron-sight raise. `move_toward` rather than a lerp, for the reason
+## viewmodel.gd gives at SWAY_RATE: a lerp is asymptotic and never actually
+## arrives.
+##
+## This number was guessed and hand-waved here as "about a quarter of a second"
+## until the reference was read: the MP40's weapon file gives `adsTransInTime =
+## 0.22`, which corroborates it to the digit. It is no longer a guess and the
+## comment should not read as one.
 const ADS_TIME := 0.22
 
-## Sights are worth something or nobody uses them. Applied on top of the existing
-## moving and downed penalties rather than instead of them, so aiming while walking
-## is still worse than aiming while stood still.
+## ...and coming OUT of the sights is slower than going in. One rate both ways gave
+## the sighted pose no commitment cost, which is most of what ADS is for as a
+## decision — you could dip in and out of the zoom for free. CoD is consistently
+## asymmetric: ~0.22 s in against roughly 0.4 s out.
+const ADS_OUT_TIME := 0.40
+
+## Sights are worth something or nobody uses them.
+##
+## **This is now the constant that GENERATED a table column rather than a
+## multiplier applied at run time.** `Weapons.BLOOM`'s `spread_ads` is each
+## weapon's own `spread` through this number, because BO1's sighted cone is its own
+## absolute floor and not a scale on the hip cone (M5 F17: the sighted cone is
+## `lerp(adsSpread, max, bloom)`, and `adsSpread` is a separate field). Kept here,
+## rather than deleted once the column existed, so the column has a stated origin
+## and an assertion can compare the two — a table of twelve numbers with no
+## generator is a snapshot.
 const ADS_SPREAD := 0.45
+
+## The ancestor's downed accuracy penalty, `(P.downed?1.4:1)` at
+## kriegsnacht.html:2531. Kept as a multiply on the whole cone rather than folded
+## into the bloom, because BO1 has no analogue: its stance minima go the other way
+## (ducked and prone are TIGHTER than standing) and a downed player here is
+## crawling on their back, not braced.
+const DOWNED_SPREAD := 1.4
 
 ## ...and they cost something. BO1's `ads_move_speed_scale` sits around 0.5-0.65.
 const ADS_MOVE := 0.55
@@ -214,6 +273,18 @@ var _kick_v := 0.0
 var _shake := 0.0
 var _bob_phase := 0.0
 var _moving := false
+
+## BO1's aim-spread scalar, 0 at the weapon's floor and 1 at its ceiling. The whole
+## of the bloom state — one float, on the player and not on the gun, because it is
+## a property of what the player has been doing rather than of what they are
+## holding. See `_update_bloom`.
+var _bloom := 0.0
+
+## Lifetime shots fired, and the only input to the per-shot kick bracket. See
+## `_kick_impulse`: this is what lets the bracket be filled without drawing from
+## any Rng stream, and it is deliberately NOT shots-since-the-trigger-was-pulled,
+## so no two magazines start at the same phase and there is nothing to memorise.
+var _shot_no := 0
 
 var _stamina := 1.0
 var _sprinting := false
@@ -567,6 +638,14 @@ func _physics_process(dt: float) -> void:
 			hp = minf(Game.max_health(), hp + Game.max_health() * REGEN_RATE * dt)
 			health_changed.emit(hp, Game.max_health())
 
+	# Before the view and before the trigger, in that order and for BO1's reason: the
+	# engine adjusts the spread scalar in the movement step and adds the firing term
+	# in the weapon step, so a shot fired this tick is placed with the bloom the
+	# player's *movement* left, and its own fire-add lands on the next round.
+	# `velocity` rather than `spd`, because `spd` is the speed the legs were asked
+	# for and this wants the speed the body actually made — walking into a wall does
+	# not spray.
+	_update_bloom(dt, Vector2(velocity.x, velocity.z).length())
 	_update_view(dt, spd)
 	_update_fire(dt)
 
@@ -639,7 +718,10 @@ func _update_ads(dt: float) -> void:
 	# move_toward and never lerp, for the reason viewmodel.gd gives at SWAY_RATE: a
 	# lerp is asymptotic, so the sights would never quite arrive and the FOV would
 	# never quite settle.
-	_ads = move_toward(_ads, to, dt / ADS_TIME)
+	#
+	# Two rates, not one. See ADS_OUT_TIME: leaving the sights has to cost something
+	# or the sighted pose has no commitment behind it.
+	_ads = move_toward(_ads, to, dt / (ADS_TIME if want else ADS_OUT_TIME))
 	_apply_fov()
 
 
@@ -677,6 +759,45 @@ func _tick_throwables(dt: float) -> void:
 	_throwables.tick(dt)
 
 
+## BO1's `PM_AdjustAimSpreadScale`, on a 0..1 scalar instead of its 0..255 one.
+##
+## **THE MUTUAL EXCLUSION IS THE WHOLE THING, and it is what every reimplementation
+## of this drops.** The shipped engine computes an increase term and a decrease
+## term and then runs exactly one of them — `if (increase <= 0) scale -= decrease;
+## else scale += increase`. So it is not "firing adds and time removes": *movement
+## suppresses decay entirely*, and standing still is what recovers accuracy, not
+## letting go of the trigger. Walk in a circle with the trigger released and the
+## cone stays open. That is the behaviour, and an additive version — grow and
+## shrink in the same tick — is the natural wrong implementation. It also happens
+## to be nearly invisible at a full walk, because `bloom_move` and `bloom_decay`
+## are within 25% of each other on nine of the twelve rows; it is at a *crawl*,
+## just over BLOOM_MOVE_MIN, that the two implementations separate. See the control
+## on the assertion.
+##
+## Rates are `Weapons.BLOOM`'s columns, which are BO1's own `hipSpreadDecayRate`
+## and `hipSpreadMoveAdd` verbatim: normalised to 0..1 they read directly as "the
+## bloom empties in 1/decay seconds" and "a full-speed walk fills it in
+## 1/bloom_move seconds".
+##
+## **A DELIBERATE DEPARTURE FROM THE ANCESTOR.** `kriegsnacht.html:2531` widens the
+## cone by a flat `(moving?1.5:1)`, which this file carried verbatim until now. That
+## multiplier is gone, because movement is expressed here instead and keeping both
+## would charge for the same thing twice. The reference wins and the reference has
+## no such multiplier — but the consequence is worth stating: a walking player is
+## now *tighter* than before for the first fraction of a second and wider than
+## before once the bloom saturates, which is exactly the recovery time the port has
+## never had.
+func _update_bloom(dt: float, speed: float) -> void:
+	var def: Dictionary = current_gun().def
+	if _moving and speed > BLOOM_MOVE_MIN:
+		# `hipSpreadMoveAdd * |v| / speed` — scaled by how fast you are actually
+		# going, so a sighted walk (ADS_MOVE 0.55) blooms a little over half as fast
+		# as a free one.
+		_bloom = minf(1.0, _bloom + float(def.bloom_move) * (speed / SPEED) * dt)
+	else:
+		_bloom = maxf(0.0, _bloom - float(def.bloom_decay) * dt)
+
+
 ## Recoil spring, downed eye height, view bob and shake. Every one of these writes
 ## a transform component nobody else writes — Head's height is not Head's pitch —
 ## so none of them can be clobbered by mouse look.
@@ -685,6 +806,16 @@ func _update_view(dt: float, spd: float) -> void:
 	# feel than the two-lerp approximation most Godot FPS templates use.
 	_kick_v += (-_kick * KICK_SPRING - _kick_v * KICK_DAMP) * dt
 	_kick += _kick_v * dt
+	# ...and now bounded, which it was not. KICK_MAX carries the measurement and the
+	# reference. The velocity is killed only in the direction that is pushing past
+	# the stop, so the spring can still pull straight back off it rather than having
+	# to rebuild the return leg from zero.
+	if _kick > KICK_MAX:
+		_kick = KICK_MAX
+		_kick_v = minf(_kick_v, 0.0)
+	elif _kick < -KICK_MAX:
+		_kick = -KICK_MAX
+		_kick_v = maxf(_kick_v, 0.0)
 	_shake = maxf(0.0, _shake - dt * 2.2)
 
 	# The downed drop rides Head's *position*, which is the only place in the chain
@@ -831,7 +962,24 @@ func _shoot(gun: Dictionary) -> void:
 	# Into the spring, not into the camera. The old code added straight to
 	# _cam.rotation.x with nothing to pull it back, so a 100-round RPK magazine
 	# walked the view up about 30 degrees and left it there.
-	_kick_v -= def.kick * 0.55 * (REDUCE_MOTION_KICK if _reduce_motion else 1.0)
+	#
+	# **AND IT IS `+=`, WHICH IS A ONE-CHARACTER DELIBERATE DEPARTURE FROM THE
+	# ANCESTOR AND THE MOST CONSEQUENTIAL LINE IN THIS FILE.** It was `-=` from the
+	# port's first commit, and `player.gd`'s own mouse-look line establishes the sign
+	# convention: `_head.rotation.x - event.relative.y * sens` means positive
+	# `rotation.x` is looking UP. So the camera was DIPPING under fire while
+	# `viewmodel.gd` pushed the same spring constants the other way and its comment
+	# said "the muzzle rises" — the two halves of one recoil were 180 degrees out of
+	# phase. BO1 kicks the view up (M5 F20/F21) and the reference wins over the
+	# ancestor, which kicks down at html:1748.
+	#
+	# In the ancestor this was cosmetic: `isHeadshot` rebuilds the horizon as
+	# `H*0.5 + P.pitch` (html:2467) with no view-kick term at all. Here it is not.
+	# `RecoilPivot` is the parent of `Camera3D` and `_hitscan` aims down
+	# `_cam.global_transform.basis`, so this line decides where rounds go, and
+	# flipping it converts body shots into headshots. That is why it ships with an
+	# assertion that names the sign, and why it is clamped above.
+	_kick_v += _kick_impulse(def) * (REDUCE_MOTION_KICK if _reduce_motion else 1.0)
 	add_shake(def.kick * 0.06)
 	Sfx.play_shot(gun.key + ("_p" if gun.pap else ""), def.freq, def.thump, def.body)
 	fired.emit(_cam.global_position - _cam.global_transform.basis.z * 0.35)
@@ -846,8 +994,38 @@ func _shoot(gun: Dictionary) -> void:
 	elif not String(def.proj).is_empty():
 		_launch(def)
 	else:
+		# **PELLETS ARE SIX INDEPENDENT DRAWS FROM THE WHOLE CONE, AND THAT IS A
+		# RULING RATHER THAN AN OVERSIGHT.** M5's R12 asked whether the shotgun should
+		# get a fixed ring-plus-centre pattern, per-pellet damage falloff and a soft
+		# range edge instead. Declined for this package, for three reasons and none of
+		# them is "it works": the brief's "shell patterns" was already answered as
+		# brass, which shipped in stage 2; the change rewrites what `def.pellets`
+		# means and adds per-pellet damage, which is the one column `balance_sim.gd`
+		# actually reads (`:529`, `:536`), so it is a balance package wearing a feel
+		# package's clothes; and BO1's own base `shotCount` for the Olympia and the
+		# Stakeout was never researched (M5 coverage gap 16), so the numbers would
+		# have no provenance at all. The consequence is real and is left standing
+		# knowingly: `range` is a hard cliff, so an Olympia puts an expected 1.4
+		# pellets into a zombie at 13.00 m and exactly zero at 13.01 m.
 		for i in int(def.pellets):
 			_hitscan(def)
+
+	# **AFTER the round has left, and that ordering is the whole of BO1's apparent
+	# first-shot accuracy.** `PM_Weapon_AddFiringAimSpreadScale` runs in the weapon
+	# step following the shot, so with `bloom_fire` at 1.00 a standing M1911's first
+	# round goes out at the floor and every one after it at the ceiling. There is no
+	# first-shot bonus term anywhere in the reference (M5 F19) and none here; this is
+	# the same effect arriving for free.
+	#
+	# And it adds NOTHING while fully at the sights, which is the second half of
+	# F17 and the half that is cheap to leave out: without it the sighted cone would
+	# open under fire and `spread_ads` would be a floor nobody ever sat on.
+	if _ads < 1.0:
+		_bloom = minf(1.0, _bloom + float(def.bloom_fire))
+
+	# Last, so the counter names the shot that has just been fired and the next one
+	# reads the next phase. Lifetime, and never reset — see `_shot_no`.
+	_shot_no += 1
 
 	weapon_changed.emit(gun)
 	if int(gun.mag) <= 0:
@@ -857,18 +1035,54 @@ func _shoot(gun: Dictionary) -> void:
 		_start_reload(false)
 
 
-## Accuracy degrades while moving and while downed, as it did in the ancestor, and
-## improves at the sights, which it did not — there were no sights.
+## One shot's impulse into the view spring, drawn from the weapon's own bracket.
+##
+## **DRAWLESS, AND THAT IS NOT AN OPTIMISATION.** BO1 takes this from a uniform
+## random draw inside a rectangle (M5 F20). It cannot be one here: `RecoilPivot` is
+## the parent of `Camera3D`, `_hitscan` reads the camera's basis, so this number
+## decides where the round goes. That makes it a *gameplay* draw, and CLAUDE.md's
+## constraint 5 says do not open a second violation — the cosmetic stream is not
+## available to it whatever it is called. Nor would `Rng.COMBAT` do: the seeded-run
+## layer replays a seed, and `_shoot` is reached from a trigger the replay does not
+## own.
+##
+## So the bracket is walked by an additive golden-ratio sequence on the lifetime
+## shot counter instead. `fposmod(n * phi, 1)` is low-discrepancy — after 60 shots
+## it has filled [0,1) to within a sixtieth at both ends, which is what makes
+## "the bracket is filled" assertable — and it costs zero draws on any stream.
+##
+## **It is not a memorisable spray pattern, and that is a real distinction rather
+## than a hedge.** The counter is lifetime shots fired, not shots since the trigger
+## was pulled, so no two magazines start at the same phase and there is nothing to
+## learn. That is what keeps this compatible with the decision to reject a
+## CS-style seeded recoil table outright.
+func _kick_impulse(def: Dictionary) -> float:
+	var t := fposmod(float(_shot_no) * KICK_PHI, 1.0)
+	return float(def.kick) * KICK_IMPULSE * lerpf(float(def.kick_lo), float(def.kick_hi), t)
+
+
+## The cone this shot is placed in, as a HALF-ANGLE in radians. The table's
+## `spread` / `spread_max` / `spread_ads` are degrees of FULL cone, which is what
+## the `* 0.5` on the way out is for.
+##
+## **This is a lerp between a floor and a ceiling now, not a fixed cone with three
+## multipliers on it.** BO1's `BG_GetSpreadForWeapon` is `lerp(min, max, scale)` at
+## the hip and `lerp(adsSpread, max, scale)` sighted — the same ceiling both ways,
+## a different floor — and `_bloom` is that scale. Two things follow that the old
+## three-multiplier version could not express: the weapon has a recovery *time*,
+## and the sights are a floor that firing cannot lift off (see `_shoot`).
+##
+## The floor is lerped by `_ads` rather than switched on it, so the cone closes
+## with the zoom over the same 0.22 s rather than snapping when `_ads` crosses
+## some threshold. The ceiling is not lerped, because in the reference it is not.
+##
+## The moving multiplier that used to live here is gone; `_update_bloom` carries
+## the movement penalty now and says why.
 func _spread_rad(def: Dictionary) -> float:
-	var s: float = def.spread
-	if _moving:
-		s *= 1.5
+	var lo := lerpf(float(def.spread), float(def.spread_ads), _ads)
+	var s := lerpf(lo, float(def.spread_max), _bloom)
 	if is_downed:
-		s *= 1.4
-	# Multiplied on top of the two penalties rather than replacing them, so aiming
-	# while walking is still worse than aiming while stood still — which is the
-	# whole reason the movement penalty exists.
-	s *= lerpf(1.0, ADS_SPREAD, _ads)
+		s *= DOWNED_SPREAD
 	return deg_to_rad(s) * 0.5
 
 
@@ -881,10 +1095,17 @@ func _hitscan(def: Dictionary) -> void:
 	# Sample the cone in polar coordinates. Rotating by two independent axis
 	# angles — which is what this did before — samples a *square*, so the spread
 	# was about 1.41x wider on the diagonals than along the axes.
+	#
+	# **`Rng.COMBAT`, and it used to be `Rng.VISUAL`.** These two draws decide where
+	# the round lands, which makes them the definition of a gameplay draw; they rode
+	# the cosmetic stream from the port's first commit and CLAUDE.md carried the
+	# violation as known. See `rng.gd`'s COMBAT for why the stated cost of moving
+	# them — "it moves every sim baseline" — turned out not to be true of the file
+	# it was a claim about.
 	var spread := _spread_rad(def)
 	if spread > 0.0:
-		var a := Rng.randf(Rng.VISUAL) * TAU
-		var r := sqrt(Rng.randf(Rng.VISUAL)) * spread
+		var a := Rng.randf(Rng.COMBAT) * TAU
+		var r := sqrt(Rng.randf(Rng.COMBAT)) * spread
 		aim = aim.rotated(basis.x, sin(a) * r).rotated(basis.y, cos(a) * r)
 
 	var pierce: int = int(def.get("pierce", 1))
@@ -932,12 +1153,12 @@ func _launch(def: Dictionary) -> void:
 	# HALF the hitscan cone, which is the ancestor's own relationship between the
 	# two: `(Math.random()-0.5)*spreadDeg*0.0175` for a projectile (html:2553)
 	# against `...*0.0175*2` for a pellet (html:2567). Sampled as a disc rather than
-	# as a square, for the reason `_hitscan` gives, and off VISUAL because that is
-	# the stream weapon spread already rides.
+	# as a square, for the reason `_hitscan` gives, and off COMBAT for the reason
+	# `_hitscan` gives as well.
 	var spread := _spread_rad(def) * 0.5
 	if spread > 0.0:
-		var a := Rng.randf(Rng.VISUAL) * TAU
-		var r := sqrt(Rng.randf(Rng.VISUAL)) * spread
+		var a := Rng.randf(Rng.COMBAT) * TAU
+		var r := sqrt(Rng.randf(Rng.COMBAT)) * spread
 		aim = aim.rotated(basis.x, sin(a) * r).rotated(basis.y, cos(a) * r)
 
 	var kind := String(def.proj)

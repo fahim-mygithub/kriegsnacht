@@ -163,7 +163,118 @@ const CHECK_MODULES := {
 ## the cosmetic stream, put as a differential rather than as a name so that moving
 ## it to Rng.AI fails rather than reads the same. The arm pose those changes exist
 ## for is NOT among them and enemies.gd's header says why.
-const ASSERTION_FLOOR := 692
+##
+## +20 for the weapon models (checks/frame.gd's `_gun_depth`, `_gun_shade` and
+## `_gun_sights`): 9 for the per-part depth table — of which the one that matters
+## is the committed `ArrayMesh` read back and compared against the corner walk,
+## because M5 R2's trap is that the two walks disagree and no aggregate metric can
+## see it, and the other eight bound the table at BOTH ends (a ceiling at the depth
+## that already shipped, a floor that a table of all-1.0 fails, the glove
+## coplanarity rule, and the two inversions M5 F1 named); 8 for the face ramp,
+## seven of them arithmetic on the six constants and ONE that drives the real
+## builder and reads the vertex colours back, which is the only one that can tell
+## a live shading model from a dead helper; 3 for the iron sights, of which the
+## second — the sight, not the receiver, is the top of the weapon — is the one
+## that fails against a blade buried inside the part it is mounted on.
+##
+## +22 for the brass and the smoke (checks/systems.gd `_brass` and `_smoke`): 13
+## for the casings, of which the ones that matter are the two REGISTRATIONS
+## nothing else in the project can see — a MultiMesh missing from the warm pass
+## costs a main-thread GLSL compile on the first trigger pull and is caught by no
+## assertion at all, and a material missing from an accessor is absent from BOTH
+## sides of :1039-1052's comparison — plus the roster bounded at both ends (the
+## four weapons BO1 gives an empty eject field, AND the eight that must eject), the
+## pellet discrimination that separates `fired` from `surface_impact`, and the four
+## transform claims that are the only thing tying an invented effect to the four
+## systems it was derived from. 9 for the smoke, written against a CONSTRUCTED
+## inert version — a `_on_fired` that never touches the accumulator, with the quad
+## and the material both present and registered — because this file has already
+## shipped exactly that state green once (atmosphere.gd:438-445). MEASURED against
+## that constructed inert version: FIVE of the nine stay green and FOUR go red. The
+## five are the three material/registration claims, "it goes away" (an effect that
+## never appears has certainly gone away) and the one-VISUAL-draw claim (an effect
+## that does nothing spends nothing) — every one of which is a claim about
+## declaration rather than about drawing, and none of them is counted as evidence
+## the smoke works. The four that fail are the whole of the behavioural half.
+##
+## NET ZERO from the `_flash_materials` collapse in checks/frame.gd. The smoke made
+## `atmosphere.materials()` three long and that file's `mats.size() == 2` went red
+## for a correct change; the length test became a set test, which made the check at
+## its foot a literal duplicate. It was RE-AIMED rather than deleted — it now
+## asserts that no layer is declared twice, which is the failure its own comment
+## always said it existed for and which neither the old size test nor the new set
+## test can see. So: 22 added, 0 removed, and the count moves by exactly 22.
+##
+## +22 for the reciprocating group and the segmented reload (checks/systems.gd
+## `_animation`). Before it, `grep -rn 'SLIDE_TRAVEL|_slide_offset|_cycle_slide|
+## _locked' scripts/dev/` returned ZERO lines: the one animated part of the weapon
+## had no assertion of any kind. The ones that matter are not the count. Two pin
+## DECISIONS the geometry cannot settle — `SLIDE`'s roster (the predicate that
+## looked obvious scores the AK-74u's deleted row and the MP40's kept row
+## identically, so it would have passed its own control) and the two travel rows
+## that break their own bounds, which are asserted to STILL break them so the
+## exemption cannot outlive the departure. One is a READOUT rather than a refusal —
+## `vm.swept_travels()` — because every component of the clip sweep is insensitive
+## to slide travel by construction and deleting the travel endpoint outright left
+## the whole suite green. One counts strokes off `_slide.position` through a real
+## six-shell reload and reported ONE against seven before this package. And the
+## sighted-pose pair is two jaws on one constant: some profile yaw has to survive
+## `ADS_YAW`, and whatever survives has to stay inside the frames gate's own 80 px
+## probe rect — which is what bounds `ADS_YAW` from below and is a constraint the
+## research did not know about.
+##
+## EVERY ONE OF THE 22 WAS CONTROLLED, 21 sabotages over 18 runs, and three of them
+## found something: the sign flip is caught by five checks rather than one, forcing
+## the automatics back onto the fixed cycle fails on the MP40 ALONE because the
+## PM-63's interval is exactly 0.06 s (so a PM-63-only check would have been
+## decoration), and removing the arc inflation leaves `widest` IDENTICAL to six
+## decimals while moving `nearest` — which is why the arc has two checks and not
+## one.
+##
+## +1 for the ADS-asymmetry tripwire, and IT IS EXPECTED TO BE RED. It is the
+## failing check a reported `player.gd` hunk needs in order not to be dropped
+## silently, which is exactly how ADS shipped its camera half without its weapon
+## half once already. It is NOT counted below.
+##
+## +1 because the ADS-asymmetry tripwire above is GREEN now. The `player.gd` hunk
+## it was reported for has landed (`ADS_OUT_TIME`), so the one check this file
+## deliberately shipped red is a real assertion again and counts like one. That is
+## the mechanism working, not a floor adjustment: without it the hunk would have
+## been dropped silently, which is exactly how ADS shipped its camera half and not
+## its weapon half once already.
+##
+## +27 for the bullet patterns (`checks/projectiles.gd::_bullet_patterns`). This is
+## the package M5's own bottom line asked for in as many words — *"nothing anywhere
+## pins a spread or a kick value; multiply every one of them by ten and the whole
+## suite stays green"* — and before it, `grep -rn '_spread_rad' scripts/dev/`
+## returned two hits feeding ONE ratio assertion and `kick` appeared in
+## `scripts/dev/checks/` only inside a comment.
+##
+## The count is not the interesting part. FOUR of the twenty-six are literals, and
+## they are the only things in the suite that a uniform rescale cannot slip past: a
+## cone width in radians, a saturated ceiling, a sighted floor, and one view-kick
+## peak. MEASURED: sabotaging `_spread_rad`'s trailing `* 0.5` — the exact silent
+## factor of two M5 warned about, which arrives the moment somebody drops BO1's
+## own half-angle degrees into a field that holds a full cone — leaves every ratio
+## and every ordering check in this suite green and fails those three alone.
+##
+## Three more exist because a check can see nothing without being scale-invariant.
+## `spread = 0` makes `_spread_rad` return 0.0 and `_hitscan` skip the cone
+## entirely, so "no round left the cone" evaluates 0 <= 0 and passes against a
+## weapon that has stopped spreading; the inert case was CONSTRUCTED and the
+## filled-cone and uniform-in-area claims both go red against it, which is what
+## keeps the first one from standing in for them.
+##
+## And one of them carries the whole of R4: the recoil sign. It was `-=` from the
+## port's first commit, so the camera dipped while the viewmodel raised the muzzle
+## with the same spring constants, and because `RecoilPivot` is the parent of
+## `Camera3D` that was a claim about where bullets go — a rising aim converts body
+## shots into headshots at 1.5x damage. Nothing in the suite could see it.
+##
+## RAISED ADDITIVELY, per the contended-floor rule: 756 + 1 + 27. A quiescent tree
+## ran 785 passing on 2026-08-02, so 784 is the count this check sees on a fully
+## green run and the largest honest floor.
+const ASSERTION_FLOOR := 784
 
 var _pass := 0
 var _fail := 0
