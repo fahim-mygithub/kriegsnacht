@@ -35,8 +35,11 @@ extends Node3D
 ## `ratio = 1` it collapses to the plain sphere the plan assumed, which is why the
 ## plain sphere looked sufficient and is not. Measured over every weapon, every
 ## pose and every sway the rig can reach, the worst is **0.232 m against 0.24**;
-## the plain radius is 0.201 and the nearest depth 0.0575 m against a 0.05 m near
-## plane. `max_screen_radius()` is the assertion that matters — the plain
+## the plain radius is 0.201 and the nearest depth 0.0574 m against a 0.05 m near
+## plane. Those three are a CIRCUMSCRIBED bound rather than a sampled one — see
+## `_measure()` — so the margin they report is one the rig provably cannot exceed
+## rather than one it was not caught exceeding.
+## `max_screen_radius()` is the assertion that matters — the plain
 ## `max_corner_radius()` would pass a weapon that clips. 0.24 is itself the
 ## worst-case-over-all-directions figure (a wall the player is pressed flat
 ## against, seen along a horizontal ray); the corner that produces 0.232 is drawn
@@ -164,10 +167,17 @@ const CLIP_RADIUS := 0.22
 ## (`ADS_SIGHT_CLEAR`), which sounds like it should move the lateral term. It does
 ## not. Levelling the cant pulls the muzzle back onto the axis and `ADS_FORWARD`
 ## pushes the stock 8 mm away from the near plane, and both more than pay for the
-## drop — the sighted extremes come out strictly inside the hip ones. Measured
-## against the pose this replaced, all three agreed to six decimal places
-## (0.201249 / 0.057540 / 0.231884, delta 0.000000), so these figures are unchanged
-## by the sighted pose rather than merely still rounding to the same thing.
+## drop — the sighted extremes come out strictly inside the hip ones.
+##
+## MEASURED, and re-measured 2026-08-02 because two things in this package moved
+## them: **0.201372 / 0.057368 / 0.231964**. The previous record was
+## 0.201249 / 0.057540 / 0.231884, and the difference is not drift. The sweep now
+## CIRCUMSCRIBES four rotational arcs it used to sample at their endpoints (see
+## `_measure()`), which raises every bound in the safe direction; and `ADS_YAW`
+## went to 0.95, which changes the size of one of those arcs. Against the same
+## constants the endpoint-only sweep reads 0.201161 / 0.057496 / 0.231758, so the
+## construction is worth 0.21 mm on the widened radius and 0.13 mm on the near
+## plane. Margin against `Player.RADIUS`: **8.036 mm**.
 const REST_POS := Vector3(0.038, -0.032, -0.1161)
 
 ## -0.13 rad of muzzle-down cant, and both halves of it are the ancestor's:
@@ -333,7 +343,37 @@ const SPRINT_RATE := 0.08       # metres/second, eased both ways
 ## silhouette differenced against the same frame with the viewmodel hidden.
 const ADS_CENTRE := 1.0         # fraction of REST_POS.x/y removed at the sights
 const ADS_FORWARD := 0.008
-const ADS_YAW := 1.0            # fraction of REST_YAW removed at the sights
+
+## **THIS WAS 1.0 AND THAT ZEROED THE YAW AT THE ONE POSE THE PLAYER STUDIES THE
+## WEAPON IN.** Twelve degrees of profile yaw exists — see `REST_YAW`, four
+## constants up — because "extruded flat plates viewed from behind read as a stack
+## of rectangles", and removing all of it at the sights produced exactly that: the
+## sighted silhouette of the M1911, the MP40 and the RPK is 66.7 px wide at 720p,
+## the same 66.7 px, because what is left is the gloves' extrusion caps and no
+## weapon at all. On-screen slide length collapses from 89 px to 4.4 px on the
+## M1911 and to under a pixel on four of the seven weapons with a group.
+##
+## **AND IT CANNOT BE REDUCED AS FAR AS THAT ARGUMENT WANTS, for a reason nothing
+## in the research anticipated: the frames gate's ADS probe rect is 80 px wide.**
+## `shot_setup.gd:192` is `Rect2i(600, 359, 80, 177)`, sized around a silhouette
+## measured at x 606..673 — 6 px of margin one side and 7 the other — and a
+## silhouette that grows out of its own probe rect is not measured, it is CROPPED,
+## and the gate then reports a number about the rectangle. Working the projection:
+## the RPK's stock and muzzle open the profile at about 481 px per radian of
+## residual yaw, asymmetrically, and the binding side is the muzzle at ~263 px/rad.
+## Three pixels of margin buys 0.0114 rad, which is `ADS_YAW` 0.9456.
+##
+## **0.95 is that ceiling, taken, and it is not the value the argument wants.** It
+## is 0.6 degrees of profile and it buys about 5 px. Getting to a sighted profile
+## worth having — 30% of the hip silhouette — needs `ADS_YAW` near 0.62, and that
+## needs `VM_RECT_ADS` widened to roughly `Rect2i(575, 359, 128, 177)` **and** a
+## windowed `-Bless`, in one atomic step, in a file this package does not own.
+## `checks/systems.gd::_ads_geometry` asserts both ends of this: that some yaw
+## survives at the sights, and that whatever survives still fits the committed rect.
+## Raise this the day the rect moves; the check will tell you when you have gone
+## too far, which is the whole reason it computes the projection instead of
+## trusting a photograph.
+const ADS_YAW := 0.95           # fraction of REST_YAW removed at the sights
 
 ## ...so the whole rig drops by the weapon's own sight height as well, and the cant
 ## comes out with it.
@@ -392,16 +432,70 @@ const MELEE_ROT := -0.85        # radians, verbatim
 
 # --- the reciprocating group -------------------------------------------------
 
-## Four art units of travel at `GUNART.UNIT`, back along the weapon's own axis.
-## Not a `Tween`: at 880 RPM that would allocate about fifteen of them a second,
-## which is exactly the allocation-inside-the-fire-loop this project keeps out of
-## every other hot path. It is one float.
-const SLIDE_TRAVEL := 0.0042
+## **HOW FAR the group travels is `GUNART.slide_travel(key)` and is per weapon.**
+## It used to be one 4-unit constant here; it is now a statement about the art —
+## how far a part can move before it meets the part behind it — so it lives beside
+## the rects. `_slide_offset()` and `_measure()` read it through that one accessor,
+## which is the only thing standing between a longer stroke and a silently stale
+## no-clip sweep.
+##
+## What is left here is the CLOCK, and it is not a `Tween`: at 880 RPM that would
+## allocate about fifteen of them a second, which is exactly the
+## allocation-inside-the-fire-loop this project keeps out of every other hot path.
+## It is three floats.
+##
+## `SLIDE_TIME` is the hand-worked cycle — the bolt coming back at the start of a
+## reload, the release at the end of one. **A self-cycling action's cycle is its
+## own fire interval instead** (see `_fire_cycle`): the claim this constant used to
+## carry, *"the whole cycle is shorter than the fastest weapon's interval, so a
+## held automatic restarts it rather than compounding it"*, was false against the
+## shipped table — the PM-63's interval is exactly 0.060000 s at 1000 rpm and
+## 0.044776 s under Double Tap, so a held PM-63 restarted a cycle it had never
+## finished and, simulated over 480 warm frames, never returned to battery.
 const SLIDE_TIME := 0.06
-## Back fast, forward slower — a slide is thrown by gas and returned by a spring.
-## The whole cycle is shorter than the fastest weapon's interval, so a held
-## automatic restarts it rather than compounding it. Invented.
+
+## Where in the cycle the group reaches the far end of its stroke, as a fraction.
+##
+## `SLIDE_BACK` is the closed-bolt figure: **back fast, forward slower — a slide is
+## thrown by gas and returned by a spring.** An open bolt is the time mirror of
+## that and gets `1.0 - SLIDE_BACK`, because there the spring drives it forward and
+## the shot drives it back; running the closed profile on an MP40 played the one
+## prominent mechanism on the roster backwards *and* asymmetrically backwards. A
+## pump is hand-worked, so nothing is throwing it either way and it is symmetric.
 const SLIDE_BACK := 0.30
+const PUMP_PEAK := 0.50
+
+## A pump gun does not move at the instant of the shot; it is stroked **between**
+## shots. Expressed as fractions of that weapon's own fire interval rather than in
+## seconds, which is what keeps the whole stroke inside the window under Double Tap
+## (the Stakeout's interval falls from 0.414 s to 0.309 s) without a second table.
+##
+## 0.35 and 0.55 are the Stakeout's derived pair — 0.145 s of delay and 0.23 s of
+## stroke at 145 rpm. **Departure, recorded:** the research proposed a second pair
+## for the China Lake (~0.25 s delay, ~0.45 s duration in a 0.968 s interval, i.e.
+## 0.26 / 0.47). Both pairs are Tier-4 inventions with no source between them, and
+## a per-weapon table for one weapon is a second thing to go stale, so the Stakeout's
+## pair carries both: the China Lake gets 0.339 s and 0.532 s, which lands well
+## inside its interval — the only constraint either figure ever had.
+const PUMP_DELAY := 0.35
+const PUMP_STROKE := 0.55
+
+
+# --- how finely the clip sweep looks inside a rotation ------------------------
+
+## How much of the clip margin one rotational channel's arc sampling is allowed to
+## be wrong by, in metres. 0.2 mm against 8.1 mm of margin, four channels, so the
+## whole construction can cost at most 1% of the budget — and it costs it in the
+## SAFE direction, because the samples circumscribe the arc rather than being
+## inscribed in it. See `_measure()`.
+const ARC_TOL := 0.0002
+
+## A bound on the sample-count solver's loop, not a tuning knob. The largest arc
+## anything authors today is the knife's 0.85 rad and it solves to 7; this binds
+## only for an amplitude nobody has written, and if it ever bound the sweep would
+## quietly stop being conservative — so `checks/systems.gd` asserts every solved
+## count is strictly under it rather than trusting the loop to be generous.
+const ARC_MAX_SAMPLES := 64
 
 
 # --- muzzle flash ------------------------------------------------------------
@@ -472,8 +566,48 @@ var _dip := 0.0                   # 0..1, the reload arc
 var _swap := 0.0                  # metres
 var _sprint := 0.0                # metres
 var _melee_t := 0.0
+
+## The reciprocating group's clock, in three parts. `_slide_t` is what is left of
+## the current stroke and `_slide_len` is that stroke's own length — per weapon
+## now, so `1 - _slide_t/_slide_len` is still the normalised progress it always
+## was. `_slide_delay` is a pump's wait before its stroke starts, holding
+## `_slide_pend` until it expires.
 var _slide_t := 0.0
-var _locked := false
+var _slide_len := 0.0
+var _slide_delay := 0.0
+var _slide_pend := 0.0
+## Where in the cycle the group reaches the far end of its stroke — `SLIDE_BACK`
+## for a closed bolt, its mirror for an open one, `PUMP_PEAK` for a hand-worked
+## action.
+var _slide_peak := SLIDE_BACK
+## The stroke's three positions, in units of this weapon's travel: where it began,
+## the far end of the excursion, and where it lands. Three rather than one ramp
+## because the landing pose is not always the starting pose — an M1911 that has
+## just fired its last round starts at battery and ENDS held back, and an MP40 that
+## has just fired its last round starts held back and ends forward.
+var _slide_a := 0.0
+var _slide_b := 1.0
+var _slide_c := 0.0
+## The pose the group rests in when no stroke is running, in the same units. Read
+## per frame rather than latched on an edge: every route to ammunition — a reload
+## landing, a Max Ammo, a wall buy — has to be able to release a held-open bolt,
+## and only one of those three is a state change anyone signals.
+var _slide_rest := 0.0
+## Latched by `_show`, because both are per weapon and neither may cost a table
+## lookup per frame. Travel is metres and is zero for a weapon with no group at all.
+var _slide_travel := 0.0
+var _slide_mode := GUNART.CLOSED
+## How many strokes have been started. The only thing in this file that exists for
+## an assertion: `checks/systems.gd` drives a real six-shell Stakeout reload and
+## counts, because "the group cycled once per shell" is a claim about events and
+## the drawn offset alone cannot separate seven strokes from one long one.
+var _slide_cycles := 0
+
+## The previous frame's weapon state and state clock, for the per-shell edge.
+## `RELOAD_SHELL` re-enters itself, so a shell landing is a `state_t` that went UP
+## while the state did not change — see `_tick_slide`.
+var _state_last := -1
+var _state_t_last := 0.0
 
 var _flash := 0.0
 var _flash_sent := -1.0
@@ -481,6 +615,9 @@ var _flash_sent := -1.0
 ## (plain radius, nearest depth, projection-widened radius) — see `_measure()`.
 var _extreme := Vector3.ZERO
 var _measured := false
+## Weapon key -> the travel `sweep()` actually collected the group's far end at.
+## See `swept_travels()` for why a readout and not a refusal.
+var _swept := {}
 
 
 # --- setup -------------------------------------------------------------------
@@ -586,27 +723,28 @@ func _on_weapon_changed(gun: Dictionary) -> void:
 func _on_weapon_state(gun: Dictionary, from: int, to: int) -> void:
 	if _player == null or not is_same(gun, _player.current_gun()):
 		return
-	if to == WEAPON.State.RELOADING or to == WEAPON.State.RELOAD_SHELL:
-		# The bolt comes back at the start of a reload.
+	if from != WEAPON.State.RELOAD_SHELL and (to == WEAPON.State.RELOADING
+			or to == WEAPON.State.RELOAD_SHELL):
+		# The bolt comes back at the start of a reload. Guarded on `from` because
+		# `RELOAD_SHELL` now re-enters itself for the closing segment as well as per
+		# shell, and `_tick_slide` owns every one of those — this edge is the entry
+		# into the reload and nothing else.
 		_cycle_slide()
-	elif from == WEAPON.State.EMPTY and (to == WEAPON.State.IDLE
-			or to == WEAPON.State.FIRING):
-		# ...and is released when ammunition finally arrives on a bolt-locked
-		# weapon. Only observable as an edge: `EMPTY` is derived from the counts,
-		# so by the time a frame reads the state it is already gone.
-		#
-		# Narrowed to the two states `Weapon.settle()` can land in, because those
-		# are the ones that mean rounds turned up. `EMPTY` also exits into
-		# `SWAPPING` (pulling out a dead weapon) and `SPRINT_OUT` (stopping while
-		# holding one), and racking an empty gun on either of those is a lie.
-		_cycle_slide()
+	# The release at the END of a reload used to live here as `from == EMPTY`, and
+	# it has moved into `_tick_slide`. `EMPTY` is `mag <= 0 AND res <= 0`
+	# (`weapon.gd:238-243`), so on the M1911 — the one weapon whose lock is real —
+	# that edge first arrives after 88 rounds with no Max Ammo, and never on the
+	# empty MAGAZINE that precedes every reload, which is the only state the
+	# reference ever shows the lock in. Now that the lock is reachable there, the
+	# release has to be too, and it has three sources rather than one.
 
 
 func _on_fired(_at: Vector3) -> void:
-	var def: Dictionary = _player.current_gun().def
+	var gun := _player.current_gun()
+	var def: Dictionary = gun.def
 	var kick: float = def.kick
 	_kick_v += kick
-	_cycle_slide()
+	_fire_cycle(def)
 	_flash = FLASH_PEAK
 
 
@@ -618,8 +756,61 @@ func swing_knife() -> void:
 	_melee_t = MELEE_TIME
 
 
+## A hand-worked stroke: the bolt coming back at the start of a reload, a shell
+## landing, the release at the end. `SLIDE_TIME` and not the fire interval, because
+## none of those is the action cycling itself.
 func _cycle_slide() -> void:
-	_slide_t = SLIDE_TIME
+	_begin_stroke(SLIDE_TIME)
+
+
+## The stroke a SHOT produces, which is three different things.
+##
+## A pump gun does not move when the shot breaks — it is stroked between shots — so
+## its stroke is a delay and then a longer, symmetric excursion. A self-cycling
+## action's cycle length **is** its own fire interval, which is both the mechanical
+## truth and the fix for a claim this file used to make and get wrong: the PM-63's
+## interval is exactly 0.060000 s against a 0.06 s cycle, so a held PM-63 restarted
+## a stroke it had never finished and never came back to battery, and under Double
+## Tap it had a quarter of a cycle's worth of time to run a whole one in. Tying the
+## two together also makes Double Tap visibly speed the bolt up, which is feel the
+## perk bought nothing of.
+func _fire_cycle(def: Dictionary) -> void:
+	var interval := 60.0 / maxf(float(def.rpm) * Game.rpm_scale(), 1.0)
+	if _slide_mode == GUNART.PUMP:
+		# A TIMER and not an edge, and that is the part that matters: you rack after
+		# every shot, not only when you fire again, so a single shot with nothing
+		# behind it still has to rack.
+		_slide_t = 0.0
+		_slide_len = 0.0
+		_slide_delay = interval * PUMP_DELAY
+		_slide_pend = interval * PUMP_STROKE
+		return
+	_begin_stroke(interval if bool(def.auto) else SLIDE_TIME)
+
+
+func _begin_stroke(span: float) -> void:
+	# From wherever the group is resting, out to the far end, and back to wherever
+	# it belongs by the time it gets there. `_slide_c` is refreshed every frame in
+	# `_tick_slide`, so ammunition arriving mid-stroke changes the landing rather
+	# than being ignored until the next one.
+	_slide_a = _slide_rest
+	_slide_b = 0.0 if _slide_mode == GUNART.OPEN else 1.0
+	_slide_c = _slide_rest
+	_slide_peak = _stroke_peak()
+	_slide_len = maxf(span, 0.0001)
+	_slide_t = _slide_len
+	_slide_delay = 0.0
+	_slide_pend = 0.0
+	_slide_cycles += 1
+
+
+func _stroke_peak() -> float:
+	match _slide_mode:
+		GUNART.OPEN:
+			return 1.0 - SLIDE_BACK
+		GUNART.PUMP:
+			return PUMP_PEAK
+	return SLIDE_BACK
 
 
 # --- per frame ---------------------------------------------------------------
@@ -721,9 +912,70 @@ func _tick_states(dt: float) -> void:
 		_sprint = maxf(_sprint, SPRINT_DROP * left)
 
 	_melee_t = maxf(0.0, _melee_t - dt)
-	if _slide_t > 0.0:
+	_tick_slide(dt, gun, state, t)
+
+
+## The reciprocating group's whole clock, and the two edges nothing else provides.
+##
+## **THE PER-SHELL EDGE.** `weapon.gd:326-328` re-enters `RELOAD_SHELL` rather than
+## continuing it, and says in as many words that the point is for `state_t` to
+## sawtooth "once per shell so an animation gets its cycle for free" — and until
+## this package nothing consumed it, so a Stakeout's six-shell reload racked the
+## pump exactly once, at the start. The latch gates on the state the rig read on the
+## **previous** frame, not this one, and that is not a stylistic choice: on the
+## closing segment `_load_shell` calls `settle` before the emit, so a latch gated on
+## the current frame's state cycles one time short and looks exactly like the defect
+## it was written to fix.
+##
+## **THE REST-POSE EDGE.** The pose a group rests in is a function of the magazine,
+## and the magazine changes without any state transition at all — a Max Ammo, a wall
+## buy, a shell landing mid-tube. Deriving the release from the pose rather than
+## from a signal covers all of them, and it is why `_on_weapon_state`'s old
+## `from == EMPTY` branch could go.
+func _tick_slide(dt: float, gun: Dictionary, state: int, t: float) -> void:
+	var rest := _rest_pose(gun)
+	if _slide_delay > 0.0:
+		_slide_delay = maxf(0.0, _slide_delay - dt)
+		if _slide_delay <= 0.0:
+			_begin_stroke(_slide_pend)
+	elif _slide_t > 0.0:
 		_slide_t = maxf(0.0, _slide_t - dt)
-	_locked = state == WEAPON.State.EMPTY
+	elif (state == _state_last and state == WEAPON.State.RELOAD_SHELL
+			and t > _state_t_last) or not is_equal_approx(rest, _slide_rest):
+		# `_slide_rest` is still the OLD pose here and that is load-bearing:
+		# `_begin_stroke` reads it as the stroke's starting point, so a bolt release
+		# runs FROM held-open rather than snapping to battery and then cycling.
+		_cycle_slide()
+	_slide_rest = rest
+	# Refreshed every frame rather than latched at the start of the stroke, so a
+	# magazine that arrives mid-stroke changes where the group comes to rest instead
+	# of being ignored until something else moves it.
+	_slide_c = rest
+	_state_last = state
+	_state_t_last = t
+
+
+## Where the group sits when nothing is driving it, in units of this weapon's own
+## travel. Zero is battery — fully forward — and one is the back of the stroke.
+##
+## **The empty case is an empty MAGAZINE and not `State.EMPTY`**, which is R6's
+## whole point: `EMPTY` is `mag <= 0 and res <= 0`, so the M1911's slide lock used
+## to be unreachable until 88 rounds had gone with no Max Ammo, and BO1 shows it on
+## every empty magazine and releases it during the reload.
+##
+## **And it is per weapon**, which is R6's other half: the code this replaces pinned
+## the group fully rearward for all seven weapons that have one, and five of them
+## have no hold-open. On the MP40 that was a double inversion — a weapon with no
+## hold-open device at all, held open, in the one position an open bolt is NOT in
+## when the magazine runs dry.
+func _rest_pose(gun: Dictionary) -> float:
+	if _slide_travel <= 0.0:
+		return 0.0
+	if int(gun.mag) <= 0:
+		return 1.0 if GUNART.bolt_holds(_shown_key) else 0.0
+	# An open bolt's READY position is the back of its stroke: the sear holds it
+	# there and the trigger releases it forward.
+	return 1.0 if _slide_mode == GUNART.OPEN else 0.0
 
 
 ## Snap toward a pose the state is actively driving, ease back to rest when it
@@ -805,16 +1057,26 @@ func _mesh_pose(kick: float, dip: float, drop: float, melee: float,
 	return Transform3D(Basis.from_euler(Vector3(pitch, yaw, 0.0)), origin)
 
 
+## The group's displacement along the weapon's own axis, in metres.
+##
+## Three positions and one peak rather than one ramp and one constant. A closed bolt
+## starts and ends at battery and peaks a third of the way in; an open bolt starts
+## and ends held back and peaks at the mirror of that; a pump starts and ends
+## forward, peaks in the middle and does not start until `_slide_delay` has run. And
+## the ends need not agree with the start — the last round out of an M1911 begins at
+## battery and ends held open, the last round out of an MP40 begins held back and
+## ends forward — which is the case the old single ramp could not express at all.
 func _slide_offset() -> float:
-	if _locked:
-		# Bolt-lock. Nothing chambered and nothing left to chamber, and the weapon
-		# says so without a single line of UI.
-		return SLIDE_TRAVEL
-	if _slide_t <= 0.0:
+	if _slide_travel <= 0.0:
 		return 0.0
-	var u := 1.0 - _slide_t / SLIDE_TIME
-	var f := u / SLIDE_BACK if u < SLIDE_BACK else (1.0 - u) / (1.0 - SLIDE_BACK)
-	return f * SLIDE_TRAVEL
+	var f := _slide_rest
+	if _slide_t > 0.0:
+		var u := 1.0 - _slide_t / _slide_len
+		if u < _slide_peak:
+			f = lerpf(_slide_a, _slide_b, u / _slide_peak)
+		else:
+			f = lerpf(_slide_b, _slide_c, (u - _slide_peak) / (1.0 - _slide_peak))
+	return f * _slide_travel
 
 
 ## Compared field by field rather than through `_cache_key`, because this runs
@@ -834,6 +1096,21 @@ func _show(key: String, pap: bool) -> void:
 	_mesh.mesh = body
 	_slide.mesh = slide
 	_slide.visible = slide != null
+	# Both latched off the key actually shown, for the same reason `_sight` is: a
+	# per-frame dictionary lookup for a value that changes on the frames the mesh
+	# changes and never otherwise. Travel is forced to zero when there is no group,
+	# so `_rest_pose` cannot pose a mesh that does not exist — the knife shown over
+	# a held MP40 is exactly that case.
+	_slide_travel = GUNART.slide_travel(key) if slide != null else 0.0
+	_slide_mode = GUNART.slide_mode(key)
+	# The new weapon arrives already in its own resting pose rather than sliding
+	# into it: `_tick_slide` reacts to a rest-pose CHANGE, and without this a swap
+	# from a closed bolt to an open one would read as the MP40 racking itself on the
+	# frame it came up. Any stroke the outgoing weapon was mid-way through is over.
+	_slide_t = 0.0
+	_slide_delay = 0.0
+	_slide_rest = _rest_pose(_player.current_gun())
+	_slide_c = _slide_rest
 	_muzzle.position = GUNART.muzzle_local(key)
 	# Latched off the key actually SHOWN, which the melee override above makes the
 	# knife's rather than the held gun's — a knife swung at the sights has to be posed
@@ -900,18 +1177,58 @@ func max_screen_radius() -> float:
 ## the knife while it is lit. Pairing a rifle's muzzle with a full melee sweep would
 ## measure a frame the rig cannot draw, and it costs 4 mm of an 8 mm margin to do it.
 ##
-## Channels are sampled at their endpoints. Each is smooth in the pose and a dense
-## sweep does not beat the endpoints by more than 0.2 mm on any of the three, which
-## is two orders under every margin here. Sway is a 3x3 grid rather than the four
-## corners because zero sway is the worst case for the near plane.
+## **ENDPOINTS ARE SUFFICIENT FOR A TRANSLATION AND UNSOUND FOR A ROTATION, and
+## four shipped channels are rotations.** `worst` and `widest` are norms, hence
+## convex, and `nearest` is linear; a max of a convex function or a min of a linear
+## one over a set is attained at an extreme point of that set's convex hull. A
+## translated point's reachable set is a SEGMENT, which is its own hull — so
+## `_collect(slide, ..., travel)` is not merely reasonable, it is provably
+## sufficient. A rotated point's reachable set is an ARC, whose hull's extreme
+## points are the whole arc, so any inscribed sample is an UNDER-estimate: the one
+## direction a safety assertion may not err in. `dip`, `ads`, `kick` and the gun
+## `melee` all enter `_mesh_pose`'s basis and all four were sampled at two points.
 ##
-## 218,016 transformed points. Called once, from `verify.gd`, and cached; nothing in
-## the game may call it per frame.
+## The fix is a circumscribed polygon: sample K+1 angles across the arc and scale
+## each sample radially about the pivot by `1/cos(step/2)`. The pivot IS the mesh
+## origin — `_mesh_pose` returns `Transform3D(basis, origin)`, so the basis turns
+## the point about the grip and the origin translates the result — which makes
+## "scale radially about the pivot" exactly "scale `p`", because
+## `B*(k*p) + o == k*(B*p) + o`. The resulting polygon provably CONTAINS the arc, so
+## its max is a safe over-estimate and its min a safe under-estimate, and the excess
+## shrinks as step². K comes from the closed form
+## `ratio * r_max * (1 - cos(step/2)) <= ARC_TOL`, evaluated per weapon against that
+## weapon's own furthest corner rather than against a global bound.
+##
+## What this replaces was a MEASUREMENT — "a dense sweep does not beat the endpoints
+## by more than 0.2 mm on any of the three" — that nothing re-ran and that any
+## amplitude increase would have invalidated in silence. `ADS_YAW` is exactly such
+## an increase and it is in this package.
+##
+## Sway is still a 3x3 grid and still not arc-sampled: it is written to
+## `ViewmodelRoot`, which sits AT the camera origin, so `worst` and `nearest` are
+## invariant under it and only `widest` sees it at all — and there the 3x3 already
+## brackets a 0.05 rad excursion whose sagitta at r = 0.23 m is 0.07 mm.
+##
+## Called once, from `verify.gd`, and cached; nothing in the game may call it per
+## frame.
 func _measure() -> void:
 	if _measured:
 		return
 	_measured = true
+	_extreme = sweep(true)
 
+
+## The sweep itself, with the arc construction switchable — and the switch is here
+## for one reason: **an assertion that the interior sampling is doing anything has
+## to be able to ask for the sweep without it, and it must be THIS sweep and not a
+## second copy of its arithmetic.** `checks/systems.gd` runs both and requires the
+## interior one to report a strictly larger extreme; with `interior` false this is
+## exactly the endpoint-only sweep that shipped.
+##
+## Uncached on purpose. `_measure()` is the cached entry point and the only one the
+## game or `verify.gd` reaches for; this one is ~1 s of arithmetic and is called
+## twice, by one check, once.
+func sweep(interior: bool) -> Vector3:
 	# From the camera rather than from a constant, so a field of view that ever
 	# moves cannot leave a stale copy of this behind. See VIEWMODEL_FOV.
 	var ratio := tan(0.5 * deg_to_rad(_cam.fov)) / tan(0.5 * deg_to_rad(VIEWMODEL_FOV))
@@ -919,51 +1236,91 @@ func _measure() -> void:
 	# metric rather than being swept as a channel of its own.
 	var bob := Vector2(BOB_X, BOB_Y).length()
 	var sways: Array[float] = [-SWAY_MAX, 0.0, SWAY_MAX]
-	# Declared rather than assigned from a literal at the branch below: an array
-	# literal is only reliably given its target's element type where it is the
-	# initialiser of a typed declaration, and this is not a file to find out where
-	# the edges of that are.
-	var gun_melees: Array[float] = [0.0]
-	# The knife is on screen across the whole swing, so the middle of the arc —
-	# which is where it reaches furthest — has to be sampled too.
-	var knife_melees: Array[float] = [0.0, 0.5, 1.0]
 
 	var worst := 0.0
 	var nearest := 1e9
 	var widest := 0.0
+	_swept.clear()
 	for key: String in GUNART.keys():
 		var into := {}
-		# Annotated rather than inferred, both of them: a call through a preloaded
+		# Annotated rather than inferred, all three: a call through a preloaded
 		# script constant is the kind of expression this project builds as an error
 		# when its result is handed to a typed parameter unchecked.
 		var body: PackedVector3Array = GUNART.body_corners(key)
 		var slide: PackedVector3Array = GUNART.slide_corners(key)
+		# THE TRAP THIS LINE EXISTS TO CLOSE. This used to be the global
+		# `SLIDE_TRAVEL`, and travel is per weapon now. Every component of `_extreme`
+		# is insensitive to slide travel BY CONSTRUCTION — rearward travel moves the
+		# group toward the grip, so `widest` falls, and the near plane is set by a
+		# body part (the M14's stock) and not by any group — so deleting this line
+		# outright leaves the whole suite green and no aggregate metric can tell.
+		# `swept_travels()` is the readout that can, and it is why one exists.
+		var travel: float = GUNART.slide_travel(key)
 		_collect(body, into, 0.0)
 		_collect(slide, into, 0.0)
-		# The reciprocating group is a live translation of its own mesh, so both
-		# ends of its travel are places a vertex genuinely reaches.
-		_collect(slide, into, SLIDE_TRAVEL)
+		# The readout is the RETURN of the collect and not a copy of its argument,
+		# deliberately: a `_swept[key] = travel` beside a deleted `_collect` would go
+		# on reporting a travel nothing swept, which is the exact shape of the bug
+		# this readout exists to catch.
+		_swept[key] = _collect(slide, into, travel)
 		var pts := PackedVector3Array(into.keys())
 		# THE WHOLE REASON THIS LOOP IS PER WEAPON. Through the same accessor the rig
 		# poses with, so a sight height that stopped being derived from the mesh would
 		# move the assertion and not just the picture.
 		var sight: float = GUNART.sight_height(key)
-		var melees: Array[float] = gun_melees
+		var r_max := 0.0
+		for p: Vector3 in pts:
+			r_max = maxf(r_max, p.length())
+
+		# The four channels that enter `_mesh_pose`'s BASIS, and their arc amplitudes
+		# in radians. Everything else in the pose is a translation and its reachable
+		# set is a segment, which endpoints already bracket exactly.
+		var dip_arc := DIP_ROLL
+		# ADS removes REST_YAW's yaw and REST_PITCH's cant together, so the arc it
+		# traces is the sum of the two and not either alone.
+		var ads_arc := REST_YAW * ADS_YAW + absf(REST_PITCH) * ADS_LEVEL
+		var kick_arc := absf(KICK_PITCH) * KICK_MAX
+		var melee_arc := absf(MELEE_ROT)
+		var dips: Array[float] = [0.0, 1.0]
+		var adss: Array[float] = [0.0, 1.0]
+		var kicks: Array[float] = [0.0, KICK_MAX]
+		# The melee channel is lit for the knife alone, because `_apply()` only ever
+		# shows the knife while it is lit. Pairing a rifle's muzzle with a full melee
+		# sweep would measure a frame the rig cannot draw, and it costs 4 mm of an
+		# 8 mm margin to do it.
+		var melees: Array[float] = [0.0]
 		if key == "knife":
-			melees = knife_melees
-		for kick: float in [0.0, KICK_MAX]:
-			for dip: float in [0.0, 1.0]:
+			melees = [0.0, 1.0]
+		var grow := 1.0
+		if interior:
+			dips = _arc(0.0, 1.0, dip_arc, r_max, ratio)
+			adss = _arc(0.0, 1.0, ads_arc, r_max, ratio)
+			kicks = _arc(0.0, KICK_MAX, kick_arc, r_max, ratio)
+			if key == "knife":
+				melees = _arc(0.0, 1.0, melee_arc, r_max, ratio)
+			# One inflation for the whole pose, and it is the PRODUCT of the
+			# per-channel factors rather than the largest of them: the four compose
+			# into one basis, and a product of terms each >= 1 circumscribes every one
+			# of them.
+			grow = _arc_grow(dips, dip_arc) * _arc_grow(adss, ads_arc) \
+				* _arc_grow(kicks, kick_arc) * _arc_grow(melees, melee_arc)
+		var swept := PackedVector3Array()
+		for p: Vector3 in pts:
+			swept.append(p * grow)
+
+		for kick: float in kicks:
+			for dip: float in dips:
 				for drop: float in [0.0, SWAP_DROP + SPRINT_DROP]:
 					for melee: float in melees:
 						# Both ends of the sights, because the clipping budget has to hold at the
 						# sighted pose too — that pose moves the weapon 8 mm toward the near plane
 						# and up to 20 mm down, and the drop is what puts the lateral term up.
-						for ads: float in [0.0, 1.0]:
+						for ads: float in adss:
 							var mp := _mesh_pose(kick, dip, drop, melee, ads, sight)
 							for sx: float in sways:
 								for sy: float in sways:
 									var root := Basis.from_euler(Vector3(sx, sy, 0.0))
-									for p: Vector3 in pts:
+									for p: Vector3 in swept:
 										var v := root * (mp * p)
 										var lat := Vector2(v.x, v.y).length() + bob
 										worst = maxf(worst, v.length() + bob)
@@ -972,13 +1329,71 @@ func _measure() -> void:
 										nearest = minf(nearest, -v.z)
 										widest = maxf(widest,
 											sqrt(v.z * v.z + ratio * ratio * lat * lat))
-	_extreme = Vector3(worst, nearest, widest)
+	return Vector3(worst, nearest, widest)
 
 
-static func _collect(pts: PackedVector3Array, into: Dictionary, z_off: float) -> void:
+## What `sweep()` actually collected at, weapon key to travel in metres.
+##
+## **This exists because no aggregate metric can tell you whether the second
+## `_collect` call is still there.** All three components of `_extreme` are
+## insensitive to slide travel by construction — rearward travel moves the group
+## toward the grip, so `widest` falls with it, and the near plane is set by the M14's
+## stock — so deleting the travel endpoint outright leaves every clip assertion
+## green. A refusal cannot separate "safe" from "unmeasured"; only a readout can.
+func swept_travels() -> Dictionary:
+	_measure()
+	return _swept.duplicate()
+
+
+## The samples for one rotational channel: K+1 values across `[lo, hi]`.
+##
+## K is solved rather than tabulated — the smallest count whose circumscribing
+## excess `ratio * r * (1 - cos(step/2))` is inside `ARC_TOL`. On the shipped
+## constants that is K = 4 for the dip's 0.5 rad, K = 2 for the ads channel's
+## combined arc, K = 1 — i.e. the endpoints, unchanged — for the kick's 0.06 rad,
+## and K = 7 for the knife's 0.85 rad swing. Solving it is what makes R10's "one
+## float, then re-measure" an actual defence: a wider `ADS_YAW` buys itself another
+## sample instead of quietly widening an arc nothing looks inside.
+##
+## `ARC_MAX_SAMPLES` is a bound on the loop and not a tuning knob. It is reached
+## only by an amplitude nobody has authored; if it ever binds, the sweep silently
+## stops being conservative, so `checks/systems.gd` asserts every channel's solved K
+## is strictly under it.
+static func _arc(lo: float, hi: float, amp: float, r: float,
+		ratio: float) -> Array[float]:
+	var k := _arc_k(amp, r, ratio)
+	var out: Array[float] = []
+	for i in k + 1:
+		out.append(lerpf(lo, hi, float(i) / float(k)))
+	return out
+
+
+static func _arc_k(amp: float, r: float, ratio: float) -> int:
+	var k := 1
+	while k < ARC_MAX_SAMPLES:
+		if ratio * r * (1.0 - cos(absf(amp) / float(k) * 0.5)) <= ARC_TOL:
+			break
+		k += 1
+	return k
+
+
+## How far a sample has to be pushed out along its own radius for the polygon
+## through the samples to CONTAIN the arc they were taken off, rather than being
+## inscribed in it. Derived from the sample count the caller actually got, so the
+## two cannot drift apart; 1.0 for a channel with no arc to circumscribe.
+static func _arc_grow(samples: Array[float], amp: float) -> float:
+	if samples.size() < 2:
+		return 1.0
+	return 1.0 / cos(absf(amp) / float(samples.size() - 1) * 0.5)
+
+
+## Returns the offset it used, so `sweep()` can record what it actually collected
+## at rather than what it meant to. See `swept_travels()`.
+static func _collect(pts: PackedVector3Array, into: Dictionary, z_off: float) -> float:
 	var off := Vector3(0.0, 0.0, z_off)
 	for p: Vector3 in pts:
 		into[p + off] = true
+	return z_off
 
 
 # --- attachment --------------------------------------------------------------

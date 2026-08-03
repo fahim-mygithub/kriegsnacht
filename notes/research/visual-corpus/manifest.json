@@ -1,0 +1,96 @@
+{
+  "_about": "scholar-visual flat-file corpus (Backend B). agentic-vision MCP is NOT connected in this session, so cards live here. Card schema is scholar-visual Section 4. Captured images are INTERNAL RESEARCH REFERENCE ONLY (Section 9) - they inform direction, they are not assets to ship, reproduce, or republish.",
+  "_staleness_note": "The normal staleness policy assumes a live product whose UI drifts. It does not apply the same way here: the subject is Call of Duty: Black Ops (2010), a shipped and frozen build. The artefact these cards describe cannot change. What CAN be wrong is the wiki editor's extraction, not the game. So freshness is tracked against the upload date only as a proxy for extraction quality, never as 'this may no longer reflect the game'.",
+  "_capture_method": "Screen capture through the claude-in-chrome browser tier of image pages legitimately rendered in the browser. Each corpus file is therefore a JPEG re-encode of a 1568x554 viewport, NOT the original PNG. Fidelity limit is deliberate: writing the source PNG to disk would be a file download, which needs the user's explicit permission and was not requested. Full-resolution pixels remain retrievable from source_image_url.",
+  "cards": [
+    {
+      "id": "bo1-mp40-reload-mid",
+      "source": {
+        "url": "https://callofduty.fandom.com/wiki/File:MP40_Reloading_BO.png",
+        "source_image_url": "https://static.wikia.nocookie.net/callofduty/images/1/1a/MP40_Reloading_BO.png/revision/latest?cb=20110731043514",
+        "product": "Call of Duty: Black Ops (2010) - MP40",
+        "uploaded": "2011-07-31"
+      },
+      "captured_at": "2026-08-02",
+      "freshness": "fresh",
+      "element": "one frame of the MP40 reload animation, first person, cut out to alpha",
+      "ui_pattern": "reload-anim-midpoint",
+      "kano_bucket": "table-stakes",
+      "evidence_tier": "2 - shipped game art, but community-extracted rather than a first-party or self-taken capture. The transparent background proves an editor processed it.",
+      "visual_description": "MP40 seen from its left side, canted steeply muzzle-up-left with the receiver running down to the lower right; front sight ring at top-left, rear sight leaf and charging-handle knob visible along the receiver. A separate dark angular slab sits at the lower-left, clearly detached from the weapon with background visible in the gap between them, clipped by the left and bottom frame edges - the magazine, out of the gun and falling away. The weapon's magazine housing carries no magazine.",
+      "measurement": {
+        "method": "Connected-component labelling on the PNG alpha channel (threshold a>40, 4-connectivity), run in-page over a 661x368 canvas.",
+        "result": "Exactly 2 components. Weapon = 84614 px, bbox (39,0)-(659,367). Detached object = 3717 px, bbox (0,276)-(80,367), 81x92 px. No opaque path connects them.",
+        "why_it_matters": "This is what makes 'the magazine visibly leaves the weapon' an objective finding rather than my reading of a small dark shape. The separation is topological, not judged by eye."
+      },
+      "answers": "competitive-analysis question 1, first half: YES, the magazine visibly and completely leaves the weapon in BO1's MP40 reload.",
+      "does_not_answer": "The second half - one arc or two beats (mag-out then mag-in). A single frame cannot establish the beat structure of an animation. That remains an open gap; only motion evidence settles it.",
+      "image_ref": "reload-anim-midpoint/bo1_mp40_reload_midpoint.jpg",
+      "provenance": "Single wiki file from a single uploader. ONE data point, uncorroborated - no second independent capture of this animation was obtained."
+    },
+    {
+      "id": "bo1-mp40-ads",
+      "source": {
+        "url": "https://callofduty.fandom.com/wiki/File:MP40_Iron_Sights_BO.png",
+        "source_image_url": "https://static.wikia.nocookie.net/callofduty/images/e/ea/MP40_Iron_Sights_BO.png/revision/latest?cb=20111106030346",
+        "product": "Call of Duty: Black Ops (2010) - MP40",
+        "uploaded": "2011-11-06"
+      },
+      "captured_at": "2026-08-02",
+      "freshness": "fresh",
+      "element": "MP40 aim-down-sights view, cut out to alpha and cropped",
+      "ui_pattern": "fps-viewmodel-ads-pose",
+      "kano_bucket": "table-stakes",
+      "evidence_tier": "3 - shipped game art, community-extracted AND cropped. The crop is what costs it a tier: it destroys the frame reference the question needs.",
+      "visual_description": "Rear view down the MP40's receiver. The rear sight leaf stands proud at the top with a squared notch, and the hooded front sight post sits centred inside that notch - a conventional aligned iron-sight picture. The receiver fills the lower centre; the bolt handle is a small stub on the left. Background is fully transparent: no HUD, no crosshair, no environment, and no frame edges belonging to the game.",
+      "answers": "Partially, competitive-analysis question 3: BO1's MP40 ADS is a TRUE iron-sight alignment - front post centred in the rear notch, weapon rolled upright, barrel level. It is a hard sight picture, not a lowered 'gun sits below the line' pose.",
+      "does_not_answer": "The actual number asked for. Measuring how far the weapon's top plane sits under the view axis requires the crosshair or the game's frame centre as a datum, and this image has NEITHER - it is cut out and cropped, so the weapon is not even centred within the file. Do NOT measure our '1 art unit of clear air' against this image; it cannot carry that comparison. [CORRECTED 2026-08-02: this field previously read 'sight column sits at about 0.70 of file width', which was never measured and is wrong. Measured by scholar-core on the stored JPEG, background-keyed against the flat page fill (PIL): subject spans x 324->666 of 1568, i.e. 0.207->0.425 of width, centre 0.316 - offset LEFT of centre, not right. The conclusion above is unaffected: the image lacks a crosshair or frame datum, so it cannot carry the measurement either way.]",
+      "image_ref": "fps-viewmodel-ads-pose/bo1_mp40_ads_ironsights.jpg",
+      "provenance": "Single wiki file, one uploader. ONE data point."
+    },
+    {
+      "id": "bo1-mp40-firstperson-hand",
+      "source": {
+        "url": "https://callofduty.fandom.com/wiki/File:MP40_BO.png",
+        "source_image_url": "https://static.wikia.nocookie.net/callofduty/images/2/29/MP40_BO.png/revision/latest?cb=20170520081922",
+        "product": "Call of Duty: Black Ops (2010) - MP40",
+        "uploaded": "2017-05-20"
+      },
+      "captured_at": "2026-08-02",
+      "freshness": "fresh",
+      "element": "MP40 first-person viewmodel with the player's supporting hand in frame",
+      "ui_pattern": "fps-viewmodel-rest-pose",
+      "kano_bucket": "table-stakes",
+      "evidence_tier": "3 - shipped game art, community-extracted and cropped; pose is not confirmed to be the idle/hip rest specifically.",
+      "visual_description": "MP40 from the left rear, canted muzzle-up-left, running diagonally out of the lower-left of frame. The player's left hand and forearm are visible gripping under the receiver at the left edge, skin clearly rendered. The receiver carries stencilled 'MP40' lettering with scratched handwritten graffiti beneath it. Front sight ring and rear sight are both visible along the top. Background fully transparent.",
+      "answers": "That BO1's viewmodel puts a visible supporting HAND in frame on the weapon, and that the zombies-era MP40 carries hand-scrawled graffiti on the receiver - a texture-level detail, not a geometry one.",
+      "does_not_answer": "Whether this is the hip rest pose. The cut-out and crop remove the frame, so screen-height occupancy and cant angle relative to the view axis are NOT measurable from it. Treat the pose label as unconfirmed.",
+      "image_ref": "fps-viewmodel-rest-pose/bo1_mp40_firstperson_hand.jpg",
+      "provenance": "Single wiki file, one uploader. ONE data point."
+    }
+  ],
+  "gaps": [
+    {
+      "ui_pattern": "reload-anim-midpoint",
+      "question": "Is BO1's reload one arc or two distinct beats (mag-out, then mag-in)?",
+      "status": "OPEN",
+      "reason": "Beat structure is a motion fact. No animated source was obtainable: YouTube video playback is hard-blocked in this browser (see blocked_sources), and a Fandom API sweep of all 84 files with the MP40 prefix returned ZERO .gif assets, so the wiki holds no animated reference either.",
+      "not_the_reason": "NOT a browser-permission gap. The browser tier works; this was verified by capturing three images through it."
+    },
+    {
+      "ui_pattern": "shell-ejection",
+      "question": "Is a casing visible in the viewmodel frame at typical framing, and does it arc right-and-back?",
+      "status": "OPEN - no capture attempted to completion",
+      "reason": "Same motion-evidence problem, and worse: a casing is airborne for a few frames, so even a lucky still is unlikely to catch one. Ruled not obtainable from still wiki assets within budget. The pattern directory was REMOVED rather than left empty, because an empty directory is invisible to git and reads as coverage."
+    }
+  ],
+  "blocked_sources": [
+    {
+      "source": "youtube.com video playback",
+      "class": "C - hard blocked",
+      "evidence": "On a reloaded watch page with network tracking active: ZERO requests to googlevideo.com (the media host is never contacted), while every youtube.com API call returned 503 (/youtubei/v1/log_event x3, /generate_204 x3, /api/stats/qoe). Static CDNs were healthy in the same capture: i.ytimg.com 200, yt3.ggpht.com 200, fonts.gstatic.com 200. Player API reported getPlayerState()==3 (buffering) across 20 consecutive 1s polls while video.readyState stayed 0, videoWidth 0, duration null - though getDuration() correctly returned 4s from metadata.",
+      "ruled_out": "Not a wedged player, not quality negotiation, not the specific clip: playback quality was forced to medium and playVideo() was called explicitly, with no change.",
+      "consequence": "Every motion-dependent visual question in this package is unanswerable from this environment until the video path is unblocked."
+    }
+  ]
+}

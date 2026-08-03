@@ -38,6 +38,8 @@ extends RefCounted
 const FRAME_STATS := preload("res://scripts/dev/frame_stats.gd")
 const SHOT_SETUP := preload("res://scripts/dev/shot_setup.gd")
 const ATMOSPHERE := preload("res://scripts/systems/atmosphere.gd")
+const GUNART := preload("res://scripts/data/gunart.gd")
+const LIGHTING := preload("res://scripts/world/lighting.gd")
 
 ## The scenarios the package was commissioned to cover, restated here from the
 ## brief rather than read back out of the registry. A registry checked against
@@ -69,6 +71,9 @@ static func run(v: Verify, main: Node3D) -> void:
 	_flash_geometry(v)
 	_flash_art(v, main)
 	_flash_drawn(v, main)
+	_gun_depth(v)
+	_gun_shade(v)
+	_gun_sights(v)
 
 
 # --- part 1: the transfer functions -------------------------------------------
@@ -1187,11 +1192,29 @@ static func _burst_a(img: Image, ang: float, rad: float) -> float:
 static func _flash_materials(v: Verify, main: Node3D) -> void:
 	var atmos: Node3D = main.atmos
 	var mats: Array = atmos.materials()
-	var pair := mats.size() == 2
-	v.check("atmosphere hands the warm-up pass both flash layers",
-		pair, "materials() returned %d" % mats.size())
-	var bad := "" if pair else "materials() is not a pair "
-	for m: StandardMaterial3D in mats:
+	# THE SET, NOT THE LENGTH — corrected 2026-08-02, when the muzzle smoke made
+	# `materials()` three long and this went red for a correct change. `mats.size()
+	# == 2` and the `mats[0]` below were a length check and an array-order read on a
+	# list whose whole job is to grow; verify.gd:1046-1049 makes exactly this
+	# argument about exactly this kind of list, in its own words — "a length check
+	# breaks the moment a seventh is added, which is exactly when it should still be
+	# useful". What has to be true is that BOTH flash layers are declared, that they
+	# are distinct, and that each carries the flags below. It is strictly stronger:
+	# a `materials()` that returned the halo twice failed the old size test only by
+	# luck and fails this by name.
+	var halo_mat: Material = atmos.flash_quad().material_override
+	var burst_mat: Material = atmos.burst_quad().material_override
+	var pair := mats.has(halo_mat) and mats.has(burst_mat) and halo_mat != burst_mat
+	v.check("atmosphere hands the warm-up pass both flash layers", pair,
+		"materials() returned %d; halo declared %s, burst declared %s, distinct %s" % [
+			mats.size(), mats.has(halo_mat), mats.has(burst_mat),
+			halo_mat != burst_mat])
+	var bad := "" if pair else "a flash layer is undeclared "
+	# THE TWO FLASH LAYERS ONLY. `materials()` also carries the muzzle smoke, which
+	# is BLEND_MIX by design — smoke occludes, it does not emit — so sweeping the
+	# whole list would demand the smoke be additive, which atmosphere.gd names as
+	# the failure mode to reject.
+	for m: StandardMaterial3D in [halo_mat, burst_mat]:
 		if m.shading_mode != BaseMaterial3D.SHADING_MODE_UNSHADED:
 			bad += "shaded "
 		if m.blend_mode != BaseMaterial3D.BLEND_MODE_ADD:
@@ -1222,16 +1245,32 @@ static func _flash_materials(v: Verify, main: Node3D) -> void:
 	# statement of the same contract, kept for its failure message — the audit says
 	# "missing: <StandardMaterial3D#...>" and this says which layer — and because it
 	# is the one that would still bite if `materials()` returned one layer twice.
-	var halo_mat: Material = atmos.flash_quad().material_override
-	var burst_mat: Material = atmos.burst_quad().material_override
-	v.check("...and they are the very materials the two flash quads draw with",
-		pair and mats.has(halo_mat) and mats.has(burst_mat) and halo_mat != burst_mat,
-		"halo %s / burst %s against materials() %s" % [halo_mat, burst_mat, mats])
+	# SINCE 2026-08-02 THE IDENTITY CLAIM IS `pair` ITSELF, which is built from these
+	# same two live handles — so restating it here would be two checks asserting one
+	# fact, which is decoration however good the comment is. What is left over and
+	# genuinely unasserted is the other half of the paragraph above: `materials()`
+	# handing back ONE LAYER TWICE. `pair` cannot see that (both `has` calls succeed
+	# and the two handles are still distinct), the size test that could see it is
+	# gone with the smoke's arrival, and the warm pass would then compile two
+	# variants where the game needs three. So this check keeps its slot and changes
+	# its claim: every material this file declares is a live, DISTINCT object.
+	var seen_mats := {}
+	var dupes := ""
+	for m: Material in mats:
+		if m == null or seen_mats.has(m):
+			dupes += "%s " % m
+		seen_mats[m] = true
+	v.check("...and every layer atmosphere declares is a distinct live material",
+		dupes.is_empty() and seen_mats.size() == mats.size()
+			and mats.has(halo_mat) and mats.has(burst_mat),
+		"halo %s / burst %s, %d declared and %d distinct, repeats [%s]" % [
+			halo_mat, burst_mat, mats.size(), seen_mats.size(), dupes])
 
 	# Layer 1's falloff, sampled out of the real Gradient rather than out of a
 	# rendered texture: `Texture2D.get_image()` goes through the RenderingServer
-	# and there is not one under --headless. html:3152-3154.
-	var tex: Texture2D = mats[0].albedo_texture if pair else null
+	# and there is not one under --headless. html:3152-3154. Off the LIVE halo quad
+	# rather than off `materials()[0]`, which was only the halo by array order.
+	var tex: Texture2D = halo_mat.albedo_texture if pair else null
 	var gt := tex as GradientTexture2D
 	v.check("the halo is a radial gradient filled from its own centre",
 		gt != null and gt.fill == GradientTexture2D.FILL_RADIAL
@@ -1270,3 +1309,407 @@ static func _flash_materials(v: Verify, main: Node3D) -> void:
 		v.near(hot.r, 1.0, 0.002) and v.near(hot.g, 248.0 / 255.0, 0.002)
 			and v.near(hot.b, 225.0 / 255.0, 0.002) and hot.b - tint.b > 0.3,
 		str(hot))
+
+
+# --- part 11: the weapon meshes -----------------------------------------------
+#
+# These render nothing either, and they are here rather than in `verify.gd`'s
+# M-VMCLIP for one reason: M-VMCLIP asks whether the weapon can touch a wall, and
+# these ask whether the mesh on screen is the mesh the corner walk measured. Two
+# different questions about the same table, and the second one is the reason the
+# first is trustworthy.
+#
+# THE COMMITTED MESH IS READ BACK. `gunart.gd:348-354` argues, correctly, that a
+# safety assertion must not hang on `surface_get_arrays()` — a silently empty
+# result under the dummy driver would make it pass by measuring nothing. That
+# argument is about `_measure()`, which has no way to notice an empty set. It does
+# not apply here, because these checks *compare* the round trip against the corner
+# walk and assert a positive count on both sides, so an empty round trip fails
+# loudly. MEASURED 2026-08-02: under `--headless` on the dummy driver
+# `build_body("m1911")` returns a mesh with one surface and 252 vertices, so the
+# round trip is live and this is a real readback rather than a hopeful one.
+
+## `ART`'s part count per weapon, from `kriegsnacht.html:1151`.
+##
+## Stated here rather than read out of `ART`, which would be the tautology
+## `verify.gd:_registered()` exists to avoid. Its job: `tools/gen/targets.js:150-162`
+## bakes the chalk wall plaques from a SECOND copy of this table
+## (`tools/gen/ancestor.generated.js:634`) and nothing else asserts the two agree
+## (M5 F8), so a part appended to `ART` silently stops the plaque on the wall from
+## being a drawing of the weapon behind it. Appending to `SIGHTS` cannot: that
+## constant is ours and is deliberately not in the ancestor's table. This check is
+## what keeps that distinction from being a comment.
+const ANCESTOR_PARTS := {
+	"m1911": 7, "olympia": 7, "m14": 7, "mp40": 8, "pm63": 6, "ak74u": 8,
+	"stakeout": 8, "m16": 8, "rpk": 9, "chinalake": 7, "raygun": 10,
+	"thundergun": 11, "knife": 5,
+}
+
+## The deepest half-depth reachable under the draw-order expression this package
+## replaced: `BASE_HALF + i*LAYER` at the largest index in the table, the
+## Thundergun's part 10. In art units.
+const SHIPPED_MAX_HALF := 4.00
+
+
+## Every distinct |x| in a weapon's committed meshes, in art units.
+static func _mesh_halves(key: String) -> Array:
+	var out := {}
+	for m: ArrayMesh in [GUNART.build_body(key, false), GUNART.build_slide(key, false)]:
+		if m == null:
+			continue
+		var vs: PackedVector3Array = m.surface_get_arrays(0)[Mesh.ARRAY_VERTEX]
+		for p: Vector3 in vs:
+			out[snappedf(absf(p.x) / GUNART.UNIT, 0.0001)] = true
+	var k := out.keys()
+	k.sort()
+	return k
+
+
+## The same, off the corner walk that feeds `viewmodel._measure()`.
+static func _corner_halves(key: String) -> Array:
+	var out := {}
+	for c: PackedVector3Array in [GUNART.body_corners(key), GUNART.slide_corners(key)]:
+		for p: Vector3 in c:
+			out[snappedf(absf(p.x) / GUNART.UNIT, 0.0001)] = true
+	var k := out.keys()
+	k.sort()
+	return k
+
+
+static func _gun_depth(v: Verify) -> void:
+	# A missing row silently falls back to a multiplier of 1.0 — the pre-package
+	# behaviour — so a weapon with no `DEPTH` entry would build, ship and look
+	# exactly like the defect this table exists to remove. Bounded at both ends:
+	# the row has to exist AND be the right length, because a short row falls back
+	# on its tail alone, which is the half that is hardest to see.
+	var bad_rows := ""
+	var parts_total := 0
+	for key: String in GUNART.keys():
+		var parts: Array = GUNART._parts(key)
+		parts_total += parts.size()
+		var row: Array = GUNART.DEPTH.get(key, [])
+		if row.size() != parts.size():
+			bad_rows += "%s %d/%d " % [key, row.size(), parts.size()]
+	v.check("every part of every weapon has an authored depth",
+		bad_rows.is_empty() and parts_total == 119,
+		"%d parts across the roster, rows off: %s" % [parts_total, bad_rows])
+
+	# THE LEAD ASSERTION OF THE PACKAGE. `_build` and `_corners` are two walks over
+	# the same table and M5 R2 names the trap in as many words: author per-part
+	# depth at one of them and the clip measurement measures a mesh that is not on
+	# screen. No aggregate metric catches it — `max_screen_radius()` is a single
+	# number and would simply be the wrong one, silently, and still pass.
+	#
+	# So the two are compared directly: the distinct |x| of the COMMITTED ArrayMesh
+	# against the distinct |x| of the corner walk, per weapon. They share an
+	# accessor today (`GUNART.part_half`) and this is what would notice if one of
+	# them stopped calling it.
+	var disagree := ""
+	var empty := ""
+	for key: String in GUNART.keys():
+		var mesh_h := _mesh_halves(key)
+		var corner_h := _corner_halves(key)
+		if mesh_h.is_empty() or corner_h.is_empty():
+			empty += key + " "
+		if mesh_h != corner_h:
+			disagree += "%s mesh=%s corners=%s " % [key, mesh_h, corner_h]
+	v.check("the builder and the corner walk extrude every part to the same depth",
+		disagree.is_empty() and empty.is_empty(),
+		"empty: %s; disagreeing: %s" % [empty, disagree])
+
+	# ...and there are exactly as many distinct depths as there are parts, plus the
+	# gloves' two. That single count carries three claims at once — no part shares a
+	# depth with another (the caps would be coplanar again and `LAYER` undone by
+	# hand), no part shares one with a glove, and neither side of the comparison
+	# above is a degenerate set that happens to match.
+	var wrong_count := ""
+	for key: String in GUNART.keys():
+		var want: int = GUNART._parts(key).size() + 2
+		var got: int = _mesh_halves(key).size()
+		if got != want:
+			wrong_count += "%s %d/%d " % [key, got, want]
+	v.check("...and every one of them is a distinct depth, gloves included",
+		wrong_count.is_empty(), wrong_count)
+
+	# M5 A14, stated over the table rather than over the mesh, and computed through
+	# the same `part_half()` the builder calls rather than re-derived. The gloves
+	# are pinned at HAND_HALF and HAND_HALF + LAYER (`gunart.gd:529-535`) and do NOT
+	# ride the ramp, so a gun part landing on either z-fights its caps against a
+	# glove. Provenance: `gunart.gd:190-200`, the z-fight the ramp exists to fix.
+	#
+	# The first draft of F7 gave a different mechanism for this rule — the hands'
+	# `PROUD` exemption — and that mechanism is false: `_inflate` never sees a
+	# depth, so no depth can falsify it. An implementer who checked the named
+	# invariant would have found it intact and shipped a broken table.
+	var on_glove := ""
+	var collide := ""
+	for key: String in GUNART.keys():
+		var seen := {}
+		for i in GUNART._parts(key).size():
+			var h: float = GUNART.part_half(key, i) / GUNART.UNIT
+			if absf(h - GUNART.HAND_HALF) < 0.005 or absf(h - GUNART.HAND_HALF - GUNART.LAYER) < 0.005:
+				on_glove += "%s[%d] %.2f " % [key, i, h]
+			var q := snappedf(h, 0.0001)
+			if seen.has(q):
+				collide += "%s[%d] %.2f " % [key, i, h]
+			seen[q] = true
+	v.check("no weapon part is extruded to a glove's depth",
+		on_glove.is_empty(),
+		"gloves sit at %.2f and %.2f art units; on them: %s" % [
+			GUNART.HAND_HALF, GUNART.HAND_HALF + GUNART.LAYER, on_glove])
+	v.check("no two parts of one weapon are extruded to the same depth",
+		collide.is_empty(), collide)
+
+	# The ceiling, and it is a bound rather than a taste. M5 F7 puts the
+	# screen-radius cost of a depth change somewhere between 5.9% and 50% of an
+	# 8.1 mm margin — two derivations that disagree by up to 8x — and the
+	# measurement that would settle it was never run. Until it is, the table may
+	# not exceed the deepest half-depth that already shipped.
+	var deepest := 0.0
+	var thinnest := 1e9
+	var over := ""
+	for key: String in GUNART.keys():
+		for i in GUNART._parts(key).size():
+			var h: float = GUNART.part_half(key, i) / GUNART.UNIT
+			deepest = maxf(deepest, h)
+			thinnest = minf(thinnest, h)
+			if h > SHIPPED_MAX_HALF:
+				over += "%s[%d] %.2f " % [key, i, h]
+	v.check("no part is extruded deeper than the draw-order expression already did",
+		over.is_empty(),
+		"ceiling %.2f art units, deepest %.2f, over: %s" % [
+			SHIPPED_MAX_HALF, deepest, over])
+	# BOUNDED AT THE OTHER END, and this is the half that matters: every check
+	# above passes perfectly against a `DEPTH` table of all-1.0, which is the
+	# draw-order defect with a data structure in front of it. Under the old
+	# expression nothing could be thinner than `BASE_HALF` = 2.60; something has to
+	# be genuinely thin now or the table has done nothing.
+	v.check("...and something on the roster is genuinely thin",
+		thinnest < 0.6 * GUNART.BASE_HALF,
+		"thinnest %.2f art units against BASE_HALF %.2f" % [thinnest, GUNART.BASE_HALF])
+
+	# The inversion M5 F1 named, on its own worked example. Flan's Mod's `ModelColt`
+	# puts the grip 5 deep against a barrel at 2, and a real M1911 is 34 mm across
+	# the grip panels against a 23 mm slide; under draw order this table gave the
+	# grip 3.02 and a 1.4-unit highlight rib 3.44, so the deepest thing on the
+	# flagship weapon was a painted specular.
+	var m_grip: float = GUNART.part_half("m1911", 3) / GUNART.UNIT
+	var m_rib: float = GUNART.part_half("m1911", 6) / GUNART.UNIT
+	var m_barrel: float = GUNART.part_half("m1911", 2) / GUNART.UNIT
+	v.check("the M1911's grip is thicker than its barrel and than its slide rib",
+		m_grip > m_rib and m_grip > m_barrel,
+		"grip %.2f, rib %.2f, barrel %.2f art units" % [m_grip, m_rib, m_barrel])
+	# And the clearest case in the table: a knife blade is not five sixths as thick
+	# as the handle it folds out of, which is what draw order made it (2.60 against
+	# 3.02). Our decision on the ratio; the direction is not a decision.
+	var k_blade: float = GUNART.part_half("knife", 0) / GUNART.UNIT
+	var k_handle: float = GUNART.part_half("knife", 3) / GUNART.UNIT
+	v.check("the knife's blade is at most half the thickness of its handle",
+		k_blade <= 0.5 * k_handle,
+		"blade %.2f against handle %.2f art units" % [k_blade, k_handle])
+
+
+static func _gun_shade(v: Verify) -> void:
+	# The six face values, read through the function the builder calls. Named
+	# rather than derived: the whole failure mode of the model this replaced was
+	# that three distinct orientations shared one number, so "the ramp has six
+	# entries and they are these six" is the statement worth pinning.
+	var top: float = GUNART.face_shade(Vector3.UP)
+	var under: float = GUNART.face_shade(Vector3.DOWN)
+	var cap_l: float = GUNART.face_shade(Vector3.LEFT)
+	var cap_r: float = GUNART.face_shade(Vector3.RIGHT)
+	var rear: float = GUNART.face_shade(Vector3.BACK)
+	var front: float = GUNART.face_shade(Vector3.FORWARD)
+	v.check("the face ramp hands each axis its own constant",
+		v.near(top, GUNART.SHADE_TOP, 1e-9) and v.near(under, GUNART.SHADE_UNDER, 1e-9)
+			and v.near(cap_l, GUNART.SHADE_CAP, 1e-9) and v.near(cap_r, GUNART.SHADE_CAP, 1e-9)
+			and v.near(rear, GUNART.SHADE_REAR, 1e-9) and v.near(front, GUNART.SHADE_FRONT, 1e-9),
+		"top %.4f under %.4f caps %.4f/%.4f rear %.4f front %.4f" % [
+			top, under, cap_l, cap_r, rear, front])
+
+	# The blend rule for the 13 circles and 2 rotated rects, which is the half of
+	# M5 R1 the first draft did not have — a ramp undefined on a third of the
+	# table's parts gets resolved silently by whoever implements it. Hand-computed
+	# on a normal 36 degrees off +Y, which is one `CIRCLE_SEGS` step:
+	#   w = 0.809017 + 0.587785 = 1.396802
+	#   f = (0.809017*1.28 + 0.587785*0.9953) / w = 1.620564 / 1.396802 = 1.160196
+	# Its value has to land strictly between the two axes it blends, which is the
+	# statement that fails if the rule degenerates to a max, a min or an average.
+	var obl: float = GUNART.face_shade(Vector3(0.0, 0.809017, 0.587785))
+	v.check("an off-axis facet blends its two axes and lands between them",
+		v.near(obl, 1.160196, 1e-5) and obl < GUNART.SHADE_TOP and obl > GUNART.SHADE_REAR,
+		"got %.6f, between %.4f and %.4f" % [obl, GUNART.SHADE_REAR, GUNART.SHADE_TOP])
+
+	# The bracket. Minecraft's `FaceBakery.getShade` is UP 1.0 / N-S 0.8 / E-W 0.6 /
+	# DOWN 0.5 — a 2:1 top-to-bottom span that TerraFirmaCraft reimplements
+	# independently — against the 1.2448:1 the clamped dot product could reach on a
+	# box face (M5 F3, and `gunart.gd:264`'s own arithmetic reproduces it).
+	v.check("the ramp spans the lineage's 2:1 from top face to bottom",
+		v.near(top / under, 2.0, 0.02),
+		"%.4f / %.4f = %.4f:1" % [top, under, top / under])
+	# M5 R1's actual requirement: the visible groups separated by "materially more
+	# than 7.5%". Under the shipped bracket the top stood 4.4% over the visible cap
+	# and 7.6% over the stock end, which is the finding. 20% is our floor and it is
+	# below what this table delivers (24.8% and 28.6%), so it is a bound rather
+	# than a restatement of the current numbers.
+	v.check("the top face stands materially clear of both the cap and the stock end",
+		top / cap_l > 1.20 and top / rear > 1.20,
+		"top/cap %.4f, top/rear %.4f" % [top / cap_l, top / rear])
+
+	# AND THE BAKE ACTUALLY GOES THROUGH IT. Everything above is true of a function
+	# nobody calls. This drives the real builder, reads the committed vertex colours
+	# and normals back, and requires every vertex to be an authored colour times the
+	# shade of its own normal — so a `_tri` that baked a constant, or that kept a
+	# dot product, fails here rather than passing four checks about a dead helper.
+	# 8-bit vertex colours, hence the 3/255 budget across the three channels — and
+	# hence the `clampf`, which is not defensive: `SurfaceTool` stores colours as
+	# RGBA8, so a channel driven past 1.0 by `SHADE_TOP` is TRUNCATED, not carried.
+	# Found by this check failing on the Ray Gun's mid lens ring (green 0.878 x
+	# 1.28 = 1.124, stored 1.0). It is why the ramp above 1.0 is only spendable on
+	# art below 1/SHADE_TOP on a channel, which is every gunmetal in the table and
+	# none of the four emissive colours.
+	var unexplained := ""
+	var verts := 0
+	for key: String in GUNART.keys():
+		var bases: Array[Color] = []
+		for part: Array in GUNART._parts(key):
+			bases.append(part[part.size() - 1])
+		bases.append(GUNART.HAND_MAIN)
+		bases.append(GUNART.HAND_CUFF)
+		for m: ArrayMesh in [GUNART.build_body(key, false), GUNART.build_slide(key, false)]:
+			if m == null:
+				continue
+			var arr := m.surface_get_arrays(0)
+			var ns: PackedVector3Array = arr[Mesh.ARRAY_NORMAL]
+			var cs: PackedColorArray = arr[Mesh.ARRAY_COLOR]
+			for i in cs.size():
+				verts += 1
+				var f: float = GUNART.face_shade(ns[i])
+				var best := 1e9
+				for b: Color in bases:
+					best = minf(best, absf(cs[i].r - clampf(b.r * f, 0.0, 1.0))
+						+ absf(cs[i].g - clampf(b.g * f, 0.0, 1.0))
+						+ absf(cs[i].b - clampf(b.b * f, 0.0, 1.0)))
+				if best > 3.0 / 255.0:
+					if unexplained.length() < 120:
+						unexplained += "%s n=%v c=%s off %.4f " % [key, ns[i], cs[i], best]
+	v.check("every vertex colour in every weapon is its own art times its own face shade",
+		unexplained.is_empty() and verts > 6000,
+		"%d vertices, unexplained: %s" % [verts, unexplained])
+
+	# THE GLOW SET, which is what bounds `SHADE_TOP` and `SHADE_CAP` from above.
+	# `lighting.gd` thresholds Godot's glow filter on the BRIGHTEST CHANNEL, and
+	# `_tint` passes the authored hex through unconverted onto an unshaded surface,
+	# so what the filter sees is that channel times the face shade. Read the
+	# threshold off `lighting.gd` rather than repeating 0.92, so moving it moves
+	# this.
+	#
+	# Provenance for the expected set: it is the set the SHIPPED bracket produced,
+	# face for face, on every face the camera can reach. The dot product put
+	# 1.0705 / 1.0254 / 0.9953 on the top, the visible cap and the stock end and
+	# clamped the other three to 0.8600; M5 F36 is right that `gunart.gd:266-271`
+	# was wrong to claim an emissive part bloomed on all six.
+	var thr: float = LIGHTING.GLOW_THRESHOLD
+	var core := Color("e8ffc0")          # the Ray Gun's lens core, green 1.0
+	var blade := Color("e2e7ec")         # the knife's, blue 0.925 — the brightest non-emissive
+	var mid := Color("8fe04a")           # the Ray Gun's mid lens ring, green 0.878
+	var rib := Color("7a8085")           # the Olympia's highlight strip, the brightest grey
+	# Through `_stored`, because RGBA8 truncates at 1.0 and it is the STORED value
+	# the filter sees. Reading the shade product raw would report 1.280 for a
+	# channel the mesh carries as 1.000 — right about the verdict, wrong about the
+	# margin, which is exactly how `gunart.gd:266-271` came to be wrong twice.
+	v.check("the Ray Gun's lens core blooms on the faces it bloomed on before, and no others",
+		_stored_ch(core.g, cap_l) > thr and _stored_ch(core.g, top) > thr
+			and _stored_ch(core.g, rear) > thr and _stored_ch(core.g, under) < thr
+			and _stored_ch(core.g, front) < thr,
+		"cap %.3f top %.3f rear %.3f under %.3f front %.3f against %.3f" % [
+			_stored_ch(core.g, cap_l), _stored_ch(core.g, top), _stored_ch(core.g, rear),
+			_stored_ch(core.g, under), _stored_ch(core.g, front), thr])
+	v.check("the knife's blade still catches a highlight on its caps and not underneath",
+		_stored_ch(blade.b, cap_l) > thr and _stored_ch(blade.b, top) > thr
+			and _stored_ch(blade.b, under) < thr,
+		"cap %.3f top %.3f under %.3f against %.3f" % [
+			_stored_ch(blade.b, cap_l), _stored_ch(blade.b, top),
+			_stored_ch(blade.b, under), thr])
+	# The two that bound the ramp from ABOVE. The mid ring sits 0.901 on the cap,
+	# 2% under the threshold; raise `SHADE_CAP` by more than that and the Ray Gun
+	# grows a second glowing ring nobody asked for. The Olympia's rib is the
+	# brightest thing on the roster that is meant to be plain metal.
+	v.check("no gunmetal highlight blooms, and the Ray Gun's mid ring stays a ring",
+		_stored_ch(mid.g, cap_l) < thr and _stored_ch(mid.g, rear) < thr
+			and _stored_ch(rib.b, top) < thr,
+		"mid cap %.3f / rear %.3f, rib top %.3f against %.3f" % [
+			_stored_ch(mid.g, cap_l), _stored_ch(mid.g, rear), _stored_ch(rib.b, top), thr])
+
+
+## One channel as the mesh actually carries it: RGBA8, so 1.0 is the ceiling.
+static func _stored_ch(channel: float, shade: float) -> float:
+	return clampf(channel * shade, 0.0, 1.0)
+
+
+static func _gun_sights(v: Verify) -> void:
+	# M5 F5: at full sights `ADS_CENTRE` and `ADS_LEVEL` are 1.0 and `ADS_YAW` was
+	# too, so both caps went edge-on and the only faces left were +Z rear edges of
+	# flat plates. `ADS_YAW` is 0.95 now — 5% of the profile survives, worth 1.7 px
+	# on the M1911's slide — and that is nowhere near enough to change the argument
+	# below: the sights are still what carries the ADS read, and the reason the yaw
+	# cannot be reduced further is `shot_setup.gd`'s 80 px probe rect, recorded at
+	# viewmodel.gd's ADS_YAW.
+	# "Anything that improves the ADS read has to add geometry along +Z" — this is
+	# the roster of what got it. The three exclusions are as load-bearing as the
+	# inclusions: a Ray Gun, a Thundergun and a Bowie knife have no iron sights and
+	# giving them one would be worse than giving nobody one.
+	var missing := ""
+	for key: String in ["m1911", "olympia", "m14", "mp40", "pm63", "ak74u",
+			"stakeout", "m16", "rpk", "chinalake"]:
+		var rows: Array = GUNART.SIGHTS.get(key, [])
+		if rows.is_empty():
+			missing += key + " "
+	var wrongly := ""
+	for key: String in ["raygun", "thundergun", "knife"]:
+		if not GUNART.SIGHTS.get(key, []).is_empty():
+			wrongly += key + " "
+	v.check("every weapon that should carry iron sights does, and the three that should not do not",
+		missing.is_empty() and wrongly.is_empty(),
+		"without: %s; wrongly with: %s" % [missing, wrongly])
+
+	# AND THE SIGHT IS THE TOP OF THE WEAPON, which is the only reason to add it:
+	# `viewmodel.gd` drops the whole rig by `sight_height()` so that what lands on
+	# the view axis is the weapon's own sighting surface. A blade buried inside the
+	# receiver would satisfy the roster check above and change nothing at all.
+	#
+	# Driven through `sight_height()` — the accessor the rig poses with — against
+	# the top of the ancestor's own parts, computed from `ART` alone. Art y counts
+	# DOWNWARD from the top of the canvas, so the smallest y is the highest point.
+	var not_topmost := ""
+	for key: String in GUNART.SIGHTS.keys():
+		var grip: Vector2 = GUNART.GRIP[key]
+		var art_top := 1e9
+		for part: Array in GUNART.ART[key]:
+			if part[0] == "r":
+				art_top = minf(art_top, float(part[2]))
+		var art_h: float = (grip.y - art_top) * GUNART.UNIT
+		var sight: float = GUNART.sight_height(key)
+		# A full art unit clear, and the margin is the point rather than the sign:
+		# `sight_height()` walks INFLATED corners, so `PROUD` alone puts it about
+		# 0.3 units above the art even when the sight is buried. A bare `>` would
+		# pass against a blade sunk inside the receiver, which is the exact shape of
+		# a check that discriminates nothing.
+		if sight - art_h <= 1.0 * GUNART.UNIT:
+			not_topmost += "%s sight %.2f, art %.2f units " % [
+				key, sight / GUNART.UNIT, art_h / GUNART.UNIT]
+	v.check("...and on every one of them the sight, not the receiver, is the top of the weapon",
+		not_topmost.is_empty(), not_topmost)
+
+	# `ART` IS STILL THE ANCESTOR'S, part for part. See ANCESTOR_PARTS: the chalk
+	# wall plaques are baked from a second copy of that table and nothing else
+	# checks that the two still describe the same weapon. This is what makes
+	# "append to SIGHTS, never to ART" a rule instead of a preference.
+	var drifted := ""
+	for key: String in GUNART.keys():
+		var want: int = ANCESTOR_PARTS.get(key, -1)
+		var got: int = GUNART.ART[key].size()
+		if got != want:
+			drifted += "%s %d/%d " % [key, got, want]
+	v.check("ART still holds exactly the ancestor's parts, so the chalk plaques still match",
+		drifted.is_empty(), drifted)

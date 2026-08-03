@@ -12,18 +12,37 @@ const WEAPON := preload("res://scripts/entities/weapon.gd")
 
 ## `shells` finally does something. It has been declared here and in the ancestor
 ## (kriegsnacht.html:1460, :1465) since the beginning and read by nothing in either;
-## it now selects a shell-by-shell reload that firing can interrupt, which is the
-## behaviour the flag was always named for. See Weapon.begin_reload.
+## it now selects a segmented shell-by-shell reload that firing can interrupt, which
+## is the behaviour the flag was always named for. See Weapon.begin_reload.
+##
+## **THE OLYMPIA NO LONGER CARRIES IT, AND THAT IS A DELIBERATE DEPARTURE FROM THE
+## ANCESTOR.** html:1460 sets `shells:true` on the Olympia and this table copied it.
+## An Olympia is a break-action over/under: it hinges open, the auto-ejectors throw
+## BOTH fired hulls at once, two fresh rounds go in together and it snaps shut.
+## There is no shell-by-shell state in that motion, so a per-shell cancel on it is
+## not a feature that is slightly wrong — it is incoherent, a gun that is hinged
+## open and simultaneously ready to fire. BO1 agrees at the file level:
+## `rottweil72_zm` ships `segmentedReload = 0`. It reloads as one magazine now,
+## which is what `State.RELOADING` already is, at the same tabled 2.5 s. The
+## Stakeout is an Ithaca 37 with a tube and keeps the flag.
 const DEFAULTS := {
 	"mag": 8, "res": 80, "dmg": 60, "rpm": 400, "auto": false, "pellets": 1,
 	"spread": 1.0, "reload": 1.8, "kick": 1.0, "range": 26.0,
 	"proj": "", "splash": 0.0, "splash_dmg": 0.0, "cone": 0.0, "shells": false,
 	"freq": 1500.0, "thump": 150.0, "body": 1.0,
+	# The bloom and bracket columns, defaulted so a weapon that is never given a
+	# BLOOM row still behaves. See BLOOM below for what every one of them means and
+	# where its number came from. `spread_max` is the roster's median floor-to-
+	# ceiling ratio (2.33) applied to the default floor; `spread_ads` is the default
+	# floor through `Player.ADS_SPREAD`.
+	"spread_max": 2.33, "spread_ads": 0.45,
+	"bloom_fire": 0.60, "bloom_move": 4.0, "bloom_decay": 4.0,
+	"kick_lo": 0.55, "kick_hi": 1.45,
 }
 
 const TABLE := {
 	"m1911": {"name": "M1911", "mag": 8, "res": 80, "dmg": 65, "rpm": 420, "spread": 0.85, "reload": 1.5, "kick": 1.3, "freq": 1700.0, "thump": 170.0, "body": 0.7},
-	"olympia": {"name": "Olympia", "mag": 2, "res": 60, "dmg": 105, "rpm": 170, "pellets": 6, "spread": 5.4, "reload": 2.5, "kick": 3.4, "range": 13.0, "shells": true, "freq": 900.0, "thump": 110.0, "body": 1.5},
+	"olympia": {"name": "Olympia", "mag": 2, "res": 60, "dmg": 105, "rpm": 170, "pellets": 6, "spread": 5.4, "reload": 2.5, "kick": 3.4, "range": 13.0, "freq": 900.0, "thump": 110.0, "body": 1.5},
 	"m14": {"name": "M14", "mag": 8, "res": 120, "dmg": 185, "rpm": 420, "spread": 0.6, "reload": 2.3, "kick": 2.1, "freq": 1250.0, "thump": 130.0, "body": 1.2},
 	"mp40": {"name": "MP40", "mag": 32, "res": 256, "dmg": 100, "rpm": 880, "auto": true, "spread": 1.7, "reload": 2.3, "kick": 1.1, "freq": 1600.0, "thump": 150.0, "body": 0.85},
 	"pm63": {"name": "PM63", "mag": 25, "res": 200, "dmg": 85, "rpm": 1000, "auto": true, "spread": 2.0, "reload": 2.1, "kick": 0.9, "freq": 1850.0, "thump": 160.0, "body": 0.75},
@@ -34,6 +53,104 @@ const TABLE := {
 	"chinalake": {"name": "China Lake", "mag": 4, "res": 30, "dmg": 120, "rpm": 62, "spread": 0.4, "reload": 3.4, "kick": 3.6, "proj": "grenade", "splash": 2.6, "splash_dmg": 1150.0, "freq": 700.0, "thump": 90.0, "body": 1.5},
 	"raygun": {"name": "Ray Gun", "mag": 20, "res": 160, "dmg": 180, "rpm": 320, "spread": 0.7, "reload": 2.6, "kick": 2.0, "proj": "ray", "splash": 1.7, "splash_dmg": 620.0, "freq": 2200.0, "thump": 220.0, "body": 0.9},
 	"thundergun": {"name": "Thundergun", "mag": 2, "res": 6, "dmg": 0, "rpm": 52, "spread": 0.2, "reload": 3.6, "kick": 4.2, "cone": 0.62, "range": 11.0, "freq": 420.0, "thump": 60.0, "body": 2.0},
+}
+
+# --- spread bloom and the view-kick bracket ------------------------------------
+#
+# Merged into every `spec()` beside the row above, but kept in its own table so
+# this block stays diffable line-for-line against the research it came out of
+# (`notes/research/M5-weapon-feel.md`, F18 and F20). Seven columns on the end of
+# TABLE's rows would have buried the one thing a reader needs to do with them,
+# which is compare them against Treyarch's.
+#
+# **THE COLUMNS.**
+#
+#   spread_max   degrees of FULL CONE at bloom 1.0. `spread` above is the same unit
+#                at bloom 0.0 — `player.gd::_spread_rad` halves both, so the table
+#                is a cone and the return is a half-angle.
+#   spread_ads   degrees of full cone at the sights, bloom 0.0. Firing does not
+#                raise the bloom while fully sighted, so this is the sighted floor
+#                AND, in practice, the sighted shot.
+#   bloom_fire   added to the 0..1 bloom scalar per shot, AFTER the round has left.
+#   bloom_move   added per second at full walking speed, and nothing below
+#                `Player.BLOOM_MOVE_MIN`.
+#   bloom_decay  removed per second while NOT moving. 1/decay is the recovery time.
+#   kick_lo/hi   multipliers on `kick`, drawn per shot from a shot counter rather
+#                than from any Rng stream. Their mean is 1.0 by construction, so a
+#                bracket is not a rescaling of the `kick` column.
+#
+# **WHICH HALF OF BO1 THIS IS, STATED ONCE.** M5's R3 put a fork: import the shape,
+# or import the magnitudes. The magnitudes are `bloom_fire`, `bloom_move` and
+# `bloom_decay`, which are F18's `hipSpreadFireAdd` / `hipSpreadMoveAdd` /
+# `hipSpreadDecayRate` **verbatim** — they are rates on a normalised 0..1 scalar
+# and carry no cone width at all, so importing them is free. The cone widths are
+# NOT BO1's. F18b measured the gap: BO1's standing floors are 1.7x to 25x wider
+# than this port's, and M5's own decision rule aborts on a floor that costs more
+# than 25% of today's hit rate at 10 m against a zombie's 0.30 m HIT_RADIUS.
+#
+#   M14, standing, hip, 10 m. Today's half-angle is 0.30 deg, so the cone radius is
+#   10*tan(0.30 deg) = 0.052 m against 0.30 m of zombie: every shot hits.
+#   BO1's StandMin of 3 deg gives 10*tan(3 deg) = 0.524 m, and a disc uniform in
+#   area hits (0.30/0.524)^2 = 33% of the time. That is a 67% loss against a 25%
+#   abort, and the M14 is not the worst row.
+#
+# So: **OUR DECISION, and the reason is that arithmetic.** Every `spread_max` is
+# this port's own `spread` multiplied by BO1's own StandMax/StandMin *ratio* — the
+# floor is preserved to the digit and only the ceiling is new, which means the
+# change a player feels is the recovery TIME the port has never had rather than a
+# roster-wide accuracy cut. The ratios, from F18: m1911 6/3, olympia 8/5, m14 7/3,
+# mp40 5/2, pm63 5/2, ak74u 5/2, stakeout 7/4, m16 7/3, rpk 7/2.5, chinalake 6/5,
+# raygun 2/1, thundergun 4/2.
+#
+# `spread_ads` is likewise today's value: `spread * Player.ADS_SPREAD`. It is NOT
+# F18's `adsSpread` column, and that is deliberate twice over — the option-(a)
+# rescale above, and F18's own footnote that the two shotgun cells are known to
+# have been modified by the mirror they were read from and are not canon.
+#
+# **THE KICK BRACKET, which is a different provenance problem.** F20 publishes
+# BO1's `ViewKickPitchMin/Max` box for exactly four of the twelve — MP40 -44..100,
+# Stakeout 95..100, M14 40..80, RPK 15..60 (deg/s). Those four rows carry BO1's own
+# relative half-width about their own midpoint, renormalised so the midpoint is
+# 1.0: Stakeout 2.5/97.5 = 0.026 (a box so tight it is nearly the flat impulse the
+# port shipped), M14 20/60 = 0.333, RPK 22.5/37.5 = 0.600. The MP40's box straddles
+# zero, so its relative half-width is 72/28 = 2.571 and a faithful draw would kick
+# the view DOWN on some shots — which this port cannot have, because
+# `RecoilPivot` sits above `Camera3D` and `_hitscan` reads the camera basis, so a
+# downward draw puts rounds under the crosshair. Clamped to [0, 2], which keeps the
+# mean at 1.0 and is still by a wide margin the wildest box on the roster, exactly
+# as F20 describes it.
+#
+# The other eight get **the roster default**, [0.55, 1.45]. OUR DECISION: the
+# median relative half-width of the four boxes BO1 publishes is (0.333+0.600)/2 =
+# 0.467, rounded to 0.45. There is no BO1 number behind those eight rows and this
+# is the honest way to say so — a fabricated per-weapon box would read as evidence.
+#
+# **Three rows are decorative and say so here rather than being discovered later.**
+# The Thundergun never reaches spread code (`_cone_blast` returns first); the China
+# Lake and the Ray Gun go through `_launch`, which uses HALF this cone.
+const BLOOM := {
+	#             ceiling  sighted   fire   move  decay      kick bracket
+	"m1911":    {"spread_max": 1.70, "spread_ads": 0.3825, "bloom_fire": 1.00, "bloom_move": 4.5, "bloom_decay": 4.00},
+	"olympia":  {"spread_max": 8.64, "spread_ads": 2.43,   "bloom_fire": 0.60, "bloom_move": 2.0, "bloom_decay": 4.00},
+	"m14":      {"spread_max": 1.40, "spread_ads": 0.27,   "bloom_fire": 1.00, "bloom_move": 5.0, "bloom_decay": 5.00, "kick_lo": 0.667, "kick_hi": 1.333},
+	"mp40":     {"spread_max": 4.25, "spread_ads": 0.765,  "bloom_fire": 0.52, "bloom_move": 4.0, "bloom_decay": 4.00, "kick_lo": 0.0,   "kick_hi": 2.0},
+	"pm63":     {"spread_max": 5.00, "spread_ads": 0.90,   "bloom_fire": 0.52, "bloom_move": 4.0, "bloom_decay": 4.00},
+	"ak74u":    {"spread_max": 3.75, "spread_ads": 0.675,  "bloom_fire": 0.60, "bloom_move": 5.0, "bloom_decay": 4.00},
+	"stakeout": {"spread_max": 8.05, "spread_ads": 2.07,   "bloom_fire": 0.60, "bloom_move": 2.0, "bloom_decay": 4.00, "kick_lo": 0.974, "kick_hi": 1.026},
+	"m16":      {"spread_max": 2.68333, "spread_ads": 0.5175, "bloom_fire": 0.60, "bloom_move": 5.0, "bloom_decay": 4.00},
+	"rpk":      {"spread_max": 5.32, "spread_ads": 0.855,  "bloom_fire": 0.60, "bloom_move": 5.0, "bloom_decay": 4.00, "kick_lo": 0.4,   "kick_hi": 1.6},
+	"chinalake":{"spread_max": 0.48, "spread_ads": 0.18,   "bloom_fire": 0.40, "bloom_move": 2.3, "bloom_decay": 2.50},
+	"raygun":   {"spread_max": 1.40, "spread_ads": 0.315,  "bloom_fire": 1.00, "bloom_move": 0.5, "bloom_decay": 3.25},
+	"thundergun":{"spread_max": 0.40,"spread_ads": 0.09,   "bloom_fire": 1.00, "bloom_move": 0.5, "bloom_decay": 2.25},
+}
+
+## The BO1 floor-to-ceiling ratios BLOOM's `spread_max` column was built from, kept
+## separate so an assertion can compare the two rather than recompute one from the
+## other. Reading these back out of `spread_max / spread` would be testing a copy.
+const BLOOM_RATIO := {
+	"m1911": 2.0, "olympia": 1.6, "m14": 7.0 / 3.0, "mp40": 2.5, "pm63": 2.5,
+	"ak74u": 2.5, "stakeout": 1.75, "m16": 7.0 / 3.0, "rpk": 2.8,
+	"chinalake": 1.2, "raygun": 2.0, "thundergun": 2.0,
 }
 
 ## NOTE: these are Treyarch trademarks carried over from the browser demo.
@@ -156,6 +273,10 @@ const MULE_SLOTS := 3
 static func spec(key: String) -> Dictionary:
 	var d := DEFAULTS.duplicate()
 	d.merge(TABLE[key], true)
+	# Annotated rather than inferred: `Dictionary.get` returns Variant and inference
+	# through one is a hard parse error here.
+	var bloom: Dictionary = BLOOM.get(key, {})
+	d.merge(bloom, true)
 	d["key"] = key
 	return d
 
@@ -189,6 +310,9 @@ static func make_gun(key: String, pap: bool) -> Dictionary:
 		"mag": int(def.mag), "res": int(def.res),
 		"reloading": 0.0, "next_shot": 0.0,
 		"state": WEAPON.State.IDLE, "state_t": 0.0, "state_len": 0.0,
+		# Latched by Weapon.begin_reload; declared here rather than sprung into
+		# existence there, so a gun's wire format stays one literal in one place.
+		"shell_unit": 0.0,
 	}
 
 

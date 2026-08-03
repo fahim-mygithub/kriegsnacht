@@ -88,6 +88,7 @@ static func run(v: Verify, main: Node3D) -> void:
 	_ray_gun_earns_its_slot(v, main)
 	_light_pool(v, main)
 	_ads(v, main)
+	_bullet_patterns(v, main)
 	_throwables(v, main)
 
 	_clear_projectiles(main)
@@ -553,6 +554,15 @@ static func _ads(v: Verify, main: Node3D) -> void:
 	var ads_was: float = p._ads
 	var head := p._head
 
+	# **PINNED, because the cone is state now and this section is not the first to
+	# fire a round.** `_spread_rad` lerps from the weapon's floor to its ceiling by
+	# `p._bloom`, and at a saturated bloom BOTH sides of the comparison below sit on
+	# the ceiling — which is the same value hip and sighted, by design (M5 F17: the
+	# sighted cone is `lerp(adsSpread, max, bloom)`, same ceiling, different floor).
+	# This check went red for exactly that reason when the bloom landed, and the
+	# check was right: it is about the FLOOR.
+	var bloom_was: float = p._bloom
+	p._bloom = 0.0
 	p._ads = 0.0
 	p._apply_fov()
 	var hip_fov := cam.fov
@@ -579,6 +589,11 @@ static func _ads(v: Verify, main: Node3D) -> void:
 	v.check("the sights narrow the field of view and the hip value is unchanged",
 		v.near(aim_fov, hip_fov * Player.ADS_FOV_MULT, 0.001) and aim_fov < hip_fov,
 		"hip=%.2f sighted=%.2f" % [hip_fov, aim_fov])
+	# Still `hip * ADS_SPREAD`, and it is no longer a run-time multiply: `ADS_SPREAD`
+	# is the constant that GENERATED `Weapons.BLOOM`'s `spread_ads` column, and this
+	# is that column arriving back through the real function. `_bullet_patterns`
+	# asserts the same relation over all twelve rows of the table; this one asserts
+	# that the rig actually reads the column.
 	v.check("the sights tighten the cone without closing it",
 		aim_spread < hip_spread and aim_spread > 0.0
 			and v.near(aim_spread, hip_spread * Player.ADS_SPREAD, 0.0001),
@@ -620,6 +635,7 @@ static func _ads(v: Verify, main: Node3D) -> void:
 	_ads_flash(v, main)
 
 	p._ads = ads_was
+	p._bloom = bloom_was
 	p._apply_fov()
 
 
@@ -847,6 +863,687 @@ static func _mesh_pitch(vm: Node3D) -> float:
 	return xf.basis.get_euler().x
 
 
+# --- where the round actually goes ---------------------------------------------
+
+## Spread bloom, the view kick, and the stream both of them ride.
+##
+## **THIS SECTION EXISTS BECAUSE OF ONE SENTENCE.** M5's own bottom line:
+## *"Nothing anywhere pins a `spread` or a `kick` value. Multiply every one of them
+## by ten and the whole suite stays green and the frames gate does not move,
+## because the only spread assertion in the suite is a ratio."* That was true — the
+## only two `_spread_rad` call sites in `scripts/dev/` fed one ratio assertion, and
+## `grep -rn 'kick' scripts/dev/checks/` returned nothing but a comment. So the
+## cheap checks here are the ratios and the identities, and the expensive ones are
+## the three literals: a cone width in radians, a kick peak in radians, and a draw
+## count. Those three are the point.
+##
+## **AND SCALE-INVARIANCE IS NOT THE ONLY WAY A CHECK CAN SEE NOTHING.** M5 also
+## recorded that `spread = 0` cannot fail a "the cone is filled" check, because
+## `_spread_rad` returns 0.0 and `_hitscan`'s `if spread > 0.0` then skips the draw
+## entirely — every sample's deviation is 0, and `p95 >= 0` passes. That inert case
+## is constructed below (`_cone_shape`'s sample-count and floor claims both fail
+## against it) rather than assumed away.
+##
+## **Driven through the real path, everywhere.** The distribution comes off
+## `Player.surface_impact` after real `_hitscan` calls, not off a re-rolled cone;
+## the bloom comes off real `_shoot` and `_update_bloom` calls, not off a recomputed
+## lerp; the kick is read from `RecoilPivot.rotation.x`, which is the node
+## `_hitscan` takes its aim through, and not from `p._kick`.
+static func _bullet_patterns(v: Verify, main: Node3D) -> void:
+	var p: Player = main.player
+
+	var guns_was: Array[Dictionary] = p.guns.duplicate()
+	var slot_was: int = p.slot
+	var ads_was: float = p._ads
+	var bloom_was: float = p._bloom
+	var kick_was: float = p._kick
+	var kick_v_was: float = p._kick_v
+	var shake_was: float = p._shake
+	var shot_no_was: int = p._shot_no
+	var moving_was: bool = p._moving
+	var downed_was: bool = p.is_downed
+	var reduce_was: bool = p._reduce_motion
+	var rot_was: Vector3 = p._recoil_pivot.rotation
+	var pitch_was: float = p._head.rotation.x
+	var eye_was: float = p._head.position.y
+	var campos_was: Vector3 = p._cam.position
+	# Seeded, so every tolerance below is a measurement and not a confidence
+	# interval. Restored on the way out for the same reason `checks/frame.gd` does
+	# it: a stream left somewhere else moves everything downstream of it.
+	var rng: RandomNumberGenerator = Rng.stream(Rng.COMBAT)
+	var seed_was: int = rng.seed
+	var rstate_was: int = rng.state
+	rng.seed = SPREAD_SEED
+
+	p._moving = false
+	p.is_downed = false
+	p._reduce_motion = false
+	p._ads = 0.0
+	p._bloom = 0.0
+
+	_spread_table(v)
+	_spread_absolutes(v, p)
+	_bloom_machine(v, p)
+	_cone_shape(v, main, p)
+	_view_kick(v, main, p)
+	_combat_stream(v, p)
+
+	_clear_projectiles(main)
+	p.guns = guns_was
+	p.slot = slot_was
+	p._ads = ads_was
+	p._bloom = bloom_was
+	p._kick = kick_was
+	p._kick_v = kick_v_was
+	p._shake = shake_was
+	p._shot_no = shot_no_was
+	p._moving = moving_was
+	p.is_downed = downed_was
+	p._reduce_motion = reduce_was
+	p._recoil_pivot.rotation = rot_was
+	p._head.rotation.x = pitch_was
+	p._head.position.y = eye_was
+	p._cam.position = campos_was
+	p._apply_fov()
+	rng.seed = seed_was
+	rng.state = rstate_was
+
+
+## The twelve hip cones, `kriegsnacht.html:1459-1470`, re-read 2026-08-02. The port
+## has never made a spread decision of its own and this is the record of that:
+## every one of these is the ancestor's own `spread:` field, and the whole of M5's
+## R3 option (a) is the decision to keep them while importing BO1's *shape* around
+## them. A rescale to BO1's absolutes — which are 1.7x to 25x wider (M5 F18b) — is
+## a defensible call, but it is a BALANCE call, and it has to break this line and
+## be re-argued rather than arriving inside a feel package.
+const ANCESTOR_SPREAD := {
+	"m1911": 0.85, "olympia": 5.4, "m14": 0.6, "mp40": 1.7, "pm63": 2.0,
+	"ak74u": 1.5, "stakeout": 4.6, "m16": 1.15, "rpk": 1.9, "chinalake": 0.4,
+	"raygun": 0.7, "thundergun": 0.2,
+}
+
+## Fixed so the distribution tolerances below are measurements rather than
+## confidence intervals. Any seed would do; this one is the date.
+const SPREAD_SEED := 20260802
+
+## Samples for the cone-shape claims. Sized off the tightest of them: the
+## uniform-in-area fraction is p = 0.25, so one sample's sd is 0.433 and 1000
+## samples put the sample mean's sd at 0.0137. The band is +-0.04, which is 2.9 sd
+## against a random seed and exact against this one — and the sabotage it exists to
+## catch (deleting the `sqrt`) moves it to 0.50, eighteen sd out.
+const CONE_SAMPLES := 1000
+
+## First-shots for the fire-add ORDERING claim. Each one is a real `_shoot` from a
+## rested bloom, so under a correct implementation every sample is inside the FLOOR
+## cone and under the natural wrong one (add before the round leaves) each sample
+## is drawn from the ceiling, where P(inside the floor radius) is
+## (floor/ceiling)^2 = 0.25 for the M1911. 120 of them makes the wrong version a
+## 10^-72 event.
+const ORDER_SHOTS := 120
+
+## Shots per weapon for the cross-roster kick range. Twelve is enough that the
+## golden-angle walk reaches 0.944 of the bracket, and the same 0.944 for every
+## weapon — which is what makes the comparison across the roster a comparison of
+## the `kick` column rather than of twelve different sample maxima.
+const KICK_SHOTS := 12
+
+
+## The table, checked against the two things that generated it and against the
+## ancestor. None of this drives the rig; `_spread_absolutes` does that.
+static func _spread_table(v: Verify) -> void:
+	var drift := ""
+	var ratio_bad := ""
+	var ads_bad := ""
+	for key: String in ANCESTOR_SPREAD.keys():
+		var d := Weapons.spec(key)
+		var want: float = ANCESTOR_SPREAD[key]
+		if not v.near(float(d.spread), want, 1e-6):
+			drift += "%s %.4f!=%.4f " % [key, float(d.spread), want]
+		# `spread_max` is the port's own floor times BO1's StandMax/StandMin, and
+		# BLOOM_RATIO is a separate literal so this compares two tables rather than
+		# dividing one by itself.
+		var r: float = float(Weapons.BLOOM_RATIO[key])
+		if not v.near(float(d.spread_max) / float(d.spread), r, 1e-4):
+			ratio_bad += "%s %.4f!=%.4f " % [key, float(d.spread_max) / float(d.spread), r]
+		if not v.near(float(d.spread_ads), float(d.spread) * Player.ADS_SPREAD, 1e-6):
+			ads_bad += "%s %.5f " % [key, float(d.spread_ads)]
+	v.check("every hip cone is still the ancestor's own, so the bloom is shape and not a rebalance",
+		drift.is_empty(), drift)
+	v.check("every saturated ceiling is its own floor through BO1's floor-to-ceiling ratio",
+		ratio_bad.is_empty(), ratio_bad)
+	v.check("every sighted floor is its own hip floor through ADS_SPREAD",
+		ads_bad.is_empty(), ads_bad)
+
+
+## **A11. One absolute cone width, as a literal in radians.**
+##
+## Every other spread check in this file and in the suite is scale-free by
+## construction, which is why multiplying the whole table by ten used to be
+## invisible. These three are not.
+##
+## The arithmetic, so the next reader can re-derive it rather than trust it. The
+## M14's `spread` is 0.6 degrees of FULL cone (ancestor, html:1461) and
+## `_spread_rad` returns a HALF-angle in radians, so the standing hip floor is
+## deg_to_rad(0.6) * 0.5 = 0.00523599. Its ceiling is `spread_max` 1.40 — 0.6
+## through BO1's M14 ratio of 7/3 — giving deg_to_rad(1.4) * 0.5 = 0.01221730. Its
+## sighted floor is `spread_ads` 0.27, which is 0.6 through ADS_SPREAD 0.45,
+## giving 0.00235619.
+##
+## **This is also the only check in the suite that can catch the silent factor of
+## two M5's R3 warned about**: `_spread_rad` ends in `* 0.5` because the table is a
+## full cone, and dropping BO1's own half-angle degrees into that field without
+## removing it halves every cone in the game while every ratio stays green.
+static func _spread_absolutes(v: Verify, p: Player) -> void:
+	var m14 := Weapons.spec("m14")
+	p._ads = 0.0
+	p._bloom = 0.0
+	var floor_rad := p._spread_rad(m14)
+	p._bloom = 1.0
+	var ceil_rad := p._spread_rad(m14)
+	p._bloom = 0.0
+	p._ads = 1.0
+	var ads_rad := p._spread_rad(m14)
+	p._ads = 0.0
+
+	v.check("the M14's standing hip cone is 0.00523599 rad of half-angle, and that is deliberately today's",
+		v.near(floor_rad, 0.00523599, 1e-7), "%.8f rad" % floor_rad)
+	v.check("...its saturated ceiling is 0.01221730 rad, which is that floor through BO1's 7/3",
+		v.near(ceil_rad, 0.01221730, 1e-7), "%.8f rad" % ceil_rad)
+	v.check("...and its sighted floor is 0.00235619 rad, which firing may not lift",
+		v.near(ads_rad, 0.00235619, 1e-7), "%.8f rad" % ads_rad)
+
+
+## **A2. The bloom is a state machine, so assert the machine.**
+##
+## Driven through `_update_bloom` and `_shoot` — the two functions the game calls —
+## and never through `_spread_rad`, which is a pure read of `_bloom` and would test
+## the lerp instead of the integrator.
+static func _bloom_machine(v: Verify, p: Player) -> void:
+	var mp40 := Weapons.make_gun("mp40", false)
+	p.guns = [mp40]
+	p.slot = 0
+	var def: Dictionary = mp40.def
+	var fire: float = float(def.bloom_fire)
+	var decay: float = float(def.bloom_decay)
+
+	# --- firing opens it, and saturates it ---
+	p._ads = 0.0
+	p._bloom = 0.0
+	p._moving = false
+	mp40.mag = 32
+	p._shoot(mp40)
+	var after_one := p._bloom
+	for i in 4:
+		mp40.mag = 32
+		p._shoot(mp40)
+	var after_five := p._bloom
+	v.check("one round adds exactly the weapon's own fire-add and five saturate the cone",
+		v.near(after_one, fire, 1e-6) and v.near(after_five, 1.0, 1e-6),
+		"one=%.4f (want %.4f) five=%.4f" % [after_one, fire, after_five])
+
+	# --- standing still is what recovers it, and it takes 1/decay seconds ---
+	p._bloom = 1.0
+	p._moving = false
+	var half_steps := int(round(0.5 / (decay * TICK)))
+	for i in half_steps:
+		p._update_bloom(TICK, 0.0)
+	var halfway := p._bloom
+	var steps := 0
+	while p._bloom > 0.0 and steps < 600:
+		p._update_bloom(TICK, 0.0)
+		steps += 1
+	var recover := float(steps + half_steps) * TICK
+	# Bounded at BOTH ends: it has to reach the floor, and it must not simply snap
+	# there — a `_bloom = 0.0` with no integrator passes "it reaches the floor"
+	# perfectly.
+	# Both tolerances are one tick of the thing being measured and nothing more: the
+	# bloom moves in steps of `decay * TICK` (0.0667 for this weapon), so neither
+	# the mid-point reading nor the arrival time can be exact, and 0.5 is not even
+	# on the lattice. A `_bloom = 0.0` snap — the implementation that would make
+	# "it reaches the floor" pass on its own — reads 0.0 half-way and fails by
+	# seven and a half ticks.
+	v.check("standing still bleeds the cone back to its floor in 1/decay seconds and not instantly",
+		v.near(recover, 1.0 / decay, TICK * 1.5)
+			and v.near(halfway, 0.5, decay * TICK + 1e-6)
+			and v.near(p._bloom, 0.0, 1e-9),
+		"recovered in %.4f s (want %.4f), half-way reading %.4f" % [recover, 1.0 / decay, halfway])
+
+	# --- and MOVING SUPPRESSES THAT DECAY ENTIRELY ---
+	#
+	# **THE SPEED IS PINNED AND IT IS NOT ARBITRARY.** At a full walk the natural
+	# wrong implementation — `s += grow*dt; s -= decay*dt` in the same tick — is
+	# nearly indistinguishable from this one, because `bloom_move` and `bloom_decay`
+	# are within 25% of each other on nine of the twelve rows and the additive
+	# version still grows. It is just above `BLOOM_MOVE_MIN` that they separate:
+	# at 0.30 m/s the MP40's growth term is 4.0 * 0.30/3.15 = 0.381/s against a
+	# decay of 4.00/s, so an additive implementation collapses the cone at 3.6/s
+	# while the trigger is released — and a player edging round a corner would be
+	# recovering accuracy that the reference does not give them.
+	var crawl := Player.BLOOM_MOVE_MIN + 0.02
+	p._bloom = 0.5
+	p._moving = true
+	var crawl_ticks := int(round(0.25 / TICK))
+	for i in crawl_ticks:
+		p._update_bloom(TICK, crawl)
+	var crawled := p._bloom
+	var grew: float = float(def.bloom_move) * (crawl / Player.SPEED) * float(crawl_ticks) * TICK
+	v.check("a crawl suppresses the decay outright rather than being outrun by it",
+		crawled > 0.5 and v.near(crawled, 0.5 + grew, 0.01),
+		"0.500 -> %.4f over %.2f s at %.2f m/s (a suppressed decay predicts %.4f)" % [
+			crawled, float(crawl_ticks) * TICK, crawl, 0.5 + grew])
+
+	# ...and below the threshold it is not moving at all, which is the other jaw of
+	# the same constant.
+	p._bloom = 0.5
+	p._moving = true
+	for i in crawl_ticks:
+		p._update_bloom(TICK, Player.BLOOM_MOVE_MIN - 0.02)
+	v.check("...and a shuffle under the movement threshold still counts as standing still",
+		p._bloom < 0.5 - 0.5 * 0.25 * decay + 0.01 and p._bloom >= 0.0,
+		"0.500 -> %.4f" % p._bloom)
+
+	# --- the sights are a floor firing cannot lift ---
+	p._moving = false
+	p._ads = 1.0
+	p._bloom = 0.0
+	var sighted_before := p._spread_rad(def)
+	for i in 10:
+		mp40.mag = 32
+		p._shoot(mp40)
+	var sighted_after := p._spread_rad(def)
+	var sighted_bloom := p._bloom
+	p._ads = 0.0
+	p._bloom = 0.0
+	var hip_before := p._spread_rad(def)
+	for i in 10:
+		mp40.mag = 32
+		p._shoot(mp40)
+	var hip_after := p._spread_rad(def)
+	p._bloom = 0.0
+	# Bounded at both ends by construction: the refusal at the sights, and the
+	# acceptance at the hip that stops the refusal passing against a fire-add that
+	# has stopped working altogether.
+	v.check("ten rounds at the sights do not open the cone, and ten at the hip do",
+		v.near(sighted_after, sighted_before, 1e-9) and v.near(sighted_bloom, 0.0, 1e-9)
+			and hip_after > hip_before * 1.5,
+		"sighted %.8f->%.8f, hip %.8f->%.8f" % [sighted_before, sighted_after,
+			hip_before, hip_after])
+
+
+## **A1. The cone, measured off the impacts rather than off the sampler.**
+##
+## Points the camera at the floor, drives `p._hitscan` `CONE_SAMPLES` times and
+## collects the world points off `Player.surface_impact` — the signal the bullet
+## holes are drawn from, so this is the cone the player sees. Nothing here
+## re-evaluates the rotation; recomputing the sampler would agree with any sampler.
+##
+## **The sample set is silently lossy and that is asserted FIRST.** `_hitscan`
+## emits nothing when the ray hits nothing and nothing when it stops on a zombie,
+## and every one of those losses truncates the distribution INWARD — which moves
+## the two statistics below in the passing direction. The floor is used rather than
+## a wall for the same reason: it subtends four orders of magnitude more than the
+## cone, so nothing can escape it.
+static func _cone_shape(v: Verify, main: Node3D, p: Player) -> void:
+	var gun := Weapons.make_gun("m1911", false)
+	p.guns = [gun]
+	p.slot = 0
+	var def: Dictionary = gun.def
+	p._ads = 0.0
+	p._bloom = 0.0
+	p._moving = false
+	# Level the aim spring first: `_hitscan` reads `_cam.global_transform.basis` and
+	# RecoilPivot sits between the head and the camera, so a leftover kick would tilt
+	# the axis every deviation below is measured from.
+	p._kick = 0.0
+	p._kick_v = 0.0
+	p._recoil_pivot.rotation = Vector3.ZERO
+	p._head.rotation.x = -deg_to_rad(70.0)
+
+	var samples: Array[float] = []
+	var origin := p._cam.global_position
+	var aim := -p._cam.global_transform.basis.z
+	var sink := func(at: Vector3, _n: Vector3) -> void:
+		samples.append((at - origin).angle_to(aim))
+	p.surface_impact.connect(sink)
+	for i in CONE_SAMPLES:
+		p._hitscan(def)
+	p.surface_impact.disconnect(sink)
+
+	var cone := p._spread_rad(def)
+	v.check("every round fired at the floor came back as an impact, so the distribution is not truncated",
+		samples.size() == CONE_SAMPLES,
+		"%d of %d — a lost sample biases everything below it inward" % [samples.size(), CONE_SAMPLES])
+
+	samples.sort()
+	var worst := samples[samples.size() - 1] if samples.size() > 0 else -1.0
+	var p95 := samples[int(0.95 * float(samples.size()))] if samples.size() > 20 else -1.0
+	var inner := 0
+	for a: float in samples:
+		if a < cone * 0.5:
+			inner += 1
+	var frac := float(inner) / float(maxi(1, samples.size()))
+
+	v.check("no round leaves the cone the weapon says it has",
+		worst >= 0.0 and worst <= cone + 1e-7,
+		"widest %.8f rad against a half-angle of %.8f" % [worst, cone])
+	# The other jaw. A cone nothing fills is a cone that is not being sampled, which
+	# is exactly what `spread = 0` produces — `_spread_rad` returns 0.0 and
+	# `_hitscan` skips the draw, so every deviation is 0 and a bare "nothing left
+	# the cone" passes against a weapon that has stopped spreading at all.
+	v.check("...and the cone is FILLED, so it is being sampled rather than skipped",
+		p95 >= 0.90 * cone and cone > 0.0,
+		"95th percentile %.8f against 0.90 x %.8f" % [p95, cone])
+	# `sqrt()` on the radius is what makes the disc uniform in AREA. Without it the
+	# pellets pile into the middle: P(r < R/2) goes from 0.25 to 0.50.
+	v.check("the disc is uniform in area, so a quarter of the rounds land inside half the radius",
+		v.near(frac, 0.25, 0.04),
+		"%.4f inside half the cone across %d samples" % [frac, samples.size()])
+
+	# --- and the fire-add runs AFTER the round leaves ---
+	#
+	# M5 F19: BO1 has no first-shot accuracy term at all. What players remember as
+	# one is this ordering — with the M1911's `bloom_fire` of 1.00 the first round
+	# out of a rested weapon goes into the 0.85 degree floor cone and every one
+	# after it into the 1.70 degree ceiling. Assert it where it is visible: reset
+	# the bloom, fire a REAL shot, and require the impact to be inside the FLOOR.
+	var first: Array[float] = []
+	var sink2 := func(at: Vector3, _n: Vector3) -> void:
+		first.append((at - origin).angle_to(aim))
+	p.surface_impact.connect(sink2)
+	for i in ORDER_SHOTS:
+		p._bloom = 0.0
+		gun.mag = 8
+		p._shoot(gun)
+	p.surface_impact.disconnect(sink2)
+	var over := 0
+	for a: float in first:
+		if a > cone + 1e-7:
+			over += 1
+	v.check("a rested weapon's first round is placed BEFORE its own fire-add, every time",
+		first.size() == ORDER_SHOTS and over == 0,
+		"%d of %d first rounds landed outside the floor cone (%d samples)" % [
+			over, ORDER_SHOTS, first.size()])
+
+	p._bloom = 0.0
+	p._head.rotation.x = 0.0
+	_clear_projectiles(main)
+
+
+## **A3 and A12. The view kick, read off the node `_hitscan` aims through.**
+##
+## `RecoilPivot` is the parent of `Camera3D` and `_hitscan` takes its basis from
+## the camera, so every number here is a statement about where rounds go and not
+## about how the screen feels. `p._moving` is pinned false first: `player.gd`
+## writes `Vector3(_kick + slow, 0, roll)` to that node, and the `slow` term is the
+## bob's sway — larger, by M5's own F23, than most weapons' entire cone. Without
+## pinning it this would be measuring two systems.
+static func _view_kick(v: Verify, main: Node3D, p: Player) -> void:
+	p._moving = false
+	p._reduce_motion = false
+	p._ads = 0.0
+	p._bloom = 0.0
+
+	var gun := Weapons.make_gun("m1911", false)
+	p.guns = [gun]
+	p.slot = 0
+
+	# One writer. With the bob pinned off, the pivot's pitch IS the spring and
+	# nothing else — if a second writer ever appears on that node this is where it
+	# shows up, before it shows up as bullets going somewhere else.
+	p._kick = 0.0
+	p._kick_v = 0.0
+	p._shake = 0.0
+	p._shot_no = 0
+	gun.mag = 8
+	p._shoot(gun)
+	p._update_view(TICK, 0.0)
+	# 1e-8 and not zero, because `Node3D.rotation` is a `Vector3` of 32-bit floats
+	# and `_kick` is a 64-bit one — the round trip through the node costs about
+	# 5e-10 at this magnitude. It is still five orders tighter than the smallest
+	# thing that could arrive here as a second writer: the bob's `slow` sway is
+	# 0.010 rad, which is larger than most weapons' entire cone (M5 F23).
+	v.check("nothing but the recoil spring writes the pivot the camera hangs off",
+		v.near(p._recoil_pivot.rotation.x, p._kick, 1e-8)
+			and v.near(p._recoil_pivot.rotation.y, 0.0, 1e-8),
+		"rotation.x %.9f against _kick %.9f" % [p._recoil_pivot.rotation.x, p._kick])
+
+	# The whole excursion, not just its maximum. See the check below for why the
+	# maximum on its own is worthless here.
+	p._kick = 0.0
+	p._kick_v = 0.0
+	p._shake = 0.0
+	p._shot_no = 0
+	gun.mag = 8
+	p._shoot(gun)
+	var first_frame := 0.0
+	var peak := 0.0
+	var trough := 0.0
+	for i in 60:
+		p._update_view(TICK, 0.0)
+		var x: float = p._recoil_pivot.rotation.x
+		if i == 0:
+			first_frame = x
+		peak = maxf(peak, x)
+		trough = minf(trough, x)
+	var residual: float = absf(p._recoil_pivot.rotation.x)
+
+	# **THE SIGN, and it is the single most consequential claim in this package.**
+	# Provenance for "up": `player.gd`'s mouse-look line is
+	# `_head.rotation.x - event.relative.y * sens`, so a positive rotation.x is
+	# looking UP. This was `-=` from the port's first commit — the camera dipped
+	# under fire while `viewmodel.gd` raised the muzzle with the same spring
+	# constants — and it moves where bullets go, because a rising aim converts body
+	# shots into headshots at 1.5x damage.
+	#
+	# **AND `peak > 0.0` ALONE IS DECORATION. MEASURED, not reasoned:** the first
+	# draft of this check asserted exactly that, and restoring the `-=` left it
+	# GREEN at 0.00012287 rad. The spring is underdamped, so a downward impulse
+	# undershoots and then crosses back above zero on the way home, and a maximum
+	# taken over a whole second finds that crossing. What separates the two
+	# directions is the FIRST frame — which carries the impulse and nothing else —
+	# and the fact that in the correct direction the return undershoot is a rounding
+	# error against the peak (measured 0.0203 against 0.00031, a factor of 65)
+	# where in the wrong one it is the whole of the motion.
+	v.check("the recoil kicks the aim UP, which is BO1's direction and not the ancestor's",
+		first_frame > 0.0 and peak > 0.0 and absf(trough) < 0.1 * peak,
+		"first frame %.8f, peak %.8f, trough %.8f" % [first_frame, peak, trough])
+
+	# **A12. One absolute view-kick peak, as a literal in radians.**
+	#
+	# The arithmetic, written out so it can be re-derived rather than trusted.
+	# `_shot_no` is pinned to 0, so `fposmod(0 * phi, 1)` is 0 and the bracket
+	# multiplier is exactly the M1911's `kick_lo`, 0.55. The impulse is therefore
+	# kick 1.3 * KICK_IMPULSE 0.55 * 0.55 = 0.393250 rad/s into the spring.
+	#
+	# The spring's discrete impulse response peaks at 0.05171506 rad per unit of
+	# impulse. MEASURED against the shipped semi-implicit Euler integrator at 60 Hz
+	# — NOT taken from the continuous solution, which gives 0.06199 and is 20% out
+	# because `KICK_DAMP * dt` is 0.183 and the first step damps the impulse before
+	# it has moved the angle at all. So: 0.393250 * 0.05171506 = 0.02033695 rad,
+	# which is 1.165 degrees.
+	v.check("...and the M1911's first shot peaks at 0.02033695 rad, which is 1.165 degrees",
+		v.near(peak, 0.02033695, 2e-6), "%.8f rad = %.4f deg" % [peak, rad_to_deg(peak)])
+	v.check("...and the spring gives it all back, so a magazine cannot walk the aim away",
+		residual < 0.02 * peak, "%.8f rad left after 1 s against a peak of %.8f" % [residual, peak])
+
+	# **The bracket, filled at both ends.** `min/max` over a walk of the counter is
+	# blind to the impulse coefficient and to the `kick` column, and equals
+	# `kick_lo / kick_hi` only if BOTH ends are actually reached: a draw pinned to
+	# the bracket's midpoint reads 1.0, and a walk that covers [0.6, 1.4] of a
+	# [0.55, 1.45] bracket reads 0.4286 against 0.3793.
+	var lo_peak := 1e9
+	var hi_peak := -1e9
+	for n in 60:
+		var q := _kick_peak(p, gun, n)
+		lo_peak = minf(lo_peak, q)
+		hi_peak = maxf(hi_peak, q)
+	var want_ratio: float = float(gun.def.kick_lo) / float(gun.def.kick_hi)
+	v.check("sixty shots fill the M1911's kick bracket from end to end",
+		v.near(lo_peak / hi_peak, want_ratio, 0.02),
+		"%.6f..%.6f is a ratio of %.4f against the bracket's %.4f" % [
+			lo_peak, hi_peak, lo_peak / hi_peak, want_ratio])
+
+	# **The roster has a RANGE, and it is the `kick` column's.** Provenance: the
+	# table runs thundergun 4.2 down to pm63 0.9, a ratio of 4.67 — so a floor of
+	# 4.0 fails the moment a retune flattens the column, and it is stated as a range
+	# rather than as an order because m16 and rpk both carry 1.5 and no strict
+	# ordering over twelve weapons was ever satisfiable.
+	var lo_w := 1e9
+	var hi_w := -1e9
+	var worst_key := ""
+	for key: String in ANCESTOR_SPREAD.keys():
+		var g := Weapons.make_gun(key, false)
+		p.guns = [g]
+		var mx := -1e9
+		for n in KICK_SHOTS:
+			mx = maxf(mx, _kick_peak(p, g, n))
+		if mx < lo_w:
+			lo_w = mx
+			worst_key = key
+		hi_w = maxf(hi_w, mx)
+	v.check("the loudest weapon kicks the view at least four times as hard as the quietest",
+		hi_w / lo_w >= 4.0,
+		"%.6f (%s) .. %.6f, a ratio of %.3f" % [lo_w, worst_key, hi_w, hi_w / lo_w])
+
+	# **The clamp, bounded at both ends.** BO1's `CG_KickAngles` stops the
+	# integrated kick at +-10 degrees and this spring had no stop at all. It has to
+	# BITE on sustained automatic fire — the RPK reaches 14.8 degrees unclamped —
+	# and it must NOT bite on a weapon firing one round at a time, or it is not a
+	# bound on stacking, it is a flattening of the recoil.
+	var rpk := Weapons.make_gun("rpk", false)
+	p.guns = [rpk]
+	p._kick = 0.0
+	p._kick_v = 0.0
+	p._shot_no = 0
+	var interval := 60.0 / float(rpk.def.rpm)
+	var clock := 0.0
+	var next_shot := 0.0
+	var held := 0.0
+	for i in 180:
+		if clock >= next_shot:
+			rpk.mag = 100
+			p._shoot(rpk)
+			next_shot += interval
+		p._update_view(TICK, 0.0)
+		held = maxf(held, p._recoil_pivot.rotation.x)
+		clock += TICK
+	# Same 32-bit round trip through the node as above, hence 1e-7 rather than an
+	# equality. Unclamped this reaches 0.258 rad, which is 48% past the stop, so the
+	# band could be a hundred times wider and still name the defect.
+	v.check("holding an RPK down walks the aim into BO1's 10 degree stop and no further",
+		held <= Player.KICK_MAX + 1e-7 and held >= Player.KICK_MAX - 1e-7
+			and peak < Player.KICK_MAX * 0.5,
+		"sustained %.8f against the stop at %.8f; one M1911 shot reaches %.8f" % [
+			held, Player.KICK_MAX, peak])
+
+	# The accessibility toggle is an aim buff and nothing asserted it. `reduce_motion`
+	# DAMPS the kick rather than removing it — `player.gd`'s REDUCE_MOTION_KICK
+	# comment argues why — so a player who turns it on gets a flatter aim, and the
+	# number they get has to be the stated one.
+	p.guns = [gun]
+	var full := _kick_peak(p, gun, 0)
+	p._reduce_motion = true
+	var damped := _kick_peak(p, gun, 0)
+	p._reduce_motion = false
+	v.check("reduce_motion damps the kick to exactly REDUCE_MOTION_KICK of it and does not zero it",
+		v.near(damped, full * Player.REDUCE_MOTION_KICK, 1e-7) and damped > 0.0,
+		"%.8f against %.8f x %.3f" % [damped, full, Player.REDUCE_MOTION_KICK])
+
+	p._kick = 0.0
+	p._kick_v = 0.0
+	p._shake = 0.0
+	p._recoil_pivot.rotation = Vector3.ZERO
+	p._bloom = 0.0
+	_clear_projectiles(main)
+
+
+## One shot from a rested spring, integrated for a second, returning the highest
+## pitch the pivot reached. Deterministic in `shot_no` because the bracket is
+## walked by the counter and not by a draw — which is the whole reason the bracket
+## can be asserted at all.
+static func _kick_peak(p: Player, gun: Dictionary, shot_no: int) -> float:
+	p._kick = 0.0
+	p._kick_v = 0.0
+	p._shake = 0.0
+	p._shot_no = shot_no
+	gun.mag = int(gun.def.mag)
+	p._shoot(gun)
+	var peak := 0.0
+	for i in 60:
+		p._update_view(TICK, 0.0)
+		peak = maxf(peak, p._recoil_pivot.rotation.x)
+	return peak
+
+
+## **A13. The draw count inside `_shoot`, which nothing in the suite bounded.**
+##
+## `checks/frame.gd` bounds the VISUAL draws of `fired` LISTENERS — it emits the
+## signal directly and never reaches `_shoot` — and the gameplay-stream check at
+## the foot of `_throwables` bounds the five original streams. Between them sat the
+## two draws per pellet that decide where the round lands, and they rode `VISUAL`
+## from the port's first commit.
+##
+## Bounded at both ends: COMBAT has to move by EXACTLY two per pellet, and VISUAL
+## must not move at all. A revert to the cosmetic stream fails both halves; a
+## spread that has stopped drawing fails the first.
+static func _combat_stream(v: Verify, p: Player) -> void:
+	var def := Weapons.spec("m1911")
+	p._ads = 0.0
+	p._bloom = 0.0
+	p._moving = false
+	var combat: RandomNumberGenerator = Rng.stream(Rng.COMBAT)
+	var visual: RandomNumberGenerator = Rng.stream(Rng.VISUAL)
+	# An ORACLE, not a subtraction. A PCG state is advanced by a multiply-add, so
+	# the difference between two states is not a count of draws — it is only equal
+	# after exactly the same number of steps, which is what makes this an equality
+	# and not an inequality. Same device `checks/frame.gd` uses on VISUAL.
+	var oracle := RandomNumberGenerator.new()
+	oracle.seed = combat.seed
+	oracle.state = combat.state
+	for i in 100:
+		oracle.randf()
+	var v0: int = visual.state
+	for i in 50:
+		p._hitscan(def)
+	v.check("the spread cone is drawn from the gameplay stream, twice a pellet, and spends nothing cosmetic",
+		combat.state == oracle.state and visual.state == v0,
+		"combat %s 100 draws, visual moved %s" % [
+			"is not" if combat.state != oracle.state else "is exactly",
+			"yes" if visual.state != v0 else "no"])
+
+	# **R12's RULING, pinned rather than left in a comment.** M5 asked whether the
+	# shotgun should get a fixed ring-plus-centre pattern instead of six independent
+	# draws from the whole cone. Declined for this package — `player.gd::_shoot`
+	# carries the three reasons — and a decision recorded only in prose is a
+	# decision that gets reversed by accident. Six pellets, two draws each, twelve
+	# draws for one pull of an Olympia's trigger: a ring pattern costs ZERO draws
+	# because its positions are constants, so this number is the one thing that
+	# separates the two designs from outside.
+	var oly := Weapons.make_gun("olympia", false)
+	p.guns = [oly]
+	p.slot = 0
+	oly.mag = 2
+	var pellet_oracle := RandomNumberGenerator.new()
+	pellet_oracle.seed = combat.seed
+	pellet_oracle.state = combat.state
+	for i in 12:
+		pellet_oracle.randf()
+	p._shoot(oly)
+	v.check("one pull of the Olympia's trigger is six independent draws from the whole cone, not a pattern",
+		combat.state == pellet_oracle.state and int(oly.def.pellets) == 6,
+		"%d pellets, and the stream %s advance by twelve" % [int(oly.def.pellets),
+			"did" if combat.state == pellet_oracle.state else "did NOT"])
+
+	# The other half of the same rule: COMBAT is a GAMEPLAY stream, so a cosmetic
+	# roll may not reach it. Nothing that runs on `fired` is allowed to touch it,
+	# and this is the check that says so — the muzzle flash, the smoke and the brass
+	# all hang off that signal.
+	var c1: int = combat.state
+	p.fired.emit(p._cam.global_position - p._cam.global_transform.basis.z * 0.35)
+	v.check("...and nothing hanging off `fired` may draw from it",
+		combat.state == c1, "moved %d" % (combat.state - c1))
+
+
 # --- grenades and the Monkey Bomb ----------------------------------------------
 
 static func _throwables(v: Verify, main: Node3D) -> void:
@@ -975,9 +1672,17 @@ static func _throwables(v: Verify, main: Node3D) -> void:
 	v.check("...and the fallback comes back with it",
 		THROWABLES.flow_goal(fallback) == fallback)
 
-	# Constraint 6: nothing in this subsystem may touch a gameplay stream. Weapon
-	# spread rides VISUAL and always has, but a grenade that moved SPAWN would
-	# desynchronise a seeded run every time one was thrown.
+	# Constraint 5: nothing in this subsystem may touch a gameplay stream a grenade
+	# has no business in — one that moved SPAWN would desynchronise a seeded run
+	# every time one was thrown.
+	#
+	# **REVISED, because this comment used to say "weapon spread rides VISUAL and
+	# always has" and that is no longer true.** It rides `Rng.COMBAT` now, which IS
+	# a gameplay stream, so `Rng.COMBAT` is deliberately not in the list below and
+	# the four Ray Gun rounds fired here move it by exactly eight draws. That is not
+	# a hole: `_combat_stream` above bounds it at both ends against an oracle, which
+	# is a stronger claim than "it did not move". What this list is still for is the
+	# five streams a weapon must never reach.
 	var streams: Array[StringName] = [Rng.SPAWN, Rng.BOX, Rng.DROPS, Rng.ROUNDS, Rng.AI]
 	var was: Array[int] = []
 	for s: StringName in streams:

@@ -32,6 +32,12 @@ extends RefCounted
 ##              reload states and held at zero everywhere else.
 ##   next_shot  the fire cooldown. Allowed to run *past* zero inside a tick, which
 ##              is the whole of the fire-rate fix — see tick().
+##   shell_unit the segmented reload's ratio unit in seconds, latched by
+##              begin_reload so that every later segment scales by the same Speed
+##              Cola multiplier the first one did. A perk bought mid-reload must not
+##              shorten the reload it is already inside — that is a state machine
+##              reading a clock it does not own — and there is nowhere else to keep
+##              it: state_len is the CURRENT segment and the segments differ.
 
 
 ## The states a carried weapon can be in. Every one of them is either something a
@@ -63,6 +69,32 @@ const DRAW_TIME := 0.45
 ## down on an empty chamber re-triggers the click every physics tick, sixty times a
 ## second, which is what the port did.
 const DRY_FIRE_LOCK := 0.28
+
+## The shell reload's three segments, as RATIOS.
+##
+## BO1's `stakeout_zm` weapon file gives 1.000 s to bring the gun over and start,
+## 0.567 s per shell, and 0.767 s to close the action and bring it back up (M5 F13,
+## Tier 1). **Carried as ratios and not as seconds** so the invariant `begin_reload`
+## has always advertised survives: *"a reload from empty still costs exactly the
+## figure in the table and only a partial top-up gets cheaper."* One ratio unit is
+## `def.reload / (START + EACH*mag + END)`, so a Stakeout emptied and refilled still
+## costs its tabled 3.4 s — and the balance surface does not move — while the
+## segments inside it are BO1's proportions.
+##
+## **This closes a live exploit.** The old shape was `reload / mag` per shell and
+## nothing else, i.e. perfectly linear: topping a Stakeout up by one shell cost
+## 0.567 s, a sixth of a full reload, so a player who fired one round and tapped R
+## paid a sixth of the price for a sixth of the benefit and there was never a reason
+## not to. With the fixed overhead in place a one-shell top-up costs 1.53 s against
+## a full 3.4 s — 45% of the price for 17% of the benefit — which is the shape a
+## segmented reload has in the reference and the reason it has one.
+##
+## **The ancestor has no opinion here.** `shells` is declared at html:1460/:1465 and
+## read by nothing in the browser build, so every number in this block is ours or
+## BO1's; there is nothing to be faithful to.
+const SHELL_START := 1.000
+const SHELL_EACH := 0.567
+const SHELL_END := 0.767
 
 ## Bounds the sub-tick catch-up below. Nothing in the table comes close to a 1/60 s
 ## interval — the fastest is the PM63 under Double Tap at 1340 rpm, or 0.045 s — so
@@ -175,14 +207,17 @@ static func begin_reload(gun: Dictionary, reload_scale: float) -> bool:
 	if int(gun.mag) >= int(def.mag) or int(gun.res) <= 0:
 		return false
 	if bool(def.shells):
-		# The `shells` flag has been declared on the Olympia and the Stakeout since
-		# the ancestor (html:1460, :1465) and read by absolutely nothing — there or
-		# here. Shell-by-shell loading is therefore new design rather than a
-		# restoration, and the per-shell time is derived rather than invented: the
-		# weapon's own tuned reload divided by its magazine, so a reload from empty
-		# still costs exactly the figure in the table and only a partial top-up gets
-		# cheaper. That, and being interruptible, is the whole point of the flag.
-		_enter(gun, State.RELOAD_SHELL, _shell_time(gun, reload_scale))
+		# The `shells` flag has been declared in the ancestor (html:1465) and read by
+		# absolutely nothing — there or here. Shell-by-shell loading is therefore new
+		# design rather than a restoration.
+		#
+		# **The first segment is the start AND the first shell**, which is R5's
+		# "credit the first shell during the start": a Stakeout's opening motion
+		# brings the gun over and puts a shell in, and splitting them would need a
+		# fourth segment that credits nothing and refuses the trigger.
+		var unit := _shell_unit(gun, reload_scale)
+		gun.shell_unit = unit
+		_enter(gun, State.RELOAD_SHELL, unit * (SHELL_START + SHELL_EACH))
 	else:
 		_enter(gun, State.RELOADING, float(def.reload) * reload_scale)
 	return true
@@ -281,12 +316,16 @@ static func _interval(gun: Dictionary, rpm_scale: float) -> float:
 	return 60.0 / (float(def.rpm) * rpm_scale)
 
 
-static func _shell_time(gun: Dictionary, reload_scale: float) -> float:
+## One segment ratio unit, in seconds. See SHELL_START.
+##
+## maxf rather than a bare divide: a magazine of zero is not reachable from the
+## table, but a division that produces INF here would hang the reload forever
+## rather than failing loudly.
+static func _shell_unit(gun: Dictionary, reload_scale: float) -> float:
 	var def: Dictionary = gun.def
-	# maxf rather than a bare divide: a magazine of zero is not reachable from the
-	# table, but a division that produces INF here would hang the reload forever
-	# rather than failing loudly.
-	return (float(def.reload) / maxf(1.0, float(def.mag))) * reload_scale
+	var n := maxf(1.0, float(def.mag))
+	var ratios := SHELL_START + SHELL_EACH * n + SHELL_END
+	return (float(def.reload) / ratios) * reload_scale
 
 
 static func _enter(gun: Dictionary, to: int, duration: float) -> void:
@@ -317,14 +356,34 @@ static func _finish_magazine(gun: Dictionary) -> void:
 
 static func _load_shell(gun: Dictionary) -> void:
 	var def: Dictionary = gun.def
+	# A floor rather than a bare read. RELOAD_SHELL is only reachable through
+	# begin_reload, which always latches the unit — but a zero here would enter a
+	# zero-length segment, and tick() refuses to advance one, so the reload would
+	# FREEZE rather than fail. Same reasoning as `_shell_unit`'s own maxf.
+	var unit: float = maxf(float(gun.get("shell_unit", 0.0)), 0.001)
+	# THE CLOSING SEGMENT, AND IT IS IDENTIFIED RATHER THAN FLAGGED. The tube can
+	# only be full — or the reserve dry — at the top of this function if the segment
+	# that just ended was the one entered after the last shell went in, because every
+	# other path leaves at least one round to load. So there is no shell in the hand
+	# and nothing to credit, and no fourth State value and no second flag are needed
+	# to know it. (A new state was the obvious answer and is the wrong one:
+	# `hud.gd:1491` compares against RELOAD_SHELL by value to decide whether to print
+	# `--`, and hud.gd is not this package's file.)
+	if int(gun.mag) >= int(def.mag) or int(gun.res) <= 0:
+		settle(gun)
+		return
 	gun.mag = int(gun.mag) + 1
 	gun.res = int(gun.res) - 1
 	# Credited as it goes in, which is what makes cancelling honest: interrupt the
 	# reload and you keep every shell already in the tube and lose only the one that
-	# was on its way. Nothing has to be special-cased for that to hold.
+	# was on its way. Nothing has to be special-cased for that to hold — and note the
+	# closing segment credits nothing, so an interrupt during it costs the player
+	# nothing at all, which is the whole reason it is a segment and not a shell.
+	#
+	# Re-entered rather than continued in BOTH arms, so state_t sawtooths back to
+	# state_len once per shell AND once more for the close. Nothing consumed that
+	# sawtooth until this package: a six-shell Stakeout reload racked the pump once.
 	if int(gun.mag) < int(def.mag) and int(gun.res) > 0:
-		# Re-entered rather than continued, so state_t sawtooths back to state_len
-		# once per shell and an animation gets its cycle for free.
-		_enter(gun, State.RELOAD_SHELL, float(gun.state_len))
+		_enter(gun, State.RELOAD_SHELL, unit * SHELL_EACH)
 	else:
-		settle(gun)
+		_enter(gun, State.RELOAD_SHELL, unit * SHELL_END)

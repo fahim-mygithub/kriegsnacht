@@ -1,8 +1,8 @@
 extends Node3D
 
 ## Every combat effect except the muzzle flash: blood puffs, surface debris,
-## bullet holes, blood pools and tracers. `bind(player, map)` wires it to the
-## three signals it listens on; nothing else drives it.
+## bullet holes, blood pools, tracers and ejected brass. `bind(player, map)` wires
+## it to the three signals it listens on; nothing else drives it.
 ##
 ## Four constraints shape all of it, and not one of them is a preference.
 ##
@@ -32,6 +32,15 @@ extends Node3D
 ## hash of the impact point and from a shot counter instead, both functions of
 ## what already happened rather than new entropy. `verify.gd` asserts this from
 ## the other end, and it is the reason there is not a single `randf` below.
+##
+## That last one had a hole until the brass landed: `verify.gd:1005-1017` drives
+## `impact` and `_on_surface_impact` fifty times and never emits `fired`, so
+## anything hung off the `fired` path was outside the assertion that names this
+## file's own rule. `checks/systems.gd` closes it from the `fired` end.
+
+## The mesh-authoring path, for the casings. See `_casing_mesh` for why brass is
+## extruded through the weapon builder rather than cut from a `BoxMesh`.
+const GUNART := preload("res://scripts/data/gunart.gd")
 
 
 # --- surface lookup ----------------------------------------------------------
@@ -241,6 +250,172 @@ const HASH_MUL := 2654435761
 const WARM_SIZE := 0.012
 
 
+# --- brass -------------------------------------------------------------------
+#
+# EJECTED CASINGS ARE 100% INVENTED AND ARE A DELIBERATE ADDITION, NOT A PORT.
+# `grep -n -i -E 'casing|brass|eject|spent' kriegsnacht.html` returns ZERO lines
+# over all 3476 of them; adding `shell` to the alternation returns exactly :1455,
+# :1460 and :1465, and all three are the `shells` RELOAD flag. There is no dead
+# branch for this and nothing in `scripts/` either. The reference is BO1, which
+# has them, and the reference wins — but a departure from the ancestor that is not
+# recorded as a departure is wrong even when it is right, so this is the record.
+#
+# None of the numbers below is a BO1 number, because BO1's are not public: an
+# exhaustive key scan of all fourteen WEAPONFILEs finds four Effect keys and NO
+# offset, velocity or spin field anywhere in the format, and the physics live in a
+# compiled `.efx` that is in no rawfile dump. Anyone quoting a BO1 casing velocity
+# is guessing. What follows is ioq3's recipe converted out of its own units, with
+# the two structural details the other three surveyed systems agree on.
+
+const CASE_PISTOL := 0
+const CASE_RIFLE := 1
+const CASE_SHOTGUN := 2
+const CASE_SAW := 3
+
+## BO1 ships FOUR shell-eject effects for the WHOLE roster, not one per weapon —
+## `weapon/shellejects/fx_pistol` on the M1911, MP40, PM-63 and AK-74u, `fx_rifle`
+## on the M14 and M16, `fx_shotgun` on the Stakeout, `fx_saw` on the RPK. Four
+## weapons carry an EMPTY field and eject nothing at all, and they are absent here
+## rather than mapped to a null type: the Olympia (a break-action dumps its hulls
+## into your hand on the RELOAD, never on the shot — OpenSpades cut its own
+## shotgun casing for the same physical reason), the China Lake, the Ray Gun and
+## the Thundergun. The knife is not in this table either and could not be: it
+## never emits `fired`.
+##
+## A weapon missing from this table ejects nothing, which is deliberate. A typo in
+## a key has to read as "no casing" and never as a fifth type.
+##
+## AND THE STAKEOUT IS IN, WHICH IS A DECISION AND NOT AN OVERSIGHT. A pump gun
+## ejects on the PUMP STROKE, not on the shot — the same real-world argument that
+## keeps the break-action Olympia out — so the two look like they should go the
+## same way. They do not, because BO1 itself distinguishes them: the Olympia's
+## `weapon/shellejects` field is EMPTY and the Stakeout's is `fx_shotgun`. The
+## reference fires the eject effect on the shot for the pump and not at all for
+## the break-action, and where the reference and the physics disagree the
+## reference wins. If this is ever revisited, revisit it as a timing change —
+## delay the eject to the rack — rather than by deleting the row, because deleting
+## it is a claim about BO1 that BO1 does not make.
+##
+## The M1911 is a .45 and is drawn with the 9 mm case anyway, BECAUSE THAT IS WHAT
+## BO1 DOES. One shared ejector across the roster is the finding; thirteen bespoke
+## ones is the thing it rules out.
+const CASING_OF := {
+	"m1911": CASE_PISTOL,
+	"mp40": CASE_PISTOL,
+	"pm63": CASE_PISTOL,
+	"ak74u": CASE_PISTOL,
+	"m14": CASE_RIFLE,
+	"m16": CASE_RIFLE,
+	"stakeout": CASE_SHOTGUN,
+	"rpk": CASE_SAW,
+}
+
+## Case length and case-head diameter, in METRES, of the cartridge each of BO1's
+## four effects stands for: 9x19 Parabellum 19.15 x 9.93 mm, 5.56x45 NATO 44.70 x
+## 9.60 mm, a 12-gauge hull 70.0 x 18.5 mm, 7.62x39 38.70 x 11.35 mm — nominal
+## case dimensions, CIP/SAAMI. Real numbers rather than invented ones because they
+## are free, and because a shotgun hull reading 3.6x the pistol case's length is
+## the entire reason four types exist instead of one.
+const CASE_SIZE := [
+	Vector2(0.01915, 0.00993),
+	Vector2(0.04470, 0.00960),
+	Vector2(0.07000, 0.01850),
+	Vector2(0.03870, 0.01135),
+]
+
+## INVENTED. Cartridge brass reads warm yellow, a lacquered steel case reads grey,
+## a 12-gauge hull is red plastic; nothing sourced says which shade. Carried as a
+## PER-INSTANCE colour that MULTIPLIES the shade `_casing_mesh` baked into the
+## vertex colour, which is how one mesh, one material and one draw call serve all
+## four types — the same trade `_hole` makes with its gradient.
+##
+## THE CEILING IS NOT TASTE. A channel here is multiplied by `face_shade`'s
+## SHADE_TOP of 1.28 (gunart.gd) on the casing's upward face, and anything that
+## lands above `GLOW_THRESHOLD` 0.92 (lighting.gd:216) blooms. 0.92 / 1.28 =
+## 0.719, so no channel below may exceed it: a bloomed shell casing is a firefly.
+##
+## DISPLAY space, and NOT linearised. An opaque unshaded surface REPLACES the
+## pixel rather than contributing light — constraint 6, the same posture
+## `gunart._tint` takes and the opposite of the one `atmosphere.gd` takes for the
+## additive flash.
+const CASE_TINT := [
+	Color(0.70, 0.54, 0.23),   # brass
+	Color(0.68, 0.53, 0.24),   # brass, a longer case catching a little more
+	Color(0.55, 0.11, 0.09),   # 12-gauge hull
+	Color(0.60, 0.60, 0.58),   # lacquered steel
+]
+
+## ioq3 `cg_weapons.c:31`, CONVERTED rather than ported. Its offset {8, -4, 24} is
+## in the shooter's own basis at the id convention of 1 unit = 1 inch = 0.0254 m,
+## measured from the player ORIGIN against a 26-unit view height — so relative to
+## the EYE, which is what this file has, it is 0.203 m forward, 0.102 m to the
+## right (Quake's second axis is LEFT, so -4 left is +4 right) and 0.051 m DOWN.
+## Ported literally it would spawn 0.61 m ABOVE the eye, which is the silent
+## factor of forty this conversion exists to avoid.
+##
+## Held as (right, up, forward) rather than as a world vector, because the whole
+## point is that it is expressed in the shooter's basis.
+const EJECT_OFFSET := Vector3(0.102, -0.051, 0.203)
+
+## The same source's velocity {0, -50+-40, 100+-50}: nothing forward, 1.27 +- 1.02
+## m/s to the shooter's right, 2.54 +- 1.27 m/s up. The cross-check that makes the
+## conversion trustworthy is that 2.5 m/s of upward ejection is the right order for
+## a real casing where 100 m/s is not.
+const EJECT_RIGHT := 1.27
+const EJECT_RIGHT_SPAN := 1.02
+const EJECT_UP := 2.54
+const EJECT_UP_SPAN := 1.27
+
+## ioq3 spins its casing at 2000 deg/s = 34.9 rad/s and OpenSpades at 40 rad/s;
+## both are about an axis PERPENDICULAR to flight, which is what makes a casing
+## tumble end over end instead of spinning about its long axis like a drill bit.
+## 30 +- 10 rad/s spans the pair from below. Angular rates are the one thing in
+## either source that is unit-free and ports without conversion.
+const BRASS_SPIN := 30.0
+const BRASS_SPIN_SPAN := 10.0
+
+## Real gravity, and it is the one number here that is NOT this file's habit.
+## Every other preset above carries a made-up value tuned for a mote that lives a
+## third of a second — DUST 4.0, SPLINTER 11.0, SPARK 13.0, blood 11.0. A casing is
+## a dense object on a two-second arc across a room, and at that scale the number
+## a player's eye is calibrated against is 9.81. OUR DECISION, and the reason is
+## the timescale rather than the realism.
+const BRASS_GRAVITY := 9.81
+
+## ioq3's `bounceFactor` is 0.4 and OpenSpades' is 0.2. 0.3 sits between them,
+## which is as much precision as two disagreeing sources support.
+const BRASS_BOUNCE := 0.3
+## Below this the casing is done moving. OpenSpades rests below 0.5 of its own
+## speed unit and that unit does not convert — it is a voxel block whose metric
+## size this project has never established, so its scalars are not adopted. 0.35
+## m/s is ours: the speed at which one more bounce would move a casing less than
+## its own length.
+const BRASS_REST_SPEED := 0.35
+
+## ioq3 gives a casing 2.5-3.125 s and a shotgun hull 7.5-10 s. Ours is one number
+## for all four types and at the short end of the shorter range, because the
+## sizing constraint is the fire rate: a Double-Tapped PM-63 is 1000 rpm x 1.34 =
+## 22.3 shots/s, so 2.6 s of life wants 58 live casings and this ring holds 28.
+const BRASS_LIFE := 2.6
+## The last second is a SINK, not a pop — the one behaviour all four surveyed
+## systems share. It descends its own diameter, which is enough to read as the
+## floor taking it.
+const BRASS_SINK := 1.0
+
+## 28 slots wrap in 1.26 s under that same PM-63, so sustained fire from the
+## fastest weapon in the game recycles the oldest casings early — which is exactly
+## what ioq3 does with its pool of 512. The alternative, sizing the ring so nothing
+## is ever recycled, is 58 moving instances on the single web thread against the 24
+## zombies `project.godot:154-157` measured at 1.26 ms/tick.
+const BRASS := 28
+
+## Two odd multipliers, so a shot counter and a channel index fold into one integer
+## without collapsing, and small enough that the product cannot overflow a 64-bit
+## int before the mask — the one way a hash silently stops varying.
+const MIX_N := 2731
+const MIX_SALT := 104729
+
+
 # --- state -------------------------------------------------------------------
 
 var _player: Player
@@ -269,6 +444,32 @@ var _tracer_live := 0
 var _hole_mat: StandardMaterial3D
 var _splat_mat: StandardMaterial3D
 var _tracer_mat: StandardMaterial3D
+
+## Every MultiMeshInstance3D this file owns, in the order `warm()` walks them, and
+## the warm probe's scale for each. Built where the rings are built rather than
+## written out by hand: F32's asymmetry is that a material missing from
+## `materials()` fails `verify.gd:1050` while a MultiMesh missing from the warm
+## pass is caught by NOTHING and costs every visitor a main-thread compile of the
+## USE_INSTANCING variant on the first trigger pull of the session.
+var _rings: Array[MultiMeshInstance3D] = []
+var _ring_scale := PackedFloat32Array()
+
+## The casings. Position, velocity, tumble axis, tumble angle and rate, the
+## (diameter, diameter, length) the unit mesh is scaled by, and the countdown that
+## retires the slot. Packed arrays sized once at bind, because nothing here may
+## allocate inside the fire loop.
+var _brass: MultiMeshInstance3D
+var _brass_mat: StandardMaterial3D
+var _brass_next := 0
+var _brass_live := 0
+var _brass_pos := PackedVector3Array()
+var _brass_vel := PackedVector3Array()
+var _brass_axis := PackedVector3Array()
+var _brass_flat := PackedVector3Array()
+var _brass_scale := PackedVector3Array()
+var _brass_ang := PackedFloat32Array()
+var _brass_rate := PackedFloat32Array()
+var _brass_life := PackedFloat32Array()
 
 var _shot_no := 0
 var _tracer_from := Vector3.ZERO
@@ -686,14 +887,64 @@ func _setup_decals() -> void:
 	var box := BoxMesh.new()
 	box.size = Vector3(1.0, 1.0, 1.0)
 	box.material = _tracer_mat
-	_tracers = MultiMeshInstance3D.new()
-	_tracers.name = "Tracers"
-	_tracers.multimesh = _multimesh(box, TRACERS)
-	_tracers.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
-	_tracers.gi_mode = GeometryInstance3D.GI_MODE_DISABLED
-	_tracers.custom_aabb = _map_aabb()
-	add_child(_tracers)
+	_tracers = _ring_mesh(box, TRACERS, "Tracers", WARM_SIZE)
 	_tracer_life.resize(TRACERS)
+
+	_setup_brass()
+
+
+## The casings' one material, one mesh and one ring.
+##
+## Unshaded and OPAQUE. A casing is solid metal, which is the half of constraint 6
+## that decides `CASE_TINT`'s colour space: an opaque unshaded surface REPLACES the
+## pixel rather than adding light to it, so nothing here is linearised.
+##
+## Deliberately NOT `no_depth_test`, for the reason the tracer material gives: a
+## casing is matter and has to be occluded by the wall it bounced off. And
+## deliberately still taking the depth fog, for the reason the debris material
+## gives — brass is lit matter thrown out of a gun, not light, so the air in front
+## of it should grey it.
+func _setup_brass() -> void:
+	_brass_mat = StandardMaterial3D.new()
+	_brass_mat.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
+	_brass_mat.vertex_color_use_as_albedo = true
+	_brass_mat.disable_receive_shadows = true
+
+	_brass = _ring_mesh(_casing_mesh(_brass_mat), BRASS, "Brass", WARM_SIZE)
+	_brass_pos.resize(BRASS)
+	_brass_vel.resize(BRASS)
+	_brass_axis.resize(BRASS)
+	_brass_flat.resize(BRASS)
+	_brass_scale.resize(BRASS)
+	_brass_ang.resize(BRASS)
+	_brass_rate.resize(BRASS)
+	_brass_life.resize(BRASS)
+
+
+## ONE UNIT CUBE, extruded through `gunart._extrude` rather than cut from a
+## `BoxMesh`, so a casing carries the same flat per-face bake as the weapon that
+## ejected it — one shading model for the gun and its brass, with no second one to
+## keep in sync. `_extrude` is a `static func` over a scratch `SurfaceTool`, so
+## this costs `gunart.gd` no change at all.
+##
+## Unit-sized, with the four real cartridge dimensions carried in the per-instance
+## basis COLUMNS instead — the same trade `_tracers` makes with its 1x1x1 box, and
+## what keeps four casing types on one mesh, one material and one draw call. A rect
+## outline is four corners, so this is 4n-4 = 12 triangles for the whole ring.
+##
+## WHITE, because the per-instance tint multiplies this and has to arrive undimmed.
+## `_to_local` scales the outline by `GUNART.UNIT` while `half` is already metres,
+## which is why the two halves of a cube are written differently.
+func _casing_mesh(mat: StandardMaterial3D) -> ArrayMesh:
+	var st := SurfaceTool.new()
+	st.begin(Mesh.PRIMITIVE_TRIANGLES)
+	var h: float = 0.5 / GUNART.UNIT
+	GUNART._extrude(st, PackedVector2Array([
+		Vector2(-h, -h), Vector2(h, -h), Vector2(h, h), Vector2(-h, h),
+	]), Vector2.ZERO, 0.5, Color.WHITE)
+	var mesh: ArrayMesh = st.commit()
+	mesh.surface_set_material(0, mat)
+	return mesh
 
 
 func _decal_material(tex: GradientTexture2D) -> StandardMaterial3D:
@@ -748,13 +999,33 @@ func _ring(mat: StandardMaterial3D, size: float, count: int,
 	var quad := QuadMesh.new()
 	quad.size = Vector2(size, size)
 	quad.material = mat
+	return _ring_mesh(quad, count, node_name, WARM_SIZE / size)
+
+
+## THE ONE PLACE A RING IS BUILT, and every property it sets fails silently when
+## it is missed. `custom_aabb`, or a ring whose instances are all retired to a zero
+## basis is a point at the origin, is frustum-culled, and the warm probe compiles
+## nothing while looking exactly like it ran. `add_child`, or it is never drawn.
+## Shadows and GI off, because a MultiMesh spanning the whole level in a shadow
+## pass is the one cost this file cannot afford.
+##
+## AND IT REGISTERS THE RING FOR `warm()`, which walks `_rings` rather than a
+## hand-written list. `warm_scale` is what turns the ring's authored size into the
+## WARM_SIZE probe: a quad ring divides, a ring whose mesh is already unit-sized
+## passes WARM_SIZE straight through. `checks/systems.gd` asserts this list covers
+## every MultiMeshInstance3D actually under this node, which is what catches a ring
+## built some other way.
+func _ring_mesh(mesh: Mesh, count: int, node_name: String,
+		warm_scale: float) -> MultiMeshInstance3D:
 	var mi := MultiMeshInstance3D.new()
 	mi.name = node_name
-	mi.multimesh = _multimesh(quad, count)
+	mi.multimesh = _multimesh(mesh, count)
 	mi.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
 	mi.gi_mode = GeometryInstance3D.GI_MODE_DISABLED
 	mi.custom_aabb = _map_aabb()
 	add_child(mi)
+	_rings.append(mi)
+	_ring_scale.append(warm_scale)
 	return mi
 
 
@@ -867,9 +1138,17 @@ func _on_fired(muzzle: Vector3) -> void:
 	# Cone weapons fire no round to trace, and the Thundergun's flash already is
 	# the effect. `def` and `cone` come out of a Dictionary as Variant, so both
 	# are annotated rather than inferred.
-	var def: Dictionary = _player.current_gun().def
+	var gun: Dictionary = _player.current_gun()
+	var def: Dictionary = gun.def
 	var cone: float = def.cone
 	_tracer_armed = cone <= 0.0 and (_shot_no % TRACER_EVERY) == 0
+	# On `fired` and NOT on `surface_impact`: `fired` is emitted once per `_shoot`
+	# (player.gd:837), BEFORE the three-way cone/projectile/pellet branch, so an
+	# Olympia's six pellets cannot multiply into six casings. Hanging this off the
+	# terminal event instead is the mistake actually available here — this file
+	# connects both — and it is what `checks/systems.gd` discriminates.
+	var key: String = gun.key
+	_eject(key)
 
 
 ## Consumed by whichever terminal event the round produces first, so a shotgun's
@@ -900,10 +1179,18 @@ func _maybe_tracer(to: Vector3) -> void:
 	_tracer_life[i] = TRACER_LIFE
 
 
-## The only per-frame work in this file, and it does none at all while no tracer
-## is in the air — which is most frames, since a tracer lives 40 ms and even the
-## fastest weapon in the game produces one every 270 ms.
+## The only per-frame work in this file, and each half does none at all while its
+## own effect is idle — which is most frames, since a tracer lives 40 ms and even
+## the fastest weapon produces one every 270 ms.
+##
+## No `Game.state` guard, and that is checked rather than assumed: `warm()` writes
+## instance 0's transform directly and never enters `_eject`, so `_brass_live`
+## stays 0 and the integrator below never runs during the warm-up pass. Without
+## that, STATE_TITLE deliberately not pausing would have casings flying across the
+## title card.
 func _process(dt: float) -> void:
+	if _brass_live > 0:
+		_tick_brass(dt)
 	if _tracer_live <= 0:
 		return
 	var mm := _tracers.multimesh
@@ -917,15 +1204,194 @@ func _process(dt: float) -> void:
 			_retire(mm, i)
 
 
+# --- brass -------------------------------------------------------------------
+
+## One casing, or none at all for the four weapons BO1 gives an empty eject field.
+##
+## Variation is COUNTER-driven and there is not a draw of any kind here — see the
+## header. `_hash01` is the wrong tool for this even though it is exactly right for
+## a decal: it quantises the world point to the centimetre, and a player standing
+## still with an automatic ejects from the same centimetre every shot, so every
+## casing in the burst would come out with identical numbers. `_shot_no` is already
+## incremented for the tracer cadence and never repeats.
+func _eject(key: String) -> void:
+	if not CASING_OF.has(key):
+		return
+	var type: int = CASING_OF[key]
+	var cam := _player.camera()
+	var cb := cam.global_transform.basis
+	var i := _brass_next
+	_brass_next = (_brass_next + 1) % BRASS
+
+	var lat := EJECT_RIGHT + (_mix01(_shot_no, 1) * 2.0 - 1.0) * EJECT_RIGHT_SPAN
+	var vert := EJECT_UP + (_mix01(_shot_no, 2) * 2.0 - 1.0) * EJECT_UP_SPAN
+	# Half-Life's `ev_common.cpp:152` is the detail hobby implementations miss:
+	# `ShellVelocity = player_velocity + right*(50..70) + up*(100..150) +
+	# forward*25`. A casing INHERITS THE SHOOTER'S MOTION, so ejecting mid-strafe
+	# does not leave brass hanging in the air behind a moving player. That finding
+	# is structural and unit-free, and it is the one thing from that source to copy
+	# without argument.
+	var vel := cb.x * lat + cb.y * vert + _player.velocity
+	# -Z is the camera's forward. Offsets are in the shooter's own basis, which is
+	# the entire reason ioq3's recipe was worth converting rather than reinventing.
+	_brass_pos[i] = cam.global_position + cb.x * EJECT_OFFSET.x \
+		+ cb.y * EJECT_OFFSET.y - cb.z * EJECT_OFFSET.z
+	_brass_vel[i] = vel
+
+	# OpenSpades' `cross(-up, flyDir)` — perpendicular to flight, which F28 calls
+	# the thing that makes a casing tumble rather than spin. Guarded against a
+	# straight-up flight direction, where the cross product collapses.
+	var fly := vel.normalized()
+	var axis := Vector3.DOWN.cross(fly)
+	if axis.length_squared() < 1e-6:
+		axis = cb.x
+	_brass_axis[i] = axis.normalized()
+	# The direction it will lie along once it rests. Horizontal by construction, so
+	# `_face_basis` of it has world up for its y column exactly — which is how a
+	# rested casing gets zero pitch and zero roll without a re-orthonormalisation
+	# step to forget.
+	var flat := Vector3(fly.x, 0.0, fly.z)
+	if flat.length_squared() < 1e-6:
+		flat = Vector3(cb.x.x, 0.0, cb.x.z)
+	_brass_flat[i] = flat.normalized()
+	# The golden angle on the shot counter, the same idiom `atmosphere._on_fired`
+	# uses for the burst's roll: successive casings start 137.5 degrees apart, so a
+	# burst is never a row of parallel shells, and it never repeats. ioq3 buys the
+	# same thing with a random 0-31 degree initial orientation and a 0-15 ms
+	# sub-frame de-sync.
+	_brass_ang[i] = fposmod(float(_shot_no) * GOLDEN_ANGLE, TAU)
+	_brass_rate[i] = BRASS_SPIN + (_mix01(_shot_no, 3) * 2.0 - 1.0) * BRASS_SPIN_SPAN
+
+	var sz: Vector2 = CASE_SIZE[type]
+	_brass_scale[i] = Vector3(sz.y, sz.y, sz.x)
+	if _brass_life[i] <= 0.0:
+		_brass_live += 1
+	_brass_life[i] = BRASS_LIFE
+
+	var mm := _brass.multimesh
+	mm.set_instance_transform(i, Transform3D(_brass_basis(i), _brass_pos[i]))
+	mm.set_instance_color(i, CASE_TINT[type])
+
+
+## Euler integration, physics-free. A `RigidBody3D` per casing was rejected on the
+## arithmetic: 22.3 ejections a second is 22 broadphase inserts and 22 removes a
+## second on the single web thread, on top of the 24 zombies measured at
+## 1.26 ms/tick — and it would be this project's first rigid body, against two
+## written rejections (`zombie.gd:141`, `projectile.gd:10`), against this file's own
+## "nothing calls new() after bind", and it would need a sixth collision layer,
+## which is a `project.godot` edit.
+##
+## The floor is at y = 0 everywhere. This level has no height variation anywhere,
+## which is the same fact `_splat` relies on to place a blood pool without asking
+## the physics server anything at all.
+func _tick_brass(dt: float) -> void:
+	var mm := _brass.multimesh
+	for i in BRASS:
+		if _brass_life[i] <= 0.0:
+			continue
+		_brass_life[i] -= dt
+		if _brass_life[i] <= 0.0:
+			_brass_life[i] = 0.0
+			_brass_live -= 1
+			_retire(mm, i)
+			continue
+		var p := _brass_pos[i]
+		var v := _brass_vel[i]
+		var rest_y: float = _brass_scale[i].y * 0.5
+		if v == Vector3.ZERO:
+			if _brass_life[i] < BRASS_SINK:
+				p.y = rest_y - _brass_scale[i].y * (1.0 - _brass_life[i] / BRASS_SINK)
+				_brass_pos[i] = p
+		else:
+			v.y -= BRASS_GRAVITY * dt
+			p += v * dt
+			if p.y <= rest_y and v.y < 0.0:
+				p.y = rest_y
+				# Bounce-scaled, and the SPIN is scaled with it: a casing that has
+				# just lost 70% of its speed to a concrete floor is not still
+				# tumbling at thirty radians a second. All four surveyed systems
+				# scale both.
+				v = Vector3(v.x, -v.y, v.z) * BRASS_BOUNCE
+				_brass_rate[i] *= BRASS_BOUNCE
+				if v.length() < BRASS_REST_SPEED:
+					v = Vector3.ZERO
+					_brass_rate[i] = 0.0
+					# Zeroing the angle IS the lie-flat: `_brass_basis` then returns
+					# `_face_basis(_brass_flat[i])` untouched, whose y column is
+					# world up exactly.
+					_brass_ang[i] = 0.0
+			_brass_pos[i] = p
+			_brass_vel[i] = v
+			_brass_ang[i] = fposmod(_brass_ang[i] + _brass_rate[i] * dt, TAU)
+		mm.set_instance_transform(i, Transform3D(_brass_basis(i), _brass_pos[i]))
+
+
+## The tumble, then the four cartridge dimensions, applied by rebuilding the basis
+## from its own COLUMNS. `Basis.scaled()` multiplies the rows — a world-axis scale,
+## and therefore a shear the moment the basis has been turned — which is the trap
+## `_decal_basis` and `_maybe_tracer` both already record.
+func _brass_basis(i: int) -> Basis:
+	var b := _face_basis(_brass_flat[i])
+	if _brass_ang[i] != 0.0:
+		b = Basis(_brass_axis[i], _brass_ang[i]) * b
+	var s: Vector3 = _brass_scale[i]
+	return Basis(b.x * s.x, b.y * s.y, b.z * s.z)
+
+
+## Deterministic 0-1 from the shot counter, one channel per `salt`. This is where
+## the variation that would otherwise have been a `randf()` comes from, and it is a
+## different function from `_hash01` because its input is a counter and not a
+## point — see `_eject` for why the point hash cannot serve.
+static func _mix01(n: int, salt: int) -> float:
+	var i := (n * MIX_N + salt * MIX_SALT) & 0x7FFFFFF
+	var h := ((i * HASH_MUL) ^ (i << 7)) & 0xFFFFFFFF
+	return float(h % 65536) / 65536.0
+
+
+## The golden angle, PI * (3 - sqrt(5)), as the per-shot turn. Same constant and
+## same reasoning as `atmosphere.gd`'s: a counter, not a clock and not a draw.
+const GOLDEN_ANGLE := 2.39996322972865332
+
+
 # --- warm-up -----------------------------------------------------------------
 
 ## Every material this file owns, for the ordinary warm-up pass. That pass draws
 ## each one on a plain `MeshInstance3D`, which compiles the non-instanced draw
 ## variant — necessary, but not sufficient; see `warm()`.
 func materials() -> Array:
-	var out: Array = [_blood_mat, _hole_mat, _splat_mat, _tracer_mat]
+	var out: Array = [_blood_mat, _hole_mat, _splat_mat, _tracer_mat, _brass_mat]
 	out.append_array(_debris_mats)
 	return out
+
+
+## The brass ring, for the suite — the live node, so a probe reads the mesh and the
+## material the renderer was actually handed.
+##
+## THE TRANSFORMS ARE NOT READABLE THAT WAY AND IT IS WORTH SAYING SO HERE, because
+## `flash_quad()`'s comment invites the assumption and a MeshInstance3D is a
+## different animal. A MultiMesh's instance data lives on the RenderingServer, and
+## the dummy server `--headless` runs stores none of it: MEASURED 2026-08-02,
+## `get_instance_transform(0)` on a ring with a live casing in it returns the
+## IDENTITY transform and `.buffer` comes back empty, and the same probe against
+## `_holes` after real bullet holes have been written returns identity too. So
+## `--verify` can reach `_brass_basis()` — the value handed to the server — and no
+## further. Whether it arrives is the frames gate's question.
+func brass_ring() -> MultiMeshInstance3D:
+	return _brass
+
+
+## How many casings are in the air. Counted rather than recovered by walking the
+## ring, because a slot is retired by collapsing its basis and "is this basis
+## exactly zero" is a question about floats.
+func brass_live() -> int:
+	return _brass_live
+
+
+## Every ring this file owns, in the order `warm()` walks them. Public because the
+## thing worth asserting is that it covers every MultiMeshInstance3D under this
+## node: F32 says an omission here is caught by nothing else in the project.
+func rings() -> Array[MultiMeshInstance3D]:
+	return _rings
 
 
 ## The two things `shader_warmup.gd` structurally cannot reach.
@@ -959,11 +1425,14 @@ func warm() -> void:
 		p.global_transform = Transform3D(_face_basis(toward), at)
 		p.restart()
 
-	# Spread apart so none of the three is wholly hidden behind another: a
-	# fragment that never rasterises compiles no fragment stage.
-	_warm_probe(_holes, WARM_SIZE / HOLE_SIZE, at + right * 0.03, toward)
-	_warm_probe(_splats, WARM_SIZE / SPLAT_SIZE, at, toward)
-	_warm_probe(_tracers, WARM_SIZE, at - right * 0.03, toward)
+	# Spread apart so none is wholly hidden behind another: a fragment that never
+	# rasterises compiles no fragment stage. Driven off `_rings` rather than named
+	# one by one, so a ring added later warms itself — F32's omission is the one
+	# this file has no other guard against.
+	var spread := float(_rings.size() - 1) * 0.5
+	for i in _rings.size():
+		_warm_probe(_rings[i], _ring_scale[i],
+			at + right * (float(i) - spread) * 0.03, toward)
 
 	await get_tree().process_frame
 	await get_tree().process_frame
@@ -976,7 +1445,7 @@ func warm() -> void:
 		for p: GPUParticles3D in pool:
 			p.restart()
 			p.emitting = false
-	for mi: MultiMeshInstance3D in [_holes, _splats, _tracers]:
+	for mi: MultiMeshInstance3D in _rings:
 		_retire(mi.multimesh, 0)
 
 	_impact_next = 0
@@ -988,6 +1457,13 @@ func warm() -> void:
 	_tracer_live = 0
 	for i in TRACERS:
 		_tracer_life[i] = 0.0
+	# The brass probe never entered `_eject`, so nothing here is live — but the
+	# cursor still has to come back, or the first real casing of the match lands in
+	# slot 1 and the warm probe's slot 0 sits at the origin until the ring wraps.
+	_brass_next = 0
+	_brass_live = 0
+	for i in BRASS:
+		_brass_life[i] = 0.0
 
 
 ## Uniform scale, unlike a real decal: this has to serve the tracer's box as

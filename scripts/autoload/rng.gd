@@ -24,6 +24,25 @@ const BOX := &"box"            # mystery box rolls and the teddy bear
 const DROPS := &"drops"        # power-up type and drop cadence
 const ROUNDS := &"rounds"      # dog-round cadence, barricade regrowth
 const AI := &"ai"              # per-zombie speed class, attack phase, goal offset
+## Where a round actually goes: the spread cone sampled by `player.gd::_hitscan`
+## and `::_launch`.
+##
+## **THIS STREAM EXISTS TO CLOSE A KNOWN VIOLATION, and the reason recorded for
+## leaving it open was wrong.** Weapon spread drew from `VISUAL` from the port's
+## first commit, and CLAUDE.md's constraint 5 justified that as "changing it moves
+## every sim baseline". It does not: `balance_sim.gd` draws only from `SPAWN`
+## (`:422`, `:615`) and `DROPS` (`:717`), never calls `_spread_rad` or `_hitscan`,
+## and computes damage analytically over `for i in pellets` (`:529`) with every
+## pellet assumed to hit — there is no spread anywhere in it. Verified by reading
+## the file, 2026-08-02, and re-verified by running `--sim` on both sides of the
+## move (see M5's stage-4 report). What the move *does* perturb is everything
+## downstream of `VISUAL`'s sequence, because two draws per pellet stopped being
+## taken from it — a frames-gate question, which is where it was checked.
+##
+## Adding a stream is free here and `stream()` below is why: seeds are hashed from
+## the name together with the run seed, so a new name cannot shift any existing
+## stream's seed, and the generator is not built until something draws from it.
+const COMBAT := &"combat"      # weapon spread — where the round actually goes
 
 ## Cosmetic stream. Draws here must never influence a gameplay outcome, which is
 ## what lets art and feel be retuned without invalidating a seed.
