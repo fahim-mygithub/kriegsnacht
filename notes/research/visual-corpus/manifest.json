@@ -67,6 +67,71 @@
       "does_not_answer": "Whether this is the hip rest pose. The cut-out and crop remove the frame, so screen-height occupancy and cant angle relative to the view axis are NOT measurable from it. Treat the pose label as unconfirmed.",
       "image_ref": "fps-viewmodel-rest-pose/bo1_mp40_firstperson_hand.jpg",
       "provenance": "Single wiki file, one uploader. ONE data point."
+    },
+    {
+      "id": "bo1-m1911-reload-mid",
+      "source": {
+        "url": "https://callofduty.fandom.com/wiki/File:M1911_Reloading_BO.png",
+        "source_image_url": "https://static.wikia.nocookie.net/callofduty/images/8/81/M1911_Reloading_BO.png/revision/latest?cb=20120616211400",
+        "product": "Call of Duty: Black Ops (2010) - M1911",
+        "uploaded": "2012-06-16"
+      },
+      "captured_at": "2026-08-03",
+      "freshness": "fresh",
+      "element": "one frame of the M1911 reload animation, first person, cut out to alpha",
+      "ui_pattern": "reload-anim-midpoint",
+      "kano_bucket": "table-stakes",
+      "evidence_tier": "2 - shipped game art, community-extracted. Transparent background proves an editor processed it.",
+      "visual_description": "M1911 held high and canted muzzle-up-left, gripped in a black-gloved right hand. Rear sight, slide serrations and the frame left flank are all readable. Below and left of the grip a SECOND flat object rises toward the magwell: a plate carrying a row of round dimples along its face, separated from the checkered grip panel by a lit edge. Both gloved hands are in frame, one on the grip and one under the second object.",
+      "measurement": {
+        "method": "Connected-component labelling on the PNG alpha channel (threshold a>40, 4-connectivity), run in-page over a 640x538 canvas - the SAME method as the MP40 card.",
+        "result": "Background IS alpha-transparent (modal border sample rgba 0,0,0,0 over 75.7% of the border ring). Foreground = 139,913 px. Exactly 3 components, but the largest is 139,900 px with bbox (14,31)-(615,537) - ONE component covers 99.99% of the foreground. The other two total 13 px.",
+        "why_it_matters": "NEGATIVE RESULT, and it is the important one. The test cannot separate a detached magazine here because the two HANDS bridge the weapon and the magazine into one opaque blob. That means the MP40 card's clean 2-component split is a consequence of the SAME property competitive-analysis used to attack it - that frame has no hands. The MP40 topological result and the no-hands objection are therefore NOT independent, and the topology adds no confirmation the objection does not already remove."
+      },
+      "answers": "That BO1's M1911 reload does put BOTH hands in frame with a second magazine-shaped object approaching the magwell - so this wiki does keep hands for this weapon's reload, and a hands-free MP40 frame is anomalous for the same wiki.",
+      "does_not_answer": "Whether the magazine is fully clear of the weapon. That is an EYE JUDGEMENT here (medium confidence), not a measurement - the alpha topology is inapplicable, see measurement.why_it_matters. Also does not answer beat structure.",
+      "image_ref": "reload-anim-midpoint/bo1_m1911_reload_midpoint.jpg",
+      "provenance": "Single wiki file, one uploader. ONE data point, independent of the MP40 file only in the weak sense of being a different upload on the same wiki."
+    },
+    {
+      "id": "bo1-rpk-firstperson-zombies",
+      "source": {
+        "url": "https://callofduty.fandom.com/wiki/File:RPK_BO_Zombies.png",
+        "source_image_url": "https://static.wikia.nocookie.net/callofduty/images/5/51/RPK_BO_Zombies.png/revision/latest?cb=20120121005125",
+        "product": "Call of Duty: Black Ops (2010) Zombies - RPK",
+        "uploaded": "2012-01-21"
+      },
+      "captured_at": "2026-08-03",
+      "freshness": "fresh",
+      "element": "RPK first-person viewmodel, in-game screenshot WITH the HUD and the game frame intact",
+      "ui_pattern": "fps-viewmodel-rest-pose",
+      "kano_bucket": "table-stakes",
+      "evidence_tier": "2 - an uncropped in-game screenshot, NOT a cut-out. Better tier than every MP40 card in this corpus: frame edges, crosshair and HUD are all present, so screen-fraction and pose ARE measurable from it, unlike the alpha cut-outs.",
+      "visual_description": "960x640 gameplay frame, wood-and-plaster interior, points 1950, ammo 100/400. The RPK occupies the lower right of the frame with the muzzle running AWAY and to the LEFT: wooden handguard and front sight at the weapon's upper left, receiver running down to the lower right, folded bipod under the barrel, and a large dark rectangular mass at the extreme right that is the drum/stock group. The flank turned toward the camera is a broad, essentially featureless expanse - no charging handle, no reciprocating part and no ejection port is drawn on it. A knife blade is visible at bottom centre.",
+      "answers": "BOTH questions it was captured for. (1) BO1's own RPK viewmodel resolves the weapon's LEFT flank toward the camera with the muzzle yawed inward and away - the same convention gunart.gd's rest pose uses, now corroborated from the reference rather than inferred from our own art. (2) NO moving part is visible on that flank at rest: the visible side of BO1's RPK is as mechanically inert as ours.",
+      "does_not_answer": "What the fire animation does. A rest still cannot show whether viewmodel_rpk_fire animates anything, and cannot rule out a small motion the JPEG re-encode would lose. It also does not settle whether BO1 MIRRORED the handle onto the visible side - at this resolution a mirrored knob and a bare receiver are not distinguishable.",
+      "image_ref": "fps-viewmodel-rest-pose/bo1_rpk_firstperson_zombies.jpg",
+      "provenance": "Single wiki file, one uploader. Corroborated on the specific point 'far-side mechanism gets no idle treatment' by an INDEPENDENT source: BO1's own rpk_zm weapon file leaves emptyIdleAnim blank, one of only two weapons on the 14-row roster that does."
+    },
+    {
+      "id": "bo1-rpk-cocking-repose",
+      "source": {
+        "url": "https://callofduty.fandom.com/wiki/File:RPK_Cocking_BO.png",
+        "source_image_url": "https://static.wikia.nocookie.net/callofduty/images/c/ce/RPK_Cocking_BO.png/revision/latest?cb=20111106030750",
+        "product": "Call of Duty: Black Ops (2010) - RPK",
+        "uploaded": "2011-11-06"
+      },
+      "captured_at": "2026-08-03",
+      "freshness": "fresh",
+      "element": "one frame of the RPK cocking/charging animation, first person, cut out to alpha",
+      "ui_pattern": "weapon-cocking-repose",
+      "kano_bucket": "delighter",
+      "evidence_tier": "3 - shipped game art, community-extracted AND cropped, and the file NAME is the only thing asserting which action this is. Bare forearms date it to a Vietnam-era singleplayer level, not Zombies.",
+      "visual_description": "The weapon is canted FAR from any rest pose: muzzle up and to the LEFT at roughly 45 degrees or more, receiver running down to the lower right, wooden handguard and leather sling clearly readable, bipod at the lower left. A bare (ungloved) forearm and hand fill the right third of the frame very close to camera, crossed over toward the receiver.",
+      "answers": "The idiom, which is the transferable part: when BO1 needs the player to read a mechanical action, it RE-POSES THE WHOLE WEAPON - a large rotation plus a translation, far larger than the moving part's own travel - rather than relying on the part's motion inside the rest pose. The same is visible in M1911_Cocking_BO.png, where the pistol is rolled so the top of the slide faces the camera and the support hand comes over the top.",
+      "does_not_answer": "WHICH part is being worked, and whether the charging handle is drawn on the near flank. The resolution and the crop do not support that read. Do not cite this image for anything about the handle itself.",
+      "image_ref": "weapon-cocking-repose/bo1_rpk_cocking.jpg",
+      "provenance": "Single wiki file, one uploader. The 're-pose for a mechanical action' reading is corroborated by a second independent file (M1911_Cocking_BO.png) showing the same idiom on a different weapon."
     }
   ],
   "gaps": [
@@ -82,6 +147,13 @@
       "question": "Is a casing visible in the viewmodel frame at typical framing, and does it arc right-and-back?",
       "status": "OPEN - no capture attempted to completion",
       "reason": "Same motion-evidence problem, and worse: a casing is airborne for a few frames, so even a lucky still is unlikely to catch one. Ruled not obtainable from still wiki assets within budget. The pattern directory was REMOVED rather than left empty, because an empty directory is invisible to git and reads as coverage."
+    },
+    {
+      "ui_pattern": "weapon-cocking-repose",
+      "question": "Does BO1 MIRROR a far-flank control (AK/RPK charging handle) onto the viewmodel's visible left side, the way FPP weapon-art practice describes doing for sight knobs?",
+      "status": "OPEN",
+      "reason": "Both RPK stills obtained are too low-resolution and too heavily cropped/canted to resolve a knob on the near flank. Settling it needs either a viewmodel-model rip or a high-resolution near-flank still, neither obtainable from wiki assets.",
+      "not_the_reason": "NOT a browser block. Three further images were captured through the browser tier in the same session."
     }
   ],
   "blocked_sources": [
