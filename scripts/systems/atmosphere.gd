@@ -691,7 +691,7 @@ func smoke_heat() -> float:
 ## ALL THREE layers, or the first shot of a match compiles a variant mid-fight.
 ##
 ## And this accessor is the ONLY thing standing between the smoke and a
-## first-trigger-pull hitch, in BOTH directions. `verify.gd:1039-1052` builds its
+## first-trigger-pull hitch, in BOTH directions. `verify.gd:1071-1084` builds its
 ## `wanted` set from these accessors and its `seen` set from the warm pass, then
 ## reports members of `wanted` missing from `seen` — so a material never DECLARED
 ## here is never in `wanted`, is never missed, and `main.gd:174` feeds the warm

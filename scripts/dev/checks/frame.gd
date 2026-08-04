@@ -37,6 +37,10 @@ extends RefCounted
 
 const FRAME_STATS := preload("res://scripts/dev/frame_stats.gd")
 const SHOT_SETUP := preload("res://scripts/dev/shot_setup.gd")
+## The reader, the comparator and the departure register for `kriegsnacht.html`'s own
+## weapon table. It lives one level up rather than in `checks/` because this file
+## cannot be parse-gated at all — see `_gun_ancestor` at the foot of the file.
+const ANCESTOR_ART := preload("res://scripts/dev/ancestor_art.gd")
 const ATMOSPHERE := preload("res://scripts/systems/atmosphere.gd")
 const GUNART := preload("res://scripts/data/gunart.gd")
 const LIGHTING := preload("res://scripts/world/lighting.gd")
@@ -72,8 +76,10 @@ static func run(v: Verify, main: Node3D) -> void:
 	_flash_art(v, main)
 	_flash_drawn(v, main)
 	_gun_depth(v)
+	_gun_bands(v)
 	_gun_shade(v)
 	_gun_sights(v)
+	_gun_ancestor(v)
 
 
 # --- part 1: the transfer functions -------------------------------------------
@@ -1206,7 +1212,7 @@ static func _flash_materials(v: Verify, main: Node3D) -> void:
 	# THE SET, NOT THE LENGTH — corrected 2026-08-02, when the muzzle smoke made
 	# `materials()` three long and this went red for a correct change. `mats.size()
 	# == 2` and the `mats[0]` below were a length check and an array-order read on a
-	# list whose whole job is to grow; verify.gd:1046-1049 makes exactly this
+	# list whose whole job is to grow; verify.gd:1098-1101 makes exactly this
 	# argument about exactly this kind of list, in its own words — "a length check
 	# breaks the moment a seventh is added, which is exactly when it should still be
 	# useful". What has to be true is that BOTH flash layers are declared, that they
@@ -1330,7 +1336,7 @@ static func _flash_materials(v: Verify, main: Node3D) -> void:
 # different questions about the same table, and the second one is the reason the
 # first is trustworthy.
 #
-# THE COMMITTED MESH IS READ BACK. `gunart.gd:348-354` argues, correctly, that a
+# THE COMMITTED MESH IS READ BACK. `gunart.gd:1027-1032` argues, correctly, that a
 # safety assertion must not hang on `surface_get_arrays()` — a silently empty
 # result under the dummy driver would make it pass by measuring nothing. That
 # argument is about `_measure()`, which has no way to notice an empty set. It does
@@ -1340,21 +1346,11 @@ static func _flash_materials(v: Verify, main: Node3D) -> void:
 # `build_body("m1911")` returns a mesh with one surface and 252 vertices, so the
 # round trip is live and this is a real readback rather than a hopeful one.
 
-## `ART`'s part count per weapon, from `kriegsnacht.html:1151`.
-##
-## Stated here rather than read out of `ART`, which would be the tautology
-## `verify.gd:_registered()` exists to avoid. Its job: `tools/gen/targets.js:150-162`
-## bakes the chalk wall plaques from a SECOND copy of this table
-## (`tools/gen/ancestor.generated.js:634`) and nothing else asserts the two agree
-## (M5 F8), so a part appended to `ART` silently stops the plaque on the wall from
-## being a drawing of the weapon behind it. Appending to `SIGHTS` cannot: that
-## constant is ours and is deliberately not in the ancestor's table. This check is
-## what keeps that distinction from being a comment.
-const ANCESTOR_PARTS := {
-	"m1911": 7, "olympia": 7, "m14": 7, "mp40": 8, "pm63": 6, "ak74u": 8,
-	"stakeout": 8, "m16": 8, "rpk": 9, "chinalake": 7, "raygun": 10,
-	"thundergun": 11, "knife": 5,
-}
+# `ANCESTOR_PARTS` — thirteen hand-typed part counts — STOOD HERE, and `_gun_ancestor`
+# at the foot of this file is what replaced it. The reasoning is recorded there,
+# because the table's own defence is the thing that failed. A plain `#` and a blank
+# line below on purpose: as a `##` run this attached itself to `SHIPPED_MAX_HALF` and
+# gave an unrelated depth constant a doc string about a deleted table.
 
 ## The deepest half-depth reachable under the draw-order expression this package
 ## replaced: `BASE_HALF + i*LAYER` at the largest index in the table, the
@@ -1444,9 +1440,17 @@ static func _gun_depth(v: Verify) -> void:
 
 	# M5 A14, stated over the table rather than over the mesh, and computed through
 	# the same `part_half()` the builder calls rather than re-derived. The gloves
-	# are pinned at HAND_HALF and HAND_HALF + LAYER (`gunart.gd:529-535`) and do NOT
-	# ride the ramp, so a gun part landing on either z-fights its caps against a
-	# glove. Provenance: `gunart.gd:190-200`, the z-fight the ramp exists to fix.
+	# are pinned at HAND_HALF and HAND_HALF + LAYER (`gunart.gd:995` and `:1253-1261`,
+	# where `_hands` assigns those two literally) and do NOT ride the ramp, so a gun
+	# part landing on either z-fights its caps against a glove. Provenance:
+	# `gunart.gd:695-705`, the z-fight the ramp exists to fix.
+	#
+	# BOTH CITATIONS ON THIS LINE WERE WRONG BEFORE THE BANDS PACKAGE TOUCHED THE FILE,
+	# and neither was caught by mapping them forward — they were checked. `529-535`
+	# was `BASE_HALF`/`LAYER` and the head of the `DEPTH` tier doc, which never
+	# mentions a glove; `190-200` was the tail of the `SLIDE` table, which never
+	# mentions a z-fight. Recorded rather than silently corrected, because "the
+	# citation was already wrong" is a finding.
 	#
 	# The first draft of F7 gave a different mechanism for this rule — the hands'
 	# `PROUD` exemption — and that mechanism is false: `_inflate` never sees a
@@ -1459,10 +1463,10 @@ static func _gun_depth(v: Verify) -> void:
 		for i in GUNART._parts(key).size():
 			var h: float = GUNART.part_half(key, i) / GUNART.UNIT
 			if absf(h - GUNART.HAND_HALF) < 0.005 or absf(h - GUNART.HAND_HALF - GUNART.LAYER) < 0.005:
-				on_glove += "%s[%d] %.2f " % [key, i, h]
+				on_glove += "%s %s %.2f " % [key, GUNART.part_id(key, i), h]
 			var q := snappedf(h, 0.0001)
 			if seen.has(q):
-				collide += "%s[%d] %.2f " % [key, i, h]
+				collide += "%s %s %.2f " % [key, GUNART.part_id(key, i), h]
 			seen[q] = true
 	v.check("no weapon part is extruded to a glove's depth",
 		on_glove.is_empty(),
@@ -1485,7 +1489,7 @@ static func _gun_depth(v: Verify) -> void:
 			deepest = maxf(deepest, h)
 			thinnest = minf(thinnest, h)
 			if h > SHIPPED_MAX_HALF:
-				over += "%s[%d] %.2f " % [key, i, h]
+				over += "%s %s %.2f " % [key, GUNART.part_id(key, i), h]
 	v.check("no part is extruded deeper than the draw-order expression already did",
 		over.is_empty(),
 		"ceiling %.2f art units, deepest %.2f, over: %s" % [
@@ -1518,6 +1522,84 @@ static func _gun_depth(v: Verify) -> void:
 	v.check("the knife's blade is at most half the thickness of its handle",
 		k_blade <= 0.5 * k_handle,
 		"blade %.2f against handle %.2f art units" % [k_blade, k_handle])
+
+
+# --- part 11b: the walk, decomposed -------------------------------------------
+#
+# `gunart.gd`'s walk is `ART + SIGHTS + DETAIL` and a part's place in the PAINTING
+# used to be read straight off its place in the ARRAY, at five separate sites. Those
+# two are the same number today and stop being the same number the first time
+# something ahead of a part can be absent — which is what optional geometry is. The
+# checks below pin the seam that separates them, and one of them (the footprint)
+# covers the half of the ordinal nothing here could see at all.
+#
+# EVERY WALK BELOW LIVES IN `ancestor_art.gd`, not here. This file aborts its parse
+# gate at `:1077` on the documented `Identifier not found: Rng` false positive,
+# hundreds of lines above this point, so nothing written down here is gateable;
+# `ancestor_art.gd` names no autoload and gates clean on its own. What is left in
+# this file is a driver line and a `v.check`, which is as much as an ungateable file
+# should be trusted with.
+
+static func _gun_bands(v: Verify) -> void:
+	# 1. THE RANK PIN, and it is honest about being a pin: `RANK` is empty, so
+	# `part_rank` is the identity and the only control is deleting the identity. What
+	# it is FOR is the day a band becomes conditional — it is the only assertion that
+	# says an optional part may not renumber the M1911's slide, and every vertex of
+	# every weapon rests on that. The acceptance guard stops it passing having walked
+	# nothing.
+	var rk := ANCESTOR_ART.rank_faults()
+	v.check("every part of every band still ranks at its own place in the paint order",
+		String(rk["diff"]).is_empty() and int(rk["n"]) == 119,
+		"ranked %d parts; %s" % [int(rk["n"]), rk["diff"]])
+
+	# 2. ...and the walk really is the bands, every part of it is addressable, and the
+	# read-only aliasing this file MEASURED still holds for exactly three weapons.
+	# Closes `_parts` from the side the distinct-|x| count above cannot reach: drop a
+	# band from `_bands()` and `_parts`, written over it, silently loses those rows
+	# while every count derived from `_parts` moves down with them.
+	var wk := ANCESTOR_ART.walk_faults()
+	v.check("the walk is exactly the bands concatenated, and every part it walks has an address",
+		String(wk["diff"]).is_empty() and int(wk["n"]) == 119,
+		"walked %d parts; %s" % [int(wk["n"]), wk["diff"]])
+
+	# 3. THE ORDINAL-STABILITY PROPERTY, driven through the real `_band_base` against
+	# censuses the tables do not hold — which is how "a band growing moves no earlier
+	# part" is tested with no detail or attachment row invented. BOUNDED AT BOTH ENDS:
+	# the refusal half alone passes perfectly against a `_band_base` that always
+	# returns zero, so growing an EARLIER band must move the later base by exactly as
+	# much.
+	var bs := ANCESTOR_ART.base_faults()
+	v.check("no band's base moves when a later band grows, and it moves exactly when an earlier one does",
+		String(bs["diff"]).is_empty() and int(bs["n"]) == 195,
+		"made %d claims over 13 weapons; %s" % [int(bs["n"]), bs["diff"]])
+
+	# 4. A PAINTED HIGHLIGHT IS PROUD OF EVERYTHING IT IS PAINTED ON
+	# (`gunart.gd:757-765`), and until now nothing said so: the depth checks above
+	# assert that no two parts SHARE a depth, never that the one on top is the deeper.
+	# MEASURED 2026-08-03 through the real accessors: 27 parts across the roster are
+	# drawn strictly inside an earlier part's box, all 27 come out deeper than every
+	# host, and fifteen of them are separated by exactly one `LAYER` step — which is
+	# `LAYER` doing the only job it has left since the `DEPTH` table landed, and makes
+	# this the first assertion anywhere that would notice `LAYER` going to zero. It is
+	# also the roster-side control on `detail_rules()`'s `proud` clause.
+	var ns := ANCESTOR_ART.nest_faults()
+	v.check("every part drawn inside another is extruded proud of it",
+		String(ns["diff"]).is_empty() and int(ns["n"]) == 27,
+		"%d nested parts; %s" % [int(ns["n"]), ns["diff"]])
+
+	# 5. AND THE TWO ORDINALS ARE ONE ORDINAL, ASSERTED OFF THE COMMITTED MESH. Depth
+	# ramps by `LAYER` and the polygon grows by `PROUD`; before `part_rank` those were
+	# separate expressions in separate functions, and nothing here could see them
+	# disagree — the lead assertion above compares |x| only, which is the `LAYER` half
+	# alone. A part's |x| identifies it uniquely (that is what "no two parts are
+	# extruded to the same depth" buys), so its footprint is pulled back out of the
+	# `ArrayMesh` and put against the box its own rank inflates. MEASURED: 119 parts
+	# matched, worst delta 3.8e-6 art units against a 0.04 `PROUD` step, and a +1 rank
+	# shift moves the box of all 119 — so there is no part this cannot see.
+	var fp := ANCESTOR_ART.footprint_faults()
+	v.check("every part's footprint in the committed mesh is its own art box grown by its own rank",
+		String(fp["diff"]).is_empty() and int(fp["n"]) == 119,
+		"matched %d parts; %s" % [int(fp["n"]), fp["diff"]])
 
 
 static func _gun_shade(v: Verify) -> void:
@@ -1712,15 +1794,289 @@ static func _gun_sights(v: Verify) -> void:
 	v.check("...and on every one of them the sight, not the receiver, is the top of the weapon",
 		not_topmost.is_empty(), not_topmost)
 
-	# `ART` IS STILL THE ANCESTOR'S, part for part. See ANCESTOR_PARTS: the chalk
-	# wall plaques are baked from a second copy of that table and nothing else
-	# checks that the two still describe the same weapon. This is what makes
-	# "append to SIGHTS, never to ART" a rule instead of a preference.
-	var drifted := ""
-	for key: String in GUNART.keys():
-		var want: int = ANCESTOR_PARTS.get(key, -1)
-		var got: int = GUNART.ART[key].size()
-		if got != want:
-			drifted += "%s %d/%d " % [key, got, want]
-	v.check("ART still holds exactly the ancestor's parts, so the chalk plaques still match",
-		drifted.is_empty(), drifted)
+
+# --- part 12: `ART` against the ancestor itself --------------------------------
+#
+# THE AUTHORITY IS READ, instead of a third copy of a statistic derived from it.
+#
+# There were three statements of one table: `kriegsnacht.html:1151-1207` (the
+# authority), `gunart.gd:50`'s `ART` (what the game builds from), and
+# `ANCESTOR_PARTS` — thirteen hand-typed integers in this file. The check named for
+# part-for-part fidelity compared the second against the third on `Array.size()`, so
+# it could only ever notice the two DERIVED copies disagreeing about a COUNT. Every
+# geometry, colour, kind and ORDER change passed it silently, and because its loop
+# walked `GUNART.keys()` — which is `ART.keys()` (`gunart.gd:1000-1001`) — a weapon
+# deleted from `ART` outright was never even asked about.
+#
+# `ANCESTOR_PARTS` defended itself as "stated here rather than read out of `ART`,
+# which would be the tautology `_registered()` exists to avoid". That argument holds
+# against reading OURS. It does not hold against reading the ancestor:
+# `extract.js:414`'s `sliceRange()` cuts the plaque's own copy out of this same file
+# — the `art` range that carries `GUNART` is declared at `extract.js:61-72` and names
+# it at `:65`, while `:22` is only the path constant — and `targets.js:150-162` bakes
+# from that slice, so `kriegsnacht.html` is UPSTREAM OF BOTH COPIES and thirteen
+# integers were a statistic derived from it.
+#
+# WHAT THIS PROTECTS, and the deleted check's name was wrong about it. It said "so the
+# chalk plaques still match". The plaques are baked from the ANCESTOR by
+# `targets.js:155`, never from `ART`, and the committed PNGs are byte-identical to a
+# fresh bake — so they are a frozen fossil that cannot drift with `ART` at all, and
+# only five of the six fields below are anything they could witness. MEASURED
+# (2026-08-02, by replaying `makeChalk`): the plaque draws every part through a mono
+# colour override (`html:1133`, `'#E8E3D2'` at `:1251`), so recolouring every
+# part of all 13 weapons moves 0 of 2080 px; reversing a whole part list moves 28-83
+# px at a worst channel-sum delta of 3-6 of 765, which is antialias rounding; and only
+# 8 of the 13 keys have a plaque at all (m1911, rpk, chinalake, raygun and thundergun
+# have none). So COLOUR and ORDER stand on `_tint` (`gunart.gd:1427-1431`) turning
+# each hex into the mesh's vertex colours, on `SLIDE` indexing `ART` by position, and
+# on CLAUDE.md's departure doctrine — NOT on the plaque. What this package protects is
+# the RECORD and the viewmodel mesh; geometry and kind on the 8 plaqued weapons is the
+# only half the plaque corroborates.
+#
+# AND IT IS DIRECTIONAL. A departure that is not recorded as a deliberate departure is
+# wrong even when the departure is right, so a difference fails unless
+# `ancestor_art.DEPARTURES` names it with both rows and a reason — and a waiver that
+# no longer describes a live difference fails too, because a stale waiver is a skip
+# that passes.
+#
+# TWO THINGS THIS CANNOT SEE, said plainly. It renders nothing, like everything else
+# in this file: no frames scenario holds any weapon but the starting M1911 and the Ray
+# Gun, so an `ART` drift is invisible to every pixel this project measures. And it
+# compares `ART` against the ancestor, not against Black Ops 1 — where those two
+# disagree the reference wins, and the register below is the only place that can be
+# written down.
+#
+# THE PARSE GATE GIVES THIS ZERO COVERAGE. `--check-only --script
+# scripts/dev/checks/frame.gd` aborts at `frame.gd:1077` on the documented
+# `Identifier not found: Rng` autoload false positive, hundreds of lines above here,
+# so everything below it is unparsed. Anyone who runs it, recognises the familiar
+# autoload noise and concludes "clean apart from that" has checked nothing. That is
+# why every non-trivial line lives in `scripts/dev/ancestor_art.gd`, which gates clean
+# on its own (MEASURED: EXIT=0), and why what is left here is `v.check` calls.
+#
+# COST: one ~140 KB read (139 769 bytes here, 143 245 from a CRLF checkout), a newline
+# fold, a regex substitution, a JSON parse and a sha256.
+#
+# MEASURED 2026-08-03 rather than asserted — the figure this replaces said "MEASURED at
+# 1.3 ms" and no such measurement was ever run, which is the snapshot-without-provenance
+# CLAUDE.md forbids wearing the word MEASURED. Method: `Time.get_ticks_usec()` around
+# twenty `ANCESTOR_ART.read()` calls and around the rest of this function, temporarily
+# spliced in, `--verify` run three times, then reverted. `read()` is 29.0 / 29.0 /
+# 32.6 ms for twenty, i.e. 1.45-1.63 ms each (warm cache — the first of the twenty
+# absorbs the cold read). THE TOTAL ONLY, deliberately: the first revision also quoted
+# a read/checks SPLIT, and two independent re-measurements of the rest of this function
+# got 0.65-1.03 ms against its claimed 1.79-2.27, so the decomposition did not
+# reproduce and is not worth a number. The whole of `_gun_ancestor` is about 2.3-3.1 ms
+# against a suite that takes about ten seconds, which is what the decision rests on.
+static func _gun_ancestor(v: Verify) -> void:
+	var res := ANCESTOR_ART.read()
+	var anc: Dictionary = res["art"]
+	var sha: String = res["sha"]
+
+	# 1. THE AUTHORITY IS THERE, IT IS WHERE THIS SUITE SAYS, AND IT IS THIS ONE.
+	# Everything below would pass vacuously against an ancestor that had been renamed:
+	# `get_file_as_string()` returns "" for a missing file without raising, the diff
+	# over an empty table is empty, and the register is legitimately empty too. So the
+	# liveness is asserted here, by name, and the detail prints the anchor TEXT beside
+	# the line it was found at — a reformatted ancestor has to read as "the citation
+	# moved", not as "the file vanished".
+	#
+	# The anchors are SCANNED for and then asserted to be at 1151/1207, which makes
+	# `gunart.gd:34`'s citation a thing the code enforces rather than a claim that
+	# rots. The hash is what makes the citation unrottable in the other direction: a
+	# content-pinned file cannot drift its line numbers unnoticed, and the pin catches
+	# an ancestor edit the counts and anchors would both survive. CONTENT-pinned, not
+	# byte-pinned: `read()` folds CRLF to LF before hashing (`ancestor_art.gd:161-173`),
+	# which is what makes a fresh checkout pass — see there for the blind spot that
+	# opens. `sha` is left "" by that function's early return when the file cannot be
+	# read, hence the length clause; belt and braces with the `why` clause beside it.
+	v.check("the ancestor's own weapon table is where this suite cites it, in the kriegsnacht.html this checkout pins",
+		String(res["why"]).is_empty()
+			and int(res["head"]) == ANCESTOR_ART.HEAD_LINE
+			and int(res["tail"]) == ANCESTOR_ART.TAIL_LINE
+			and sha.length() == 64 and sha == ANCESTOR_ART.ANCESTOR_SHA,
+		ANCESTOR_ART.read_detail(res))
+
+	# 2. The roster and the cardinality, ORDERED, against `ART` itself — which has to
+	# be read directly, because the walk below legitimately holds more parts than the
+	# ancestor drew. This is the one claim the deleted check actually made, kept and
+	# taken from thirteen integers to the table they were counted from.
+	var roster := ANCESTOR_ART.roster_diff(anc, GUNART.ART)
+	v.check("ART holds exactly the ancestor's weapons, in its order, and exactly as many parts for each",
+		roster.is_empty() and not anc.is_empty(), roster)
+
+	# The keys both sides declare. Splitting them out is what lets a roster mistake and
+	# a geometry mistake fail INDEPENDENTLY — without it, erasing a weapon from `ART`
+	# reddens two checks for one defect and neither control can prove which did the
+	# work.
+	var keys := ANCESTOR_ART.shared_keys(anc, GUNART.ART)
+
+	# `_parts()`, not `ART`: it is what `_build` (`gunart.gd:1168`) and `_corners`
+	# (`:1003`) both walk, and :1411-1422 above already ties that walk to the committed
+	# `ArrayMesh` — so the chain runs from `kriegsnacht.html` to the vertices on screen
+	# with no copy in the middle. A test that does not read what the game reads is
+	# testing a copy.
+	#
+	# READ ONLY, and it has to stay that way. MEASURED, and RE-MEASURED 2026-08-03
+	# after `_parts` was rewritten over `_bands`: `_parts("raygun")` IS `ART["raygun"]`
+	# itself and reports `is_read_only() == true`, because `_parts` still returns the
+	# `B_ART` rows unchanged when every band after them is empty; `_parts("m1911")` is
+	# a fresh concatenation and is not. Exactly three weapons — raygun, thundergun,
+	# knife — are on the frozen side, the same three as before. Nothing below mutates
+	# it. Anything that later sorts or appends to the result would error on 3 of the 13
+	# and pass on the other 10, which is the worst shape a bug can have; a band
+	# inserted BEFORE `art` in `_bands()` would silently change which three, and
+	# `_gun_bands`' walk check is what watches for it — the property is no longer only
+	# a comment.
+	var walk := {}
+	for key: String in keys:
+		walk[key] = GUNART._parts(key)
+
+	# 2b. THE WALK, DECOMPOSED INTO THE BANDS THIS PROJECT DECLARES, which is what
+	# `parts_total == 119` above cannot do: 119 is satisfied by 100 ancestor parts plus
+	# 19 sight rows, and by a row moved from one band into another in either direction.
+	# Three components, each backed by a DIFFERENT authority — 101 against the rows
+	# just read out of `kriegsnacht.html` (no second read is paid; `anc` is in hand),
+	# 18 against `SIGHT_ROWS`, 0 against `DETAIL_ROWS` — plus two clauses no total
+	# could make. Every band may name only weapons `ART` declares, because `keys()`
+	# returns `ART.keys()` and a weapon existing only in a later band is invisible to
+	# `viewmodel._prebuild`, to `sweep()` and to eleven loops in this suite, silently.
+	# And the last band is where anything CONDITIONAL would have to go, which is what
+	# the stability property rests on — so a fourth band reddens this and the detail
+	# prints the handover list rather than a puzzle.
+	var bands := ANCESTOR_ART.band_faults(anc)
+	v.check("the roster's parts decompose into the three bands this project declares, and every band names only weapons ART declares",
+		String(bands["diff"]).is_empty() and int(bands["n"]) == 119,
+		"walked %d parts; %s" % [int(bands["n"]), bands["diff"]])
+
+	var bad: Array = []
+	var live := ANCESTOR_ART.waivers(ANCESTOR_ART.DEPARTURES, anc, walk, bad)
+
+	# 3. THE LEAD ASSERTION: every part, field for field — kind, arity, x, y, w, h, the
+	# `rr` rotation, the `c` radius, the polygon vertex list and the colour — and, by
+	# comparing index against index, ORDER. None of which the deleted check could see.
+	# The failure detail is written in the register's own notation, so recording a
+	# deliberate departure costs one paste and one sentence.
+	var pd := ANCESTOR_ART.part_diff(anc, walk, keys, live)
+	var compared: int = pd["n"]
+	v.check("every part the ancestor drew is the part the weapon builder walks, field for field",
+		String(pd["diff"]).is_empty() and compared > 0,
+		"compared %d parts; %s" % [compared, pd["diff"]])
+
+	# 4a. ...and nothing of ours is mixed in AMONG them: everything past the ancestor's
+	# parts is the iron sight this project RECORDED, row for row and channel for
+	# channel. MEASURED: 101 ancestor parts + 18 recorded sight rows is exactly the 119
+	# that `parts_total` pins above, and this asserts the per-weapon form of that sum,
+	# which the sum cannot do.
+	#
+	# WHAT THIS DOES NOT DO, because the revision that shipped first claimed it did:
+	# it does not see a row moved from `SIGHTS` into `ART`. The tail is sliced at the
+	# ANCESTOR's part count, so a moved row lands back in the tail at the same index and
+	# matches this record byte for byte. MEASURED: check 2 is what reddens, on `ART`
+	# holding a part the ancestor never drew. `gunart.gd:432-436`'s "appended and never
+	# inserted" — the rule `SLIDE`'s positional indices depend on — is enforced there
+	# and by 4b's `proud` relation, not here.
+	#
+	# THE TAIL IS NOW TWO BANDS AND THIS ONE READS THE FIRST. `sight_diff` slices the
+	# sight band at the RECORD's own length and hands everything past it to 4c below,
+	# so a `DETAIL` row cannot land here and be mistaken for a sight — and a sight row
+	# that overflows the record's length cannot hide here either, because it lands in
+	# the detail band where `DETAIL_ROWS` is 0. Neither slice point comes from
+	# `SIGHTS`, which is the side under test.
+	#
+	# THE EXPECTATION IS NOT `GUNART.SIGHTS`, AND THAT IS THE WHOLE REPAIR. The check
+	# this replaces passed `SIGHTS` in as the expectation against a walk that IS
+	# `ART + SIGHTS`, so both sides of every comparison were one const and every edit
+	# moved them together — MEASURED, a destroyed M16 front tower, reversed RPK sight
+	# rows and a magenta M14 front post each passed the whole suite as it then stood,
+	# 789 green and nothing red, and so did an `ART` colour with its alpha at zero. The
+	# expectation now lives in `ancestor_art.gd`, the tail is sliced at the ANCESTOR's
+	# own part count, and the count is of ROWS rather than of weapons, so `SIGHTS`
+	# emptied outright cannot report thirteen comparisons having made none.
+	var sd := ANCESTOR_ART.sight_diff(anc, walk, keys)
+	var rows: int = sd["n"]
+	var faults := ANCESTOR_ART.record_faults()
+	v.check("...and everything past the ancestor's parts is the iron sight this project recorded, field for field",
+		String(sd["diff"]).is_empty() and faults.is_empty()
+			and rows == ANCESTOR_ART.SIGHT_ROWS,
+		"compared %d of the %d recorded sight rows; %s%s" % [
+			rows, ANCESTOR_ART.SIGHT_ROWS, sd["diff"], faults])
+
+	# 4b. AND THE HALF A RE-PASTE CANNOT SATISFY. A record is a table of absolutes and
+	# absolutes are what get re-pasted by an agent in a hurry; `golden.json`'s
+	# `relations` block is this project's standing answer to that, and these are the
+	# same thing for the sights — five named rules over the same walked tail, each with
+	# its own provenance in `gunart.gd`'s design comments. MEASURED: sabotage `SIGHTS`
+	# AND update the record to match, and this still fails — `cue` for a shortened M16
+	# tower, `order` for reversed RPK rows, `colour` for a magenta M14 post, `proud` for
+	# a blade sunk into the carry handle it stands on.
+	#
+	# Its own row counter, deliberately not shared with 4a: 4b walks the tails while 4a
+	# walks the record, so a tail that is somehow non-empty but unrecorded makes the two
+	# counts disagree and reddens both.
+	var sr := ANCESTOR_ART.sight_rules(GUNART.ART, sd["tails"])
+	var seen: int = sr["n"]
+	v.check("...and every one of them is still a sight: proud of what it is mounted on, post ahead of blade, one colour, the M16's tower the tallest",
+		String(sr["diff"]).is_empty() and seen == ANCESTOR_ART.SIGHT_ROWS,
+		"measured %d of the %d recorded sight rows; %s" % [
+			seen, ANCESTOR_ART.SIGHT_ROWS, sr["diff"]])
+
+	# 4c. AND EVERYTHING PAST THE SIGHTS IS THE DETAIL BAND, which is empty and is
+	# recorded as empty. This is the band `gunart.gd`'s `DETAIL` opened so our own
+	# non-sight geometry has somewhere to go that is neither a forged ancestor part nor
+	# a lie about what a sight is — and the reason 4b above could be narrowed to the
+	# sight band without the two rules it gave up going unwatched.
+	#
+	# THREE THINGS ANDED, because the live table is EMPTY and a validator run over an
+	# empty band asserts precisely nothing — the shape CLAUDE.md calls a skip that
+	# passes. The band matches its record; the record is well formed and totals
+	# `DETAIL_ROWS`; and `detail_self_test()` drives the REAL `detail_rules()` over
+	# fixtures — one well-formed row that must be HONOURED, and one malformed row per
+	# rejection clause, each refused BY THE CLAUSE IT NAMES. That last requirement is
+	# not tidiness: the first draft of those fixtures keyed the rows `fixture` against
+	# hosts keyed `knife`, so all four found no parts at all and were intercepted by
+	# `seat` two clauses early — the identical defect §5's own fixtures were rewritten
+	# to remove, reproduced within one package of it being written down.
+	var dets: Dictionary = sd["details"]
+	var dn := 0
+	for key: String in dets:
+		dn += (dets[key] as Array).size()
+	var dr := ANCESTOR_ART.detail_rules(GUNART.ART, dets)
+	var df := ANCESTOR_ART.detail_faults()
+	var dfx := ANCESTOR_ART.detail_self_test()
+	# `detail_diff` is the half the name claims and `detail_faults` does not do: the
+	# RECORD against the BAND. Without it the record validated only its own shape, and
+	# a record disagreeing with every live row in x, y, w, h and colour passed green —
+	# see `ancestor_art.detail_diff`. Harmless while the band is empty, and the band
+	# existing is the whole package.
+	var dd := ANCESTOR_ART.detail_diff(dets)
+	v.check("...and everything past the sights is the detail band this project recorded, every row of it a surface feature",
+		String(dr["diff"]).is_empty() and String(dd["diff"]).is_empty()
+			and df.is_empty() and dfx.is_empty()
+			and dn == ANCESTOR_ART.DETAIL_ROWS and int(dr["n"]) == dn
+			and int(dd["n"]) == dn,
+		"the band walks %d rows against DETAIL_ROWS %d, the rules measured %d, the record %d; %s%s%s%s" % [
+			dn, ANCESTOR_ART.DETAIL_ROWS, int(dr["n"]), int(dd["n"]),
+			dr["diff"], dd["diff"], df, dfx])
+
+	# 5. And the register is honest. THIS IS THE ONE THAT WOULD OTHERWISE BE A SKIP
+	# THAT PASSES: `DEPARTURES` is legitimately empty, so a validator run over it alone
+	# asserts nothing at all. So the real register is ANDed with `self_test()`, which
+	# drives the same validator over ten fixtures — a live waiver on a rect and on a
+	# polygon must be honoured, and eight malformed, out-of-range, stale or unreasoned
+	# ones must be refused BY THE CLAUSE EACH ONE NAMES. That last requirement is not
+	# tidiness: the first draft had a fixture printing "a waiver for a difference that
+	# is gone was honoured" which was intercepted two clauses earlier and never reached
+	# the clause it named, so `part_reason(...).is_empty()` could be deleted with the
+	# suite still green. MEASURED, three of the six rejection clauses were uncontrolled
+	# that way; all six are controlled now, each by deleting it and watching this check
+	# alone go red. It had already earned its place before that: it caught this author
+	# pinning `r|1|2|3|4|...` when `row_text` renders `r|1.0|2.0|3.0|4.0|...`, before
+	# the register had a single row in it.
+	#
+	# A rejected waiver suppresses nothing, so a bad waiver reddens check 3 as well
+	# rather than hiding a real drift while this one complains about the paperwork.
+	var fixtures := ANCESTOR_ART.self_test()
+	v.check("every recorded departure from the ancestor is a live difference, exact on both sides and reasoned",
+		bad.is_empty() and fixtures.is_empty(),
+		"%s %s" % [str(bad), fixtures])

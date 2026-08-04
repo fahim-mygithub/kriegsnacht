@@ -33,7 +33,7 @@ extends Node3D
 ## what already happened rather than new entropy. `verify.gd` asserts this from
 ## the other end, and it is the reason there is not a single `randf` below.
 ##
-## That last one had a hole until the brass landed: `verify.gd:1005-1017` drives
+## That last one had a hole until the brass landed: `verify.gd:1037-1049` drives
 ## `impact` and `_on_surface_impact` fifty times and never emits `fired`, so
 ## anything hung off the `fired` path was outside the assertion that names this
 ## file's own rule. `checks/systems.gd` closes it from the `fired` end.
@@ -448,7 +448,7 @@ var _tracer_mat: StandardMaterial3D
 ## Every MultiMeshInstance3D this file owns, in the order `warm()` walks them, and
 ## the warm probe's scale for each. Built where the rings are built rather than
 ## written out by hand: F32's asymmetry is that a material missing from
-## `materials()` fails `verify.gd:1050` while a MultiMesh missing from the warm
+## `materials()` fails `verify.gd:1082` while a MultiMesh missing from the warm
 ## pass is caught by NOTHING and costs every visitor a main-thread compile of the
 ## USE_INSTANCING variant on the first trigger pull of the session.
 var _rings: Array[MultiMeshInstance3D] = []

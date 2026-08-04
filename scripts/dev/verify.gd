@@ -271,10 +271,63 @@ const CHECK_MODULES := {
 ## `Camera3D` that was a claim about where bullets go — a rising aim converts body
 ## shots into headshots at 1.5x damage. Nothing in the suite could see it.
 ##
-## RAISED ADDITIVELY, per the contended-floor rule: 756 + 1 + 27. A quiescent tree
-## ran 785 passing on 2026-08-02, so 784 is the count this check sees on a fully
-## green run and the largest honest floor.
-const ASSERTION_FLOOR := 784
+## RAISED ADDITIVELY, per the contended-floor rule: 756 + 1 + 27. A quiescent tree ran
+## 785 passing on 2026-08-02, which made 784 the largest honest floor AS OF THAT DATE.
+## A dated ledger entry, not a live fact — the count this check sees is whatever the
+## paragraphs below have added to it since (797 on a fully green run today, because
+## `_pass + _fail >= ASSERTION_FLOOR` is evaluated before its own check registers).
+## This number moves with every paragraph added below it; re-measure, do not map it.
+##
+## +5 NET for reading the ancestor instead of a statistic derived from it
+## (checks/frame.gd's `_gun_ancestor`, with the reader, the sight record and the
+## departure register in scripts/dev/ancestor_art.gd): SIX added and ONE removed. The
+## one removed compared `ART`'s part counts against thirteen hand-typed integers under
+## a name that claimed part-for-part fidelity, so every geometry, colour, kind and
+## ORDER change passed it silently — and because its loop was keyed off `ART` itself,
+## so did a weapon deleted from `ART` outright. The six compare `ART` against
+## `kriegsnacht.html:1151-1207`, read at check time.
+##
+## Four of the six carry the package. The field-for-field comparison runs against
+## `GUNART._parts()` — the walk `_build` and `_corners` actually make — and is the
+## only assertion anywhere that can see a part's geometry, colour, kind or order
+## change. TWO cover the tail, because they answer different questions: the record
+## pins what `SIGHTS` IS, row by row, and is the only thing that can see a sight row's
+## geometry, colour or order change — three such sabotages passed the entire suite
+## before it existed. The relations assert what a sight MUST BE whatever the record
+## says, so they are what survives the record being re-pasted to match a sabotage.
+##
+## The record does NOT see a row moved from `SIGHTS` into `ART`, and the draft of this
+## paragraph that shipped with the first revision claimed it did. `sight_diff` slices
+## the walk at the ANCESTOR's part count (`ancestor_art.gd:636`), not at `ART`'s, so a
+## moved row lands back in the tail at the same index and matches the record byte for
+## byte. MEASURED: check 2 reddens, on `ART` holding a part the ancestor never drew.
+## And the liveness check is
+## what keeps the other five honest, because `get_file_as_string()` returns "" for a
+## missing file without raising and an empty departure register would otherwise read
+## as agreement.
+##
+## RAISED ADDITIVELY: 784 + 5. Do not read this as a reconciliation.
+##
+## +7 for the BANDS package, which decouples a part's place in the PAINTING from its
+## place in the walked ARRAY so that optional geometry becomes possible later without
+## renumbering anything that ships today. Five in `checks/frame.gd`'s new `_gun_bands`
+## — the rank pin, the walk-is-the-bands reconstruction, the two-sided ordinal
+## stability property, the proud-of-host relation over the 27 nested parts, and the
+## footprint reconstruction off the committed `ArrayMesh` — and two in `_gun_ancestor`:
+## the per-band census (101 read out of `kriegsnacht.html` + 18 + 0, which the
+## `parts_total == 119` it stands beside cannot decompose) and the detail band against
+## its own record and rules. NOTHING WAS REMOVED and nothing was weakened; `sight_diff`
+## was narrowed to the sight band, and the coverage that narrowing gave up is carried
+## by `detail_rules()`'s `quiet` clause in the same commit.
+##
+## Two of the seven earn coverage nothing here had. The footprint check reads each
+## part's vertices back out of the committed mesh and puts them against the box its own
+## rank inflates — the `PROUD` half of the ordinal, which the lead |x| assertion is
+## structurally blind to because |x| is the `LAYER` half alone. The proud-of-host
+## relation is the first assertion anywhere that would notice `LAYER` going to zero.
+##
+## RAISED ADDITIVELY: 789 + 7. Do not read this as a reconciliation.
+const ASSERTION_FLOOR := 796
 
 var _pass := 0
 var _fail := 0

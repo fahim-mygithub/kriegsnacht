@@ -499,7 +499,7 @@ static func _muzzle(v: Verify, main: Node3D) -> void:
 # each one names the sabotage that must make it, specifically, go red.
 #
 # AND THE RNG CONTRACT, from the end nothing reached. `fx.gd`'s header forbids it
-# any `Rng` draw at all, and `verify.gd:1005-1017` asserts that over `impact` and
+# any `Rng` draw at all, and `verify.gd:1037-1049` asserts that over `impact` and
 # `_on_surface_impact` only — it never emits `fired`, so until this section
 # existed anything hung off the fired path was outside the file's own stated rule.
 
@@ -550,7 +550,7 @@ static func _brass(v: Verify, main: Node3D) -> void:
 	var streams: Array[StringName] = [Rng.SPAWN, Rng.BOX, Rng.DROPS, Rng.ROUNDS,
 		Rng.AI, Rng.VISUAL]
 	# Every `fired` below also runs the muzzle flash, which legitimately spends one
-	# VISUAL draw a shot. Restored on the way out, as `checks/frame.gd:1131` does,
+	# VISUAL draw a shot. Restored on the way out, as `checks/frame.gd:1136` does,
 	# so nothing downstream sees a hundred draws it did not make.
 	var vis := Rng.stream(Rng.VISUAL)
 	var vis_was: int = vis.state
@@ -579,7 +579,7 @@ static func _brass(v: Verify, main: Node3D) -> void:
 
 ## The two omissions that are caught by nothing else in the project.
 ##
-## A material missing from `fx.materials()` fails `verify.gd:1050` — that much was
+## A material missing from `fx.materials()` fails `verify.gd:1082` — that much was
 ## already true. A MULTIMESH missing from the warm pass is caught by nothing at
 ## all: `shader_warmup.gd` draws on a plain `MeshInstance3D` and structurally
 ## cannot compile the USE_INSTANCING variant, so the omission costs every visitor
@@ -686,7 +686,7 @@ static func _brass_spawn(v: Verify, main: Node3D, fx: Node3D,
 		"shoot=%d impacts=%d" % [from_shot, fx.brass_live()])
 
 	# 3. Twenty shots allocate nothing and round-robin, the same claim
-	# `verify.gd:974-981` already makes for the impact pool — a ring that grew a
+	# `verify.gd:1006-1013` already makes for the impact pool — a ring that grew a
 	# node per shot would be fifteen allocations a second at 880 rpm.
 	_arm(main, "mp40")
 	_brass_clear(fx)
@@ -701,7 +701,7 @@ static func _brass_spawn(v: Verify, main: Node3D, fx: Node3D,
 
 	# 4. THE CONTRACT THE FILE STATES ABOUT ITSELF, from the end nothing reached.
 	# `fx._on_fired` is driven directly rather than through the signal, exactly as
-	# `verify.gd:1005-1017` drives `fx._on_surface_impact` directly: the signal
+	# `verify.gd:1037-1049` drives `fx._on_surface_impact` directly: the signal
 	# would also run atmosphere.gd's flash, which legitimately spends one VISUAL
 	# draw, and the claim here is about THIS file. Bounded at the other end by the
 	# casing count, so it cannot pass against an `_eject` that does nothing.
@@ -922,7 +922,7 @@ static func _smoke(v: Verify, main: Node3D) -> void:
 static func _smoke_material(v: Verify, atmos: Node3D) -> void:
 	var mat: StandardMaterial3D = atmos.smoke_quad().material_override
 
-	# THE ASYMMETRY THIS EXISTS FOR. `verify.gd:1039-1052` builds `wanted` from the
+	# THE ASYMMETRY THIS EXISTS FOR. `verify.gd:1071-1084` builds `wanted` from the
 	# declared accessors and `seen` from the warm pass, and reports members of
 	# `wanted` missing from `seen` — so a material never DECLARED is never in
 	# `wanted` and is never missed, and `main.gd:174` feeds the warm pass from the
@@ -1043,7 +1043,7 @@ static func _smoke_streams(v: Verify, atmos: Node3D, main: Node3D) -> void:
 	# meaningless the moment it crosses the sign bit — the first draft of this check
 	# reported "kick spent -221314142572561958". A clone advanced by exactly the
 	# draws the handler is allowed is the only sound comparison, and it is the idiom
-	# `checks/frame.gd:1074-1079` already uses.
+	# `checks/frame.gd:1079-1084` already uses.
 	atmos._smoke = 0.0
 	var oracle := RandomNumberGenerator.new()
 	oracle.seed = vis.seed

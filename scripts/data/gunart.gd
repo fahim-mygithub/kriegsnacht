@@ -363,7 +363,7 @@ static func slide_free_run(key: String) -> float:
 	for i in parts.size():
 		if not slide.has(i):
 			continue
-		var box := _part_box(parts[i], float(i) * PROUD)
+		var box := _part_box(parts[i], part_rank(key, i) * PROUD)
 		g_x0 = minf(g_x0, box.position.x)
 		g_x1 = maxf(g_x1, box.end.x)
 		g_y0 = minf(g_y0, box.position.y)
@@ -375,7 +375,7 @@ static func slide_free_run(key: String) -> float:
 	for i in parts.size():
 		if slide.has(i):
 			continue
-		var box := _part_box(parts[i], float(i) * PROUD)
+		var box := _part_box(parts[i], part_rank(key, i) * PROUD)
 		var half := part_half(key, i) / UNIT
 		# No y overlap, no depth overlap, or already overlapping in x at rest: not
 		# something this group can be driven into.
@@ -406,12 +406,12 @@ static func _part_box(part: Array, proud: float) -> Rect2:
 ## design of this constant.** `ART` claims to be `kriegsnacht.html:1151` verbatim
 ## and `tools/gen/targets.js:150-162` bakes the chalk wall plaques from a *second*
 ## copy of that table (`tools/gen/ancestor.generated.js:634`, itself extracted from
-## the ancestor). Nothing asserts the two agree — M5 F8 — so a part added to `ART`
-## would silently stop the plaque on the wall from being a drawing of the weapon
-## behind it. A part added *here* cannot: `ART` is still the ancestor's, byte for
-## byte, and the chalk is still a faithful sketch of it. The sights are ours, they
-## are only on the viewmodel, and the plaque not showing a 1.8-unit post on a
-## 40-pixel chalk drawing is the correct outcome rather than a desync.
+## the ancestor). M5 F8 said nothing asserted the two agree. `_gun_ancestor` in
+## `checks/frame.gd` now does: it reads the file both copies are cut from and puts
+## `ART` against it part for part, so a part added to `ART` fails loudly instead of
+## silently stopping the plaque being a drawing of the weapon behind it. One added
+## *here* cannot: `ART` is still the ancestor's byte for byte, the sights are
+## viewmodel-only, and a plaque with no 1.8-unit post on it is right, not a desync.
 ##
 ## **Why they exist: M5 F5.** At full sights `ADS_CENTRE`, `ADS_YAW` and
 ## `ADS_LEVEL` are all 1.0, so the camera sits in the caps' own plane, both caps go
@@ -441,6 +441,13 @@ static func _part_box(part: Array, proud: float) -> Rect2:
 ##
 ## The shotguns get a bead and no rear blade, because that is what an Olympia and a
 ## Stakeout have. The Ray Gun, the Thundergun and the knife get nothing.
+##
+## **"Appended and never inserted" is true of a STATIC append and only of a static
+## append**, which is the sentence the attachment feature will invalidate: a part
+## that is fitted or not at runtime changes the walk index of everything behind it,
+## so the same part takes a different `DEPTH` row, a different `+ i*LAYER` cap and a
+## different `i*PROUD` inflation depending on what else is mounted. `part_rank()`
+## below is the seam that answers it; `RANK` is where the answer would be authored.
 const SIGHTS := {
 	# slide top is y 20, so the post and blade start above it; both in SLIDE.
 	"m1911": [["r", 28, 17.6, 1.8, 2.4, Color("1a1c1e")],
@@ -470,18 +477,192 @@ const SIGHTS := {
 }
 
 
-## `ART` plus `SIGHTS`, which is what every walk in this file iterates.
+## Our own NON-SIGHT geometry: slide serrations, grip checkering, a bipod, the
+## vents in a heat shield. **Empty, and the empty table is the deliverable.**
+##
+## It is not in `ART` because `ART` is `kriegsnacht.html:1151` byte for byte and a
+## part appended to it is refused with **no waiver path**, deliberately
+## (`ancestor_art.gd:128-143`). It is not in `SIGHTS` because that constant means an
+## iron sight specifically: `ancestor_art.sight_rules()` refuses any tail past two
+## rows — "no weapon carries more than a post and a blade" — and pins every row to
+## the sight black `1a1c1eff`. A wood-coloured checkering panel fails on colour
+## before it fails on count. Detail geometry in either table is a lie about what
+## that table is, so until this existed there was nowhere for it to go.
+##
+## **A DETAIL ROW IS A SURFACE FEATURE**, and `ancestor_art.detail_rules()` says so
+## in geometry rather than in intent: its art box lies INSIDE the box of a part
+## drawn before it, it is extruded proud of every part it is seated in, and it may
+## not become the top of the weapon. That is the exact complement of the sights'
+## rule — a sight stands `SIGHT_PROUD` above what it overlaps, a detail sits ON it
+## — so a row filed in the wrong band fails the band it is in rather than passing
+## both.
+##
+## **IT DOES NOT INHERIT `SIGHTS`' PLAQUE WAIVER.** That waiver was a SIZE argument
+## — "a plaque with no 1.8-unit post on it is right, not a desync" (`:414`), a post
+## being below the resolution of the same table drawn at 0.46. A bipod is not 1.8
+## units. It does not need to inherit it: `tools/gen` is not a consumer at all.
+## `targets.js:150-162` bakes from `ancestor.generated.js:634`'s OWN extraction of
+## the ancestor's `GUNART`, `drawParts` is `for (const pt of parts)` with the colour
+## at `pt[pt.length-1]` and no ordinal anywhere, and only 8 of 13 keys have a plaque
+## (`checks/frame.gd`'s plaque measurement). Nothing in this file can desync one.
+##
+## **The budget, computed against `checks/frame.gd`'s `SHIPPED_MAX_HALF` 4.00
+## rather than promised.** A row appended at rank n sits at `BASE_HALF*d + n*LAYER`.
+## MEASURED over the shipped tables: one row fits at `D_BODY` on every weapon, at
+## `D_FAT` on the Olympia and PM63 (n=8, 3.98) and at `D_BULK` on the knife (n=5,
+## 3.95); a SECOND appended `D_BODY` row on the RPK or the Thundergun is rank 12 =
+## 4.02 and reddens a live assertion. Crossed with the proud-of-host rule the
+## Thundergun takes exactly one appended row and it must be `D_BODY` — `D_THIN` at
+## rank 11 is 2.84, inside its own `D_BULK` shell at 3.25. Past that, author a
+## fractional `RANK` (below), which also paints the row where it belongs in draw
+## order instead of last.
+const DETAIL := {}
+
+## Authored paint-order ranks, keyed by `part_id`. **Empty: every band is walked in
+## full today, so a part's place in the painting IS its place in the walk.**
+##
+## What it is for, and it is worth stating before there is a row in it. `PROUD` and
+## `LAYER` are both statements about DRAW ORDER, and draw order is a property of the
+## PART. A walk index is a property of the ARRAY, and the two stop agreeing the
+## first time something ahead of a part can be absent. A row here says "paint this
+## between parts 6 and 7 whatever else is fitted"; 6.5 is a legal value.
+##
+## **Half steps are the floor.** `PROUD` at half a step is 0.02 art units, 21
+## micrometres, about 1200 levels of a 24-bit depth buffer at the 0.12 m this mesh
+## sits at — against the 2400 `PROUD`'s own argument (`:660-666`) is sized for.
+## Quarters are ~600 and that is under what the z-fight fix was measured against.
+## ARITHMETIC over this file's own figures, NOT a rendered frame: if the detail pass
+## ever wants quarters, that measurement is the thing to run first.
+##
+## **AND THE RULE A CONDITIONAL BAND OWES, recorded now because it is the bug this
+## whole seam exists to kill and it reappears one level down if nobody writes it
+## out.** The day an attachment band lands, its index space is fixed by the SLOT
+## ROSTER (optic / muzzle / grip) and is **slot-addressed, not dense**: an unfitted
+## slot leaves a HOLE rather than closing one up, and that band's row count is the
+## weapon's slot CAPACITY and not its fitted count. A compacted list gives a
+## suppressor a different `part_id` depending on whether an optic is fitted, which
+## moves its depth and its vertices when a NEIGHBOUR is added — which is exactly
+## the flat-index defect, renamed. The rank a fitted attachment takes is its host's
+## plus a fraction (`rank(host) + slot * step`), because appending is already out of
+## budget: see `DETAIL` above for the arithmetic.
+const RANK := {}
+
+## The walk, band by band, in the order the ancestor painted: its parts, then our
+## sights, then our detail. Indexed by the `B_*` constants.
+##
+## **BANDS and not "layers"**, because `LAYER` in this file is the 0.14 depth step
+## and two meanings of one word on the same page is how a reader gets it wrong.
+##
+## One list rather than three places slicing at `ART.size()`, for the reason
+## `_parts` already gives about itself: `_build` and `_corners` have to agree
+## part-for-part and index-for-index, and a second place to get the concatenation
+## wrong is a second place for the clip measurement to measure a mesh that is not on
+## screen.
+##
+## APPEND-ONLY, and the order is the contract: `_band_base` sums the bands BEFORE a
+## part's own, so a band can only be added at the end, and only a band at the end
+## can ever be conditional.
+const B_ART := 0
+const B_SIGHT := 1
+const B_DETAIL := 2
+const BAND_NAMES := ["art", "sight", "detail"]
+
+static func _bands(key: String) -> Array:
+	return [ART.get(key, []), SIGHTS.get(key, []), DETAIL.get(key, [])]
+
+
+## This weapon's per-band part counts, indexed by band.
+static func band_census(key: String) -> PackedInt32Array:
+	var out := PackedInt32Array()
+	for rows: Array in _bands(key):
+		out.append(rows.size())
+	return out
+
+
+## Where a band starts in the walk: the running sum of every PRECEDING band.
+##
+## **Takes a census rather than a key ON PURPOSE.** It is what lets the suite drive
+## the stability property — "a band growing cannot move an earlier part's rank" —
+## against a census the tables do not hold, with no detail or attachment row
+## invented. A property nobody can falsify is a skip, and the refusal half alone
+## ("nothing moved") passes perfectly against a function that always returns zero,
+## so the check bumps an EARLIER band too and requires the later base to follow.
+static func _band_base(counts: PackedInt32Array, band: int) -> int:
+	var n := 0
+	for b in band:
+		n += counts[b]
+	return n
+
+
+## Which band part `i` came from, and its index within it: `art:3`, `sight:1`,
+## `detail:0`.
+##
+## **THE ADDRESS SPACE.** A flat index says "the ninth thing walked", which stops
+## being a fact about the part the moment something ahead of it can be absent;
+## `sight:1` is a fact about the part. `SLIDE` and `DEPTH` are still positional and
+## may stay that way for as long as every band is unconditional — what uses this
+## today is every failure message about a part, so a depth fault names the table to
+## edit instead of an offset the reader has to count out by hand against three of
+## them. `checks/frame.gd` asserts the `out-of-range` arm is unreachable.
+##
+## RESERVED, and this is cheap now and expensive later: an attachment's host has to
+## be named ACROSS weapons, so the qualified form is `key.band:index`
+## (`"m16.art:1"`). Nothing produces it yet; naming it here stops a second address
+## space being bolted on beside this one.
+static func part_id(key: String, i: int) -> String:
+	var counts := band_census(key)
+	for b in counts.size():
+		var base := _band_base(counts, b)
+		if i >= base and i < base + counts[b]:
+			return "%s:%d" % [String(BAND_NAMES[b]), i - base]
+	return "out-of-range:%d" % i
+
+
+## Part `i`'s place in the back-to-front paint order, as a float.
+##
+## **THE SEAM, and today it is the identity.** `PROUD` and `LAYER` both need "how
+## far through the painting is this part" and until now both read the walk index
+## directly, at FIVE separate sites in three functions (`slide_free_run` carries two
+## of them). That is the same duplication `part_half` was written to end for depth,
+## and the same sentence applies: two call sites reading one expression cannot
+## drift; two call sites *copying* one expression have, historically, on this file.
+##
+## `RANK` is empty, so every weapon takes the early return and what this returns is
+## `float(i)` — the expression it replaced, not a value near it, which is why the
+## mesh this commit builds is the mesh the last one built vertex for vertex.
+## `checks/frame.gd` asserts that rather than trusting it.
+static func part_rank(key: String, i: int) -> float:
+	var over: Dictionary = RANK.get(key, {})
+	if over.is_empty():
+		return float(i)
+	var authored: float = float(over.get(part_id(key, i), i))
+	return authored
+
+
+## `ART` plus every band appended after it, which is what every walk in this file
+## iterates.
 ##
 ## One function rather than two loops in each of `_build` and `_corners`, because
 ## those two already have to agree part-for-part and index-for-index (see
 ## `_corners`) and a second place to get the concatenation wrong is a second place
 ## for the clip measurement to measure a mesh that is not on screen.
+##
+## Starts from `B_ART`'s rows UNCONCATENATED on purpose: a weapon with nothing
+## appended gets the read-only `ART` reference back, exactly as before, and
+## `checks/frame.gd` records that identity as MEASURED — raygun, thundergun and
+## knife true, the other ten false. Anything that later sorted or appended to the
+## result would error on 3 of the 13 weapons and pass on the other 10, which is the
+## worst shape a bug can have. A band inserted BEFORE `art` in `_bands()` would
+## silently change which three; the reconstruction check watches for it.
 static func _parts(key: String) -> Array:
-	var base: Array = ART.get(key, [])
-	var extra: Array = SIGHTS.get(key, [])
-	if extra.is_empty():
-		return base
-	return base + extra
+	var bands := _bands(key)
+	var out: Array = bands[B_ART]
+	for b in range(B_ART + 1, bands.size()):
+		var rows: Array = bands[b]
+		if rows.is_empty():
+			continue
+		out = out + rows
+	return out
 
 
 # --- how big, and how thick --------------------------------------------------
@@ -531,9 +712,11 @@ const UNIT := 0.00105
 const BASE_HALF := 2.6
 const LAYER := 0.14
 
-## The depth tiers, in multiples of `BASE_HALF`. Quantised to six values on
-## purpose: a part's depth is a statement about what the part IS, and six tiers is
-## as much vocabulary as thirteen weapons of drawn side-profile can carry.
+## The depth tiers, in multiples of `BASE_HALF`. Quantised on purpose: a part's
+## depth is a statement about what the part IS, and four tiers is as much vocabulary
+## as thirteen weapons of drawn side-profile can carry. (This paragraph said "six
+## values" and "six tiers" from an earlier draft, two lines above its own "Four
+## rungs and not more" and four constants. There are four.)
 ##
 ##   D_THIN  1.30 art units — a barrel, a strut, a folding stock, a sight post
 ##   D_BODY  2.34 — a receiver, a magazine, a pistol grip
@@ -867,8 +1050,17 @@ static func slide_corners(key: String) -> PackedVector3Array:
 
 
 ## Cache for `sight_height`, keyed by weapon. Nothing invalidates it because
-## nothing here is mutable: `ART`, `GRIP`, `SLIDE`, `UNIT`, `PROUD` are all
-## constants, so a weapon's top edge is fixed at load.
+## nothing here is mutable: `ART`, `SIGHTS`, `DETAIL`, `GRIP`, `SLIDE`, `RANK`,
+## `UNIT`, `PROUD` are all constants, so a weapon's top edge is fixed at load.
+##
+## **THAT IS A PREMISE AND NOT A LAW, and this package is the last moment it holds
+## for free.** A band whose rows are fitted or not at runtime makes a weapon's top
+## edge a function of CONFIGURATION, and this cache would then hand the first
+## configuration shown to every later one. The key has to widen to (key, fitted set)
+## in the same package that makes any band conditional. The failure mode is a stale
+## ADS drop that reads as a posing bug rather than a cache bug, and the assertion
+## that watches the drop cannot see it: `checks/projectiles.gd` records that it
+## asserts an algebraic identity in `ADS_SIGHT_CLEAR` and is blind to its value.
 static var _sight_cache: Dictionary = {}
 
 
@@ -885,15 +1077,23 @@ static var _sight_cache: Dictionary = {}
 ##
 ## **`slide_corners` is not optional.** `body_corners` excludes whatever `SLIDE`
 ## names, and on the M1911 the topmost part IS the slide plate (`SLIDE` index 1, a
-## rect at art y 20 against a grip at 30). Walking the body alone reads 8.00 art
-## units against the real 10.24 and puts the flagship weapon's sight line 2.24
-## units — about 13 px at the sighted pose in a 720 px frame — through the
-## crosshair. The AK74u (12.28 against 11.04) and the RPK (11.32 against 11.04)
-## are the other two the term catches.
+## rect at art y 20 against a grip at 30) — and since `SIGHTS` landed, the rear
+## blade at index 8 rides it too. RE-MEASURED 2026-08-03 through this accessor:
+## walking the body alone reads 8.00 art units against the real **13.72**, which
+## puts the flagship weapon's sight line 5.72 units through the crosshair.
 ##
-## Measured across the table, this runs from 5.05 art units on the knife to 19.24
+## **The M1911 is now the only weapon the term catches, and this paragraph used to
+## name two more.** It cited the AK74u (12.28 against 11.04) and the RPK (11.32
+## against 11.04); both of those `SLIDE` rows have since been emptied for the
+## gas-tube reason recorded at `SLIDE`, so `slide_corners` returns ZERO corners for
+## either and the term catches nothing at all on them. Their real values are 14.36
+## and 13.40. The stale figures reproduce exactly under an `ART`-only walk, which is
+## how they got here: `SIGHTS` was appended, the code followed, the prose did not.
+##
+## RE-MEASURED across the table, this runs from 5.05 art units on the knife to 19.24
 ## on the Ray Gun — a spread of nearly four to one, which is why the rig cannot
-## use one constant and get anything but the middle of the table right.
+## use one constant and get anything but the middle of the table right. (Those two
+## were still exact; the drift above was partial, not wholesale.)
 ##
 ## Cached: the rig reads it through the pose, and `_corners()` walks and inflates
 ## every part of every shape. That is a load-time cost, not a per-frame one.
@@ -953,11 +1153,13 @@ static func part_half(key: String, i: int) -> float:
 	var d := 1.0
 	if i < mults.size():
 		d = float(mults[i])
-	# The `+ i*LAYER` tiebreak survived the move to authored depth and had to:
+	# The `+ rank*LAYER` tiebreak survived the move to authored depth and had to:
 	# it is the coplanar-cap z-fight fix (see LAYER), and two parts given the same
 	# multiplier — a highlight rib and the plate it is painted on, which is most of
-	# this table — would reinstate that bug without it.
-	return (BASE_HALF * d + float(i) * LAYER) * UNIT
+	# this table — would reinstate that bug without it. Through `part_rank` rather
+	# than off `i` directly, so the ramp is one expression in one function on the day
+	# a rank stops being a position: see there.
+	return (BASE_HALF * d + part_rank(key, i) * LAYER) * UNIT
 
 
 static func _build(key: String, pap: bool, want_slide: bool) -> ArrayMesh:
@@ -977,7 +1179,7 @@ static func _build(key: String, pap: bool, want_slide: bool) -> ArrayMesh:
 		# What the part is made of, plus the draw-order tiebreak — see DEPTH.
 		var half := part_half(key, i)
 		var col := _tint(part[part.size() - 1], pap)
-		_extrude(st, _part_poly(part, float(i) * PROUD), g, half, col)
+		_extrude(st, _part_poly(part, part_rank(key, i) * PROUD), g, half, col)
 		emitted += 1
 	if not want_slide:
 		# Last, exactly as the ancestor draws them — after the parts and, note,
@@ -1010,7 +1212,7 @@ static func _corners(key: String, want_slide: bool) -> PackedVector3Array:
 		# THE SAME ACCESSOR THE BUILDER CALLS. Not the same expression — the same
 		# call. See `part_half`.
 		var half := part_half(key, i)
-		out.append_array(_prism_corners(_part_poly(part, float(i) * PROUD), g, half))
+		out.append_array(_prism_corners(_part_poly(part, part_rank(key, i) * PROUD), g, half))
 	if not want_slide:
 		for row: Array in _hands(key, g):
 			var poly: PackedVector2Array = row[0]
