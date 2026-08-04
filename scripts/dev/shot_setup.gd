@@ -313,6 +313,22 @@ static func registry() -> Dictionary:
 			"fn": _spawn, "settle": 0.35,   # 21 frames at 60
 			"why": "the default view, byte-for-byte the frame plain --shot takes",
 		},
+		# THE THREE THE GATE COULD NOT SEE — see `_gun_view`. Same 0.35 s budget as
+		# `spawn` and for the same reason: identical static pose, and it was measured
+		# byte-identical between a 0.35 s budget and a 0.14 s one. Each is `spawn`
+		# with one thing changed, so `mp40.mean / spawn.mean` isolates the weapon.
+		"mp40": {
+			"fn": _mp40, "settle": 0.35,
+			"why": "the MP40 in the hand, so its detail rows are inside a gate",
+		},
+		"stakeout": {
+			"fn": _stakeout, "settle": 0.35,
+			"why": "the Stakeout in the hand, so its detail rows are inside a gate",
+		},
+		"rpk": {
+			"fn": _rpk, "settle": 0.35,
+			"why": "the RPK in the hand, so its detail rows are inside a gate",
+		},
 		# The powered/unpowered PAIR, and they exist as a pair on purpose. An
 		# absolute golden row for "the lit map" has to be re-blessed every time
 		# somebody retunes a lamp; the RATIO between these two does not, and the
@@ -618,6 +634,35 @@ static func _power_now(main: Node3D) -> void:
 
 static func _spawn(main: Node3D) -> void:
 	_place(main, SPAWN_AT, 0.0)
+
+
+## THE THREE WEAPONS THE GATE COULD NOT SEE. `give_gun` was called exactly once in
+## this whole file — by `_raygun` — so every other scenario ran the starting M1911,
+## and the Ray Gun is the one weapon carrying no detail rows. MEASURED when the
+## detail band landed: with the MP40, Stakeout and RPK rows in the table and only the
+## M1911's removed, `downed` reproduced its committed golden row bit for bit. Eleven
+## of fourteen rows sat outside every gate the project has, verified only in a
+## painter mock with no FILMIC, no lighting and no perspective.
+##
+## Framed exactly like `spawn` — same tile, same yaw, same light — so each is that
+## weapon's own A/B against a frame the gate already holds, and the only difference
+## between the four is which gun is in frame.
+static func _gun_view(main: Node3D, key: String) -> void:
+	_place(main, SPAWN_AT, 0.0)
+	var p: Player = main.player
+	p.give_gun(key, false)
+
+
+static func _mp40(main: Node3D) -> void:
+	_gun_view(main, "mp40")
+
+
+static func _stakeout(main: Node3D) -> void:
+	_gun_view(main, "stakeout")
+
+
+static func _rpk(main: Node3D) -> void:
+	_gun_view(main, "rpk")
 
 
 static func _power_off(main: Node3D) -> void:

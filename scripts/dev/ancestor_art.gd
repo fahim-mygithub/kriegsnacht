@@ -8,7 +8,7 @@ extends RefCounted
 ## now the only machine reader was `tools/gen/extract.js`, in Node. That matters
 ## twice: the citation is verified here rather than trusted, and anyone who needs the
 ## ancestor's parts should preload this rather than write a second parser. Two
-## readers of one file are two sets of bugs — the argument `gunart.gd:645-648` makes
+## readers of one file are two sets of bugs — the argument `gunart.gd:791-794` makes
 ## for `_parts()` being one function, applied to a file instead of a concatenation.
 ##
 ## HERE AND NOT IN `checks/`, for two reasons that were both measured.
@@ -238,7 +238,7 @@ static func read(path := ANCESTOR_PATH) -> Dictionary:
 ##
 ## The colour is read at `part[part.size() - 1]` and NOT at a per-kind index, because
 ## that is what the ancestor itself does (`const col = mono ? mono : pt[pt.length-1]`,
-## `kriegsnacht.html:1133`) and `gunart.gd:1274-1278` records why: the four shapes
+## `kriegsnacht.html:1133`) and `gunart.gd:1442-1446` records why: the four shapes
 ## carry the colour at four different indices (`r` 6 elements, `rr` 7, `c` 5, `p` 3).
 static func row_text(part: Array) -> String:
 	if part.is_empty():
@@ -290,7 +290,7 @@ static func _num(value: float) -> String:
 ## ancestor's own value rather than assuming one.
 ##
 ## HONEST SCOPE, because the reason this was first written off is nearly right.
-## `_tint` (`gunart.gd:1427-1431`) does pass the `Color` through unmodified — but
+## `_tint` (`gunart.gd:1595-1599`) does pass the `Color` through unmodified — but
 ## `_tri` (`:1290`) then builds `Color(col.r * f, col.g * f, col.b * f, 1.0)`, so alpha
 ## is discarded before it reaches a vertex and NO alpha edit can move a pixel today.
 ## This is therefore a claim about the TABLE, not about the frame: it keeps `ART` a
@@ -366,7 +366,7 @@ static func shared_keys(anc: Dictionary, art: Dictionary) -> Array:
 ##
 ## Both key sets are compared, so a weapon in `ART` the ancestor never drew fails as
 ## loudly as one missing. The check this replaced iterated `GUNART.keys()` — which is
-## `ART.keys()` (`gunart.gd:1000-1001`) — and asked its own table about each, so a
+## `ART.keys()` (`gunart.gd:1168-1169`) — and asked its own table about each, so a
 ## weapon DELETED from `ART` was never asked about at all and it stayed green.
 static func roster_diff(anc: Dictionary, art: Dictionary) -> String:
 	var theirs := anc.keys()
@@ -383,7 +383,7 @@ static func roster_diff(anc: Dictionary, art: Dictionary) -> String:
 
 
 ## Part for part, against the walk the MESH BUILDER makes rather than against the
-## const. `_parts()` is what `_build` (`gunart.gd:1168`) and `_corners` (`:1003`) both
+## const. `_parts()` is what `_build` (`gunart.gd:1336`) and `_corners` (`:1373`) both
 ## iterate, so asserting the ancestor's parts are its PREFIX is a claim about the
 ## table the game actually reads — and `checks/frame.gd:1412-1423` already ties that
 ## walk to the committed `ArrayMesh`, so the chain reaches from this file's authority
@@ -598,7 +598,7 @@ static func _sight_field(want: String, got: String) -> String:
 ##
 ## SLICED AT THE ANCESTOR'S COUNT AND NOT AT `ART`'s, which is what makes this the
 ## non-circular form of the sentence the deleted check was named for: the actual side
-## is `_parts()` — the array `_build` (`gunart.gd:1168`) and `_corners` (`:1003`) both
+## is `_parts()` — the array `_build` (`gunart.gd:1336`) and `_corners` (`:1373`) both
 ## iterate — and the slice index comes out of `kriegsnacht.html`. It does mean a roster
 ## failure reddens this too; check 2 is the one that names it, and the coupling is
 ## correct because the claim being made is about where the ANCESTOR's parts end.
@@ -1004,13 +1004,210 @@ const ART_ROWS := 101
 ## here; `SIGHTS` already has one. Recording only the new band is the whole of what
 ## this package owes, and a 119-row roster record would be 119 rows of transcription
 ## surface bought for nothing.
-const DETAIL_RECORD := {}
+##
+## Rows are `row_text()`'s own output, GENERATED AND PASTED exactly as `SIGHT_RECORD`
+## says: `String.num(1.0, 4)` renders "1.0" and not "1", so hand-typing this notation
+## goes wrong on the first attempt.
+##
+## **PROVENANCE, and the honest scope of it.** CLAUDE.md allows three: a BO1 reference
+## frame, a stated fact about the real firearm, or an explicit our-decision-and-here-is
+## -why. Each `why` below says which it is using PER ROW, because they are not the same
+## strength here and one of them is unavailable: `notes/research/visual-corpus/` holds
+## six cards and NONE of them is a Stakeout, an Ithaca 37 or a shotgun of any kind, so
+## no sentence beginning "BO1 shows" can honestly be written about that weapon by
+## anyone in this project. The M1911 card's own `visual_description` claims a checkered
+## grip panel is visible and it is not — the grip is wholly behind the gloved firing
+## hand — so that row is provenanced to the A1 change list instead and says so.
+const DETAIL_RECORD := {
+	"m1911": {
+		"rows": ["r|53.0|26.4|5.0|3.8|42301aff", "r|44.5|25.0|5.0|1.6|3a3d40ff",
+			"r|46.2|29.2|1.8|3.4|3a3d40ff"],
+		"why": "THREE rows, and the count is the GLOVE and not taste. `_hands` extrudes at "
+			+ "HAND_HALF 5.00, deeper than every part of this weapon, and on the M1911 its "
+			+ "single box is art x[48.84, 64.63] y[31.05, 44.74] — 68% of the grip panel and "
+			+ "all of the frame behind x48.84. [0] FIREARM FACT: the M1911A1 change list "
+			+ "replaced the Double Diamond reliefs with 'simplified grip checkering', i.e. a "
+			+ "plain bordered full field, which is this rect. Held to y26.4-30.2 because the "
+			+ "glove starts at y31.053, so the panel's drawn height is 5 units of its 16 and a "
+			+ "field down the whole panel would have lost its own bottom border. DARKER than "
+			+ "its host at 1.612x (sRGB EOTF, Rec.709) because checkering is a light trap, in "
+			+ "42301a, the ancestor's M14 pistol-grip brown, NOT a new hex. NOT sourced to "
+			+ "bo1_m1911_reload_midpoint.jpg: I opened it, and the grip is behind the firing "
+			+ "hand. [1] FIREARM FACT: Browning US984519 puts the slide stop on the LEFT with "
+			+ "its pad rear of the pin, and gunart.gd:157-164 works out that the left flank is "
+			+ "the one the rest pose turns to the lens. [2] OUR DECISION: ART part 5 is a solid "
+			+ "5x8 block, so the guard reads as a lump rather than as a ring with a trigger in "
+			+ "it. A dark inset standing for the opening was rejected because `proud` builds "
+			+ "every detail row RAISED, so a hole drawn raised is a lie about the mechanic; a "
+			+ "trigger IS a raised object. NO SLIDE SERRATIONS, which is this weapon's "
+			+ "best-evidenced BO1 surface feature: SLIDE is [1,6,7,8], a detail row walks at "
+			+ "index 9+, so `_build`'s `slide.has(i) != want_slide` filter would put it in the "
+			+ "BODY mesh and it would be left behind by TRAVEL 7 units on every shot. NO THUMB "
+			+ "SAFETY: the drawn grip panel takes the frame from x52 and its inflated top is "
+			+ "y25.88, so a paddle there clears the slide's inflated bottom y24.04 by 0.01 art "
+			+ "units, which is one edit from wrong.",
+	},
+	"mp40": {
+		"rows": ["r|48.6|20.4|4.8|1.6|3a3d40ff", "r|19.9|24.9|1.4|1.6|3a3d40ff",
+			"r|23.5|24.9|1.4|1.6|3a3d40ff"],
+		"why": "Three rows, all in 3a3d40 — a hex ART['mp40'] already carries on parts 5 and "
+			+ "6 — so this pass introduces NO colour to the weapon. [0] CORPUS: "
+			+ "bo1_mp40_ads_ironsights.jpg shows BO1's squared-notch block riding a raised "
+			+ "stepped base with a graduated leaf under it, and SIGHTS['mp40'][1] stands a "
+			+ "bare 2.0x2.4 blade on nothing at all. SIGHTS is out of bounds here, so the base "
+			+ "can only be a DETAIL row. D_BODY at rank 10 is forced, not chosen: the base has "
+			+ "to clear the receiver tube's 3.00 and D_THIN does not until rank 13. (An earlier "
+			+ "draft refused D_BODY on the ground that it would 'stand the base off the "
+			+ "receiver' — that reason is wrong and is not repeated: part_half is the "
+			+ "EXTRUSION axis, model X, and on a side-on flat-shaded viewmodel a larger half is "
+			+ "invisible except as occlusion order.) [1][2] CORPUS for the existence, OUR "
+			+ "DECISION for the x. Both rest-pose frames show two bright circumferential rings "
+			+ "on the barrel; they are the brightest hard edges on the tube. The frame is "
+			+ "foreshortened muzzle-away, and for a pinhole |du/ds| goes as 1/P_z^2 with P_z "
+			+ "largest at the muzzle, so the cumulative image fraction is CONVEX and an image "
+			+ "fraction is a LOWER bound on the true along-barrel fraction, not an upper one. "
+			+ "The fractions read (0.53 and 0.79 of the x11.6-to-x26 run) therefore put the "
+			+ "rings at x >= 19.2 and x >= 23.0, which is also where the real weapon's barrel "
+			+ "shoulder and barrel nut are — both at the receiver end. Centres 20.6 and 24.2. "
+			+ "Drawn below the ancestor's barrel rib rather than across it: a 3a3d40 collar "
+			+ "over that 6a7075 rib is a 3.46x DARK notch in the weapon's top highlight, and "
+			+ "re-arguing the ancestor's top line is not this band's job. RECORDED "
+			+ "CONSEQUENCE: slide_free_run('mp40') falls 21.40 -> 19.96 art units, newly set "
+			+ "by the sight base; TRAVEL 8 still clears it by 11.96, so checks/systems.gd's "
+			+ "'no group travels further than the drawn art allows' holds — but the number "
+			+ "moved and it moved because of row 0. NO MAGAZINE HOUSING, which is the "
+			+ "best-resolved new surface in the MP40 corpus: the receiver tube (half 3.00) "
+			+ "covers the magazine slab to y29.04 and the SUPPORT glove covers it from y31.05, "
+			+ "leaving 2.0 art units of visible height, inside which a rank-12 row is under 0.9 "
+			+ "nominal units, about 5 screen pixels. NO BRIGHT CAP ON THE BOLT HANDLE, which "
+			+ "is the strongest value finding in the whole corpus — BO1 draws that charging "
+			+ "handle near-white against a near-black receiver and we draw it mid grey — "
+			+ "because SLIDE['mp40'] is [6] and a detail row cannot join a reciprocating "
+			+ "group. The fix there is a one-colour change to ART, which this package must "
+			+ "not make; flagging it rather than smuggling it in.",
+	},
+	"stakeout": {
+		"rows": ["r|58.7|20.6|10.5|1.6|7a5228ff", "r|6.0|24.0|46.0|2.2|1f2123ff",
+			"r|51.5|24.0|4.0|2.2|33363aff"],
+		"why": "NO ROW HERE CITES A REFERENCE FRAME, because there is none: "
+			+ "notes/research/visual-corpus/manifest.json holds six cards and not one is a "
+			+ "Stakeout, an Ithaca 37 or a shotgun, and no file under visual-corpus/ matches "
+			+ "any of those words. Under this project's 'the reference wins' rule that makes "
+			+ "these rows the port's reading until someone captures a frame, and saying so is "
+			+ "the whole of the provenance owed. [0] OUR DECISION: the ancestor ribs the barrel "
+			+ "(part 7, x4-58, 7a8085) and the stock (part 5, x68-88, 7a5228) and leaves "
+			+ "x58-68 dark, so the weapon's top line dies in the middle; this closes it. Its "
+			+ "inflated left edge is 58.34 against the barrel rib's inflated 58.28, so it "
+			+ "abuts that rib without overpainting it — deliberate, because the two are "
+			+ "different materials and different hexes. Its right end runs into the stock rib "
+			+ "in that rib's OWN hex, so the join carries no step. THE WEAPON'S TOP LINE "
+			+ "ALREADY CHANGES COLOUR (7a8085 steel to 7a5228 tan) and this row does not "
+			+ "pretend to unify it; it extends the tan across the wood between them. 7a5228 "
+			+ "over its 4b3218 host is 2.687x, which is hotter than the ancestor's own "
+			+ "wood-rib idiom of 1.914x and is stated rather than hidden: it is high only "
+			+ "because 4b3218 is a darker wood than 5a3b1e, it is far under the 8.539x this "
+			+ "weapon's own barrel rib already strikes, and a second brown would have put a "
+			+ "third hex in one top line. It is a stripe NEAR the top, not the top edge — "
+			+ "`quiet` refuses flush, so it is dropped 0.6 units and leaves bare host above "
+			+ "it, which is a departure from the ancestor's rib idiom and is recorded as one. "
+			+ "[1][2] OUR DECISION, AND HERE IS WHY: a ventilated heat shield is a real Model "
+			+ "37 accessory (a Tier-2 vendor listing gives 13.75 in / 349 mm against this "
+			+ "weapon's 13 in / 330 mm barrel, i.e. one covers a barrel end to end), and the "
+			+ "IMFDB page that would confirm BO1's carries one answered HTTP 403 to every "
+			+ "fetch this project has made. So this is our reading of the weapon, NOT a "
+			+ "measurement of it. The shield cannot be drawn as a shroud — `seat` is "
+			+ "containment, so anything standing off the barrel is enclosed by no part — so it "
+			+ "is drawn as what you see of one in profile: a dark slot band inside the barrel "
+			+ "with a solid collar at the receiver end, with the ancestor's existing barrel rib "
+			+ "serving as the shield's top rail unchanged. ONE band, not a comb: at 5.9 px per "
+			+ "art unit a 1.2-unit slot is 7 px with a 5 px gap, and each would cost a DEPTH "
+			+ "entry and six guard moves. Sizing is proportional and not literal — "
+			+ "notes/research/M6-weapon-motion-and-smoke.md:252 puts this weapon at 9.98 mm per "
+			+ "art unit, which makes the drawn barrel 519 mm against a real 330. The collar is "
+			+ "33363a at 1.464x the barrel, a GENTLE step and not a highlight, because it sits "
+			+ "low on the flank where the drawing has no light: the same physics that refuses a "
+			+ "bright rib along the magazine tube's shadowed top edge. NOTHING ON THE PUMP: "
+			+ "SLIDE['stakeout'] is [2] and `_build` filters on the flat walk index, so a "
+			+ "detail row at index 9+ is committed to the BODY mesh and grooves painted on the "
+			+ "fore-end would stand still while it travels TRAVEL 9 on every shot and every "
+			+ "shell of a segmented reload. NOTHING ON THE GRIP: the support glove covers "
+			+ "art x[22.47, 37.21] y[30.95, 42.53] and the main glove x[49.84, 65.63] "
+			+ "y[33.05, 46.74], which takes most of part 6. NO SIDE PORT, COVER OR DEFLECTOR: "
+			+ "an Ithaca 37 feeds and ejects through the BOTTOM (M6:112, 'pump, bottom "
+			+ "ejection, slab sides, no side port'), and obeying that negative is what pointed "
+			+ "the budget at the barrel and the top line. The Ithaca-37 identity itself is "
+			+ "asserted at gunart.gd:289 and scripts/data/weapons.gd:27.",
+	},
+	"rpk": {
+		"rows": ["c|35.0|38.0|4.4|3e4245ff", "r|11.6|25.6|13.4|1.5|1f2123ff",
+			"r|26.6|20.6|24.8|1.4|4e3a24ff", "r|8.6|25.2|3.0|2.2|1f2123ff",
+			"r|52.8|22.2|10.4|1.6|3e4245ff"],
+		"why": "Five rows, and the ORDER is forced rather than chosen: `proud` needs each row "
+			+ "deeper than every ART part enclosing it, so shallow-host rows take the early "
+			+ "ranks — which is why the bipod's two halves bracket the handguard band. This "
+			+ "weapon has exactly ONE D_BODY slot for all time (rank 11 = 3.88; rank 12 = 4.02 "
+			+ "breaks SHIPPED_MAX_HALF 4.00). [0] OUR DECISION: ART gives parts 3, 5 and 6 the "
+			+ "SAME hex 33363a, so the drum and the housing square it is drawn on share a "
+			+ "colour and have no internal edge. Stated precisely, because an earlier draft "
+			+ "overstated it: the drum is NOT invisible — its decagon reaches y44.66 against "
+			+ "the housing's y43.00, so 1.66 units of lower arc are already a silhouette cue. "
+			+ "What is missing is the drum's FACE. This row does not restore the drum's own "
+			+ "outline either; it puts a lighter disc inside it and leaves the r4.4-to-7 "
+			+ "annulus reading as housing. NOT sourced to bo1_rpk_firstperson_zombies.jpg: I "
+			+ "re-read it at 7x with gamma lift and the bright dotted disc at frame right sits "
+			+ "beside mullions and floorboards, i.e. room geometry, exactly as the scouting "
+			+ "warned. 3e4245 is 1.467x its host, a deliberately conservative lift and an "
+			+ "existing roster steel hex (the M1911's slide); a hotter grey was refused because "
+			+ "this project records a rim at 3.4x as a shipped defect. [1][3] FIREARM FACT for "
+			+ "the existence, corroborated by bo1_rpk_cocking.jpg: an RPK has an integral "
+			+ "folding bipod, plainly visible in that frame as a yoke behind the two-eared "
+			+ "front sight with thin legs running down and back, and ART draws nothing below "
+			+ "the barrel at all. The citation is NOT hung on bo1-rpk-firstperson-zombies' "
+			+ "visual_description, whose same sentence also calls the frame's right-hand mass "
+			+ "'the drum/stock group' — a read this record rejects two rows above. PLACEMENT IS "
+			+ "OUR DECISION and a compromise: `seat` is containment, so legs hanging below the "
+			+ "barrel are enclosed by nothing and are refused, and they would grow the "
+			+ "silhouette into the 8.036 mm no-clip margin besides. Drawn inboard along the "
+			+ "barrel's lower flank instead, which is where an RPK's legs physically lie when "
+			+ "folded. Both are held to y >= 25.2 so their inflated tops clear the barrel rib's "
+			+ "inflated bottom at 24.48 — the rib is D_FAT at rank 7 (3.84) and is DEEPER than "
+			+ "either row, so a row crossing it is clipped BY it and takes no notch out of the "
+			+ "barrel's top line. The yoke at rank 14 (3.26) is deeper than the legs at 12 "
+			+ "(2.98), so it draws over them where they abut. [2] FIREARM FACT: an AK/RPK "
+			+ "forearm is TWO wooden pieces, a lower handguard under the barrel and an upper "
+			+ "over the gas tube, and ART draws one 26x10 rect for both. No claim that it "
+			+ "'continues' the drawn gas tube — part 8 is x[10,24] and this is x[26.6,51.4], "
+			+ "with 2 units of empty background between them and a different hex. RECORDED "
+			+ "CONSEQUENCE: the handguard now carries two bright bands, this one and the "
+			+ "ancestor's barrel rib crossing it lower down, which is busier than one. 4e3a24 "
+			+ "is 1.714x its 3a2c1c host and gunart.gd:105 already pairs exactly those two on "
+			+ "the knife. [4] FIREARM FACT: every AK-pattern receiver carries a separate "
+			+ "stamped top cover whose lower seam runs the flank, and this is the part nearest "
+			+ "the eye because GRIP sits on it and every mesh is built grip-at-origin. Right "
+			+ "edge 63.2 and not 63.4: at rank 15 it inflates 0.6, and 63.4 would put its grown "
+			+ "edge at 64.0 across the stock's grown 63.84 with 0.02 art units of depth between "
+			+ "them — tighter than any pair on the shipped roster (the current minimum is "
+			+ "0.03). TWO CLAUSE-LEVEL MARGINS HERE ARE 0.1200 art units (rows 2 and 4 over "
+			+ "their hosts), TIGHTER THAN ALL 27 NESTED PAIRS ON THE ROSTER — whose smallest "
+			+ "bucket is 0.1400, one LAYER step. That is safe rather than lucky: 0.12 art units "
+			+ "is 126 um, roughly 7200 levels of a 24-bit depth buffer at the 0.12 m this mesh "
+			+ "sits at, against the 2400 PROUD's own argument is sized for. NO BIPOD LEGS AND "
+			+ "NO CLUBFOOT AS GEOMETRY, the weapon's two silhouette signatures: both lie "
+			+ "outside every ART box and only an ART edit could add them. NOTHING ON PART 2 OR "
+			+ "PART 8: the file disputes what both ARE — SLIDE's comment calls part 8 the gas "
+			+ "tube and argues it at gunart.gd:166-176 while DEPTH's calls it the charging "
+			+ "handle, and DEPTH calls part 2 the magazine while GRIP (49,31) sits inside it, "
+			+ "which makes it the pistol grip. A row justified against a part identity the file "
+			+ "itself contradicts is the unrecorded-departure failure, so no row here depends "
+			+ "on settling either.",
+	},
+}
 
-## Rows the detail band holds today. Zero, and the FIRST ROW REDDENS THIS — which is
-## the intent, not an obstacle: new geometry of ours should be a loud, argued edit,
-## exactly as an `ART` cardinality change is. Move it, and write the reason into
-## `DETAIL_RECORD`.
-const DETAIL_ROWS := 0
+## Rows the detail band holds today. Zero until this package; the FIRST ROW REDDENED
+## THIS — which was the intent, not an obstacle: new geometry of ours should be a loud,
+## argued edit, exactly as an `ART` cardinality change is. Move it, and write the reason
+## into `DETAIL_RECORD`.
+const DETAIL_ROWS := 14
 
 ## The detail band's own record validator, mirroring `record_faults()`.
 static func detail_faults() -> String:
@@ -1064,7 +1261,7 @@ static func detail_diff(details: Dictionary) -> Dictionary:
 	return {"diff": bad, "n": n}
 
 
-## WHAT MAKES A DETAIL ROW LEGITIMATE. `gunart.gd:759-765`'s own rule, written as a
+## WHAT MAKES A DETAIL ROW LEGITIMATE. `gunart.gd:905-911`'s own rule, written as a
 ## check for the first time, and the complement of `sight_rules` above: a sight stands
 ## `SIGHT_PROUD` ABOVE what it overlaps, a detail sits ON it. Neither can satisfy the
 ## other's rule, so a row filed in the wrong band fails the band it is in.
@@ -1074,7 +1271,7 @@ static func detail_diff(details: Dictionary) -> Dictionary:
 ##   seat    its art box lies INSIDE the box of a part drawn before it. That single
 ##           geometric test is what separates a detail from a sight.
 ##   proud   its `part_half` exceeds the `part_half` of every part it is seated in.
-##           `gunart.gd:757-765`: author a highlight thin and IT DISAPPEARS, because
+##           `gunart.gd:903-911`: author a highlight thin and IT DISAPPEARS, because
 ##           the ancestor drew it OVER the plate it lies on. MEASURED over the shipped
 ##           roster through the real accessors: 27 parts are already drawn strictly
 ##           inside an earlier part's box, all 27 come out deeper than every host, and
@@ -1397,7 +1594,7 @@ static func band_faults(anc: Dictionary) -> Dictionary:
 	return {"diff": bad, "n": total}
 
 
-## A PAINTED HIGHLIGHT IS PROUD OF EVERYTHING IT IS PAINTED ON (`gunart.gd:757-765`),
+## A PAINTED HIGHLIGHT IS PROUD OF EVERYTHING IT IS PAINTED ON (`gunart.gd:903-911`),
 ## and until now nothing said so: the depth checks assert that no two parts SHARE a
 ## depth, never that the one drawn on top is the deeper.
 ##

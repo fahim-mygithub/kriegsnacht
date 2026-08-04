@@ -1336,7 +1336,7 @@ static func _flash_materials(v: Verify, main: Node3D) -> void:
 # different questions about the same table, and the second one is the reason the
 # first is trustworthy.
 #
-# THE COMMITTED MESH IS READ BACK. `gunart.gd:1027-1032` argues, correctly, that a
+# THE COMMITTED MESH IS READ BACK. `gunart.gd:1195-1200` argues, correctly, that a
 # safety assertion must not hang on `surface_get_arrays()` — a silently empty
 # result under the dummy driver would make it pass by measuring nothing. That
 # argument is about `_measure()`, which has no way to notice an empty set. It does
@@ -1398,7 +1398,7 @@ static func _gun_depth(v: Verify) -> void:
 		if row.size() != parts.size():
 			bad_rows += "%s %d/%d " % [key, row.size(), parts.size()]
 	v.check("every part of every weapon has an authored depth",
-		bad_rows.is_empty() and parts_total == 119,
+		bad_rows.is_empty() and parts_total == 133,
 		"%d parts across the roster, rows off: %s" % [parts_total, bad_rows])
 
 	# THE LEAD ASSERTION OF THE PACKAGE. `_build` and `_corners` are two walks over
@@ -1440,10 +1440,10 @@ static func _gun_depth(v: Verify) -> void:
 
 	# M5 A14, stated over the table rather than over the mesh, and computed through
 	# the same `part_half()` the builder calls rather than re-derived. The gloves
-	# are pinned at HAND_HALF and HAND_HALF + LAYER (`gunart.gd:995` and `:1253-1261`,
+	# are pinned at HAND_HALF and HAND_HALF + LAYER (`gunart.gd:1163` and `:1421-1429`,
 	# where `_hands` assigns those two literally) and do NOT ride the ramp, so a gun
 	# part landing on either z-fights its caps against a glove. Provenance:
-	# `gunart.gd:695-705`, the z-fight the ramp exists to fix.
+	# `gunart.gd:841-851`, the z-fight the ramp exists to fix.
 	#
 	# BOTH CITATIONS ON THIS LINE WERE WRONG BEFORE THE BANDS PACKAGE TOUCHED THE FILE,
 	# and neither was caught by mapping them forward — they were checked. `529-535`
@@ -1549,7 +1549,7 @@ static func _gun_bands(v: Verify) -> void:
 	# nothing.
 	var rk := ANCESTOR_ART.rank_faults()
 	v.check("every part of every band still ranks at its own place in the paint order",
-		String(rk["diff"]).is_empty() and int(rk["n"]) == 119,
+		String(rk["diff"]).is_empty() and int(rk["n"]) == 133,
 		"ranked %d parts; %s" % [int(rk["n"]), rk["diff"]])
 
 	# 2. ...and the walk really is the bands, every part of it is addressable, and the
@@ -1559,7 +1559,7 @@ static func _gun_bands(v: Verify) -> void:
 	# while every count derived from `_parts` moves down with them.
 	var wk := ANCESTOR_ART.walk_faults()
 	v.check("the walk is exactly the bands concatenated, and every part it walks has an address",
-		String(wk["diff"]).is_empty() and int(wk["n"]) == 119,
+		String(wk["diff"]).is_empty() and int(wk["n"]) == 133,
 		"walked %d parts; %s" % [int(wk["n"]), wk["diff"]])
 
 	# 3. THE ORDINAL-STABILITY PROPERTY, driven through the real `_band_base` against
@@ -1574,7 +1574,7 @@ static func _gun_bands(v: Verify) -> void:
 		"made %d claims over 13 weapons; %s" % [int(bs["n"]), bs["diff"]])
 
 	# 4. A PAINTED HIGHLIGHT IS PROUD OF EVERYTHING IT IS PAINTED ON
-	# (`gunart.gd:757-765`), and until now nothing said so: the depth checks above
+	# (`gunart.gd:903-911`), and until now nothing said so: the depth checks above
 	# assert that no two parts SHARE a depth, never that the one on top is the deeper.
 	# MEASURED 2026-08-03 through the real accessors: 27 parts across the roster are
 	# drawn strictly inside an earlier part's box, all 27 come out deeper than every
@@ -1584,7 +1584,7 @@ static func _gun_bands(v: Verify) -> void:
 	# also the roster-side control on `detail_rules()`'s `proud` clause.
 	var ns := ANCESTOR_ART.nest_faults()
 	v.check("every part drawn inside another is extruded proud of it",
-		String(ns["diff"]).is_empty() and int(ns["n"]) == 27,
+		String(ns["diff"]).is_empty() and int(ns["n"]) == 41,
 		"%d nested parts; %s" % [int(ns["n"]), ns["diff"]])
 
 	# 5. AND THE TWO ORDINALS ARE ONE ORDINAL, ASSERTED OFF THE COMMITTED MESH. Depth
@@ -1598,7 +1598,7 @@ static func _gun_bands(v: Verify) -> void:
 	# shift moves the box of all 119 — so there is no part this cannot see.
 	var fp := ANCESTOR_ART.footprint_faults()
 	v.check("every part's footprint in the committed mesh is its own art box grown by its own rank",
-		String(fp["diff"]).is_empty() and int(fp["n"]) == 119,
+		String(fp["diff"]).is_empty() and int(fp["n"]) == 133,
 		"matched %d parts; %s" % [int(fp["n"]), fp["diff"]])
 
 
@@ -1805,7 +1805,7 @@ static func _gun_sights(v: Verify) -> void:
 # part-for-part fidelity compared the second against the third on `Array.size()`, so
 # it could only ever notice the two DERIVED copies disagreeing about a COUNT. Every
 # geometry, colour, kind and ORDER change passed it silently, and because its loop
-# walked `GUNART.keys()` — which is `ART.keys()` (`gunart.gd:1000-1001`) — a weapon
+# walked `GUNART.keys()` — which is `ART.keys()` (`gunart.gd:1168-1169`) — a weapon
 # deleted from `ART` outright was never even asked about.
 #
 # `ANCESTOR_PARTS` defended itself as "stated here rather than read out of `ART`,
@@ -1827,7 +1827,7 @@ static func _gun_sights(v: Verify) -> void:
 # part of all 13 weapons moves 0 of 2080 px; reversing a whole part list moves 28-83
 # px at a worst channel-sum delta of 3-6 of 765, which is antialias rounding; and only
 # 8 of the 13 keys have a plaque at all (m1911, rpk, chinalake, raygun and thundergun
-# have none). So COLOUR and ORDER stand on `_tint` (`gunart.gd:1427-1431`) turning
+# have none). So COLOUR and ORDER stand on `_tint` (`gunart.gd:1595-1599`) turning
 # each hex into the mesh's vertex colours, on `SLIDE` indexing `ART` by position, and
 # on CLAUDE.md's departure doctrine — NOT on the plaque. What this package protects is
 # the RECORD and the viewmodel mesh; geometry and kind on the 8 plaqued weapons is the
@@ -1911,7 +1911,7 @@ static func _gun_ancestor(v: Verify) -> void:
 	# work.
 	var keys := ANCESTOR_ART.shared_keys(anc, GUNART.ART)
 
-	# `_parts()`, not `ART`: it is what `_build` (`gunart.gd:1168`) and `_corners`
+	# `_parts()`, not `ART`: it is what `_build` (`gunart.gd:1336`) and `_corners`
 	# (`:1003`) both walk, and :1411-1422 above already ties that walk to the committed
 	# `ArrayMesh` — so the chain runs from `kriegsnacht.html` to the vertices on screen
 	# with no copy in the middle. A test that does not read what the game reads is
@@ -1946,7 +1946,7 @@ static func _gun_ancestor(v: Verify) -> void:
 	# prints the handover list rather than a puzzle.
 	var bands := ANCESTOR_ART.band_faults(anc)
 	v.check("the roster's parts decompose into the three bands this project declares, and every band names only weapons ART declares",
-		String(bands["diff"]).is_empty() and int(bands["n"]) == 119,
+		String(bands["diff"]).is_empty() and int(bands["n"]) == 133,
 		"walked %d parts; %s" % [int(bands["n"]), bands["diff"]])
 
 	var bad: Array = []
