@@ -152,8 +152,10 @@ const GRIP := {
 ## an AK's and an RPK's charging handle is welded to the bolt carrier and travels
 ## over the **rear** of the receiver on the right.
 ##
-## `_extrude` sweeps +/-`half` about x = 0 (`:1619-1620`) and `_prism_corners` does
-## the same, so **this builder cannot make a one-sided part.** A charging handle
+## `_extrude` sweeps +/-`half` about x = 0 (`:1967-1968`) and `_prism_corners` does
+## the same (`:1713-1714`), so **this builder cannot make a one-sided part.**
+## (`:1619-1620` here was already wrong before the support-hand split moved it: it
+## landed in the middle of `_prism_corners`' docstring, not on either sweep.) A charging handle
 ## added for the far flank is drawn on the near one too, and the near cap is the
 ## one the player is looking at: the rest pose puts the grip at x +0.038 and yaws
 ## the weapon 0.2094 rad inward (`viewmodel.gd:171`, `:189`), which resolves the
@@ -306,7 +308,7 @@ const MODE := {
 ## has no hold-open device of any kind; and a pump gun's fore-end rests forward,
 ## which is a pose no shotgun holds.
 ##
-## A plain `Array` literal, the shape `ONE_HANDED` uses at `:1158`, because
+## A plain `Array` literal, the shape `ONE_HANDED` uses at `:1381`, because
 ## `PackedStringArray([...])` is a *call* and a const that is not a constant
 ## expression is a hard parse error in this project.
 const BOLT_HOLD := ["m1911", "pm63"]
@@ -522,7 +524,7 @@ const SIGHTS := {
 ## order instead of last.
 ##
 ## **AND THE FIFTH CONSTRAINT, MEASURED HERE BECAUSE IT COST THIS PACKAGE THREE
-## ROWS AND NOTHING ELSE STATES IT: `_hands` is extruded LAST, at `HAND_HALF` 5.00,
+## ROWS AND NOTHING ELSE STATES IT: the gloves are extruded LAST, at `HAND_HALF` 5.00,
 ## deeper than every gun part on the roster, so a detail row behind a glove is a
 ## `DEPTH` entry and six guard moves spent on geometry the player never sees.** The
 ## gloves are placed off `GRIP`, so their boxes are per-weapon and have to be
@@ -704,7 +706,7 @@ const DETAIL := {
 	# 2  The top lever. FIREARM FACT: every break-action opens with a lever on the top
 	#    strap, and it is the one control that says "this gun breaks" instead of "this
 	#    gun has a bolt". Above y21.6 so it clears the glove — `GRIP` is (62, 26) and
-	#    `_hands` hangs below that. `2e3033` at 0.763x after `3a3d40` measured 1.199x.
+	#    `_grip_hand_rows` hangs below that. `2e3033` at 0.763x after `3a3d40` measured 1.199x.
 	"olympia": [["r", 44.8, 25.4, 8.4, 5, Color("4b3218")],
 		["r", 8, 25.2, 50, 0.8, Color("1f2123")],
 		["r", 61.4, 20.2, 5.2, 1.4, Color("2e3033")]],
@@ -1410,6 +1412,54 @@ static func build_slide(key: String, pap: bool) -> ArrayMesh:
 	return _build(key, pap, true)
 
 
+## The support hand alone, or null when the weapon is held in one — the same null
+## contract `build_slide` states, for the same reason: three of thirteen weapons
+## legitimately have no second glove and a caller must not have to ask twice.
+##
+## **A DELIBERATE DEPARTURE FROM THE ANCESTOR, AND THIS IS THE RECORD OF IT.** The
+## ancestor draws all four glove rects into the same canvas as the gun
+## (html:1223-1238) and has no notion of a hand that can move independently of the
+## barrel it is wrapped around. A segmented reload needs exactly that — the support
+## hand leaves the fore-end, fetches a shell and comes back — so the support pair is
+## lifted out of `build_body` into a mesh of its own. **In this stage it is pinned at
+## identity and nothing animates**, so the split is a change of topology and not of
+## picture; `checks/frame.gd`'s partition assertion and `viewmodel.gd`'s
+## `swept_support()` are what hold it to that.
+##
+## **NO `pap` PARAMETER, and the omission is load-bearing.** The Pack-a-Punch
+## exemption is the hard-coded `false` in the `_tint(raw, false)` below: the ancestor
+## fills the tint over the whole canvas at html:1220 and then draws the gloves at
+## :1229-:1237, so the gun is tinted and the hands are not. Promoting that literal to
+## a parameter would make the exemption a caller's choice, and nothing in the suite
+## could see a caller that passed `true` — there is no rendered scenario holding a
+## Pack-a-Punched two-handed weapon.
+static func build_support_hand(key: String) -> ArrayMesh:
+	if not ART.has(key):
+		return null
+	var g := _grip(key)
+	var rows: Array = _support_rows(key, g)
+	if rows.is_empty():
+		return null
+	var st := SurfaceTool.new()
+	st.begin(Mesh.PRIMITIVE_TRIANGLES)
+	for row: Array in rows:
+		var poly: PackedVector2Array = row[0]
+		var half: float = row[1]
+		var raw: Color = row[2]
+		# `half * UNIT` and `_tint(.., false)`, character for character as the block
+		# in `_build` this was lifted out of ran them.
+		#
+		# **NOT ROUTED THROUGH `_part_poly` / `_inflate`, and that is structural
+		# rather than an oversight.** The hand polygon's whole path is
+		# `_hand_rect` -> `_extrude` and there is no `proud` argument anywhere along
+		# it; the exemption is recorded at `_grip_hand_rows` below. Tidying the hand
+		# onto the parts path would grow every glove by a rank of `PROUD` and no
+		# assertion in this project would notice, because `_inflate` never sees a
+		# depth and the depth checks are the only ones watching this geometry.
+		_extrude(st, poly, g, half * UNIT, _tint(raw, false))
+	return st.commit()
+
+
 ## Every extruded corner of the body, in the same mesh space `build_body` emits,
 ## for the clip measurement in `viewmodel.gd`.
 ##
@@ -1421,7 +1471,13 @@ static func build_slide(key: String, pap: bool) -> ArrayMesh:
 ## this long it pairs the muzzle's z with the grip's y and overstates the reach by
 ## five millimetres.
 ##
-## It shares `_parts`, `_part_poly`, `_inflate`, `_hands`, `_grip`, `_to_local` and
+## Since the reload package this is the BODY AND THE GRIP HAND ONLY: the support pair
+## walks out of `support_corners()` instead, and `viewmodel.sweep()` collects the two
+## together so the set M-VMCLIP measures is unchanged. A caller that wants "every
+## corner of the weapon on screen" needs all three of these functions now, and
+## `checks/frame.gd` pins the partition against counts measured before the split.
+##
+## It shares `_parts`, `_part_poly`, `_inflate`, `_grip_hand_rows`, `_grip`, `_to_local` and
 ## — since the depth table landed — the same `part_half()` **call** with the
 ## builder, so the only step it does not run is the triangulation, and
 ## triangulation cannot move a vertex. That is what keeps this honest about the
@@ -1436,6 +1492,30 @@ static func body_corners(key: String) -> PackedVector3Array:
 ## caller adds `SLIDE_TRAVEL` itself, because how far it travels is the rig's.
 static func slide_corners(key: String) -> PackedVector3Array:
 	return _corners(key, true)
+
+
+## Every extruded corner of the support hand, in the same mesh space
+## `build_support_hand` emits — the sixteen points per two-handed weapon that left
+## `body_corners()` when the pair was split out of `_hands`.
+##
+## **THE SPLIT MOVED CORNERS AND MUST NOT HAVE LOST ANY**, because `body_corners()`
+## is what M-VMCLIP measures the no-clip guarantee over. `viewmodel.sweep()` collects
+## this at zero offset so the point set it walks is exactly the pre-split one, and
+## that is asserted twice rather than argued once: `checks/frame.gd` pins
+## `body_corners + support_corners` against per-weapon counts MEASURED before the
+## split, and `viewmodel.swept_support()` reports what the sweep actually took —
+## because a sweep that dropped this call would still pass every aggregate metric,
+## exactly as `swept_travels()` records for the group's travel endpoint.
+static func support_corners(key: String) -> PackedVector3Array:
+	var out := PackedVector3Array()
+	if not ART.has(key):
+		return out
+	var g := _grip(key)
+	for row: Array in _support_rows(key, g):
+		var poly: PackedVector2Array = row[0]
+		var half: float = row[1]
+		out.append_array(_prism_corners(poly, g, half * UNIT))
+	return out
 
 
 ## Cache for `sight_height`, keyed by weapon. Nothing invalidates it because
@@ -1574,7 +1654,12 @@ static func _build(key: String, pap: bool, want_slide: bool) -> ArrayMesh:
 		# Last, exactly as the ancestor draws them — after the parts and, note,
 		# after the Pack-a-Punch composite, so the gun is tinted and the gloves are
 		# not. `_tint(.., false)` is that ordering, not an oversight.
-		for row: Array in _hands(key, g):
+		#
+		# THE GRIP PAIR ONLY. The support pair is a mesh of its own since the reload
+		# package (`build_support_hand`), and this line and `_corners`' mirror of it
+		# have to move together or the clip walk measures a weapon the builder does
+		# not draw.
+		for row: Array in _grip_hand_rows(g):
 			var poly: PackedVector2Array = row[0]
 			var half: float = row[1]
 			var raw: Color = row[2]
@@ -1603,7 +1688,9 @@ static func _corners(key: String, want_slide: bool) -> PackedVector3Array:
 		var half := part_half(key, i)
 		out.append_array(_prism_corners(_part_poly(part, part_rank(key, i) * PROUD), g, half))
 	if not want_slide:
-		for row: Array in _hands(key, g):
+		# The grip pair only, mirroring `_build` exactly — see there. `support_corners`
+		# is the other half and `viewmodel.sweep()` collects both.
+		for row: Array in _grip_hand_rows(g):
 			var poly: PackedVector2Array = row[0]
 			var half: float = row[1]
 			out.append_array(_prism_corners(poly, g, half * UNIT))
@@ -1628,27 +1715,67 @@ static func _prism_corners(poly: PackedVector2Array, g: Vector2,
 	return out
 
 
-## The gloved hands, as `[polygon, half-depth in art units, colour]` rows.
+## The glove on the grip and its cuff, as `[polygon, half-depth in art units,
+## colour]` rows.
 ##
-## One list rather than four calls, because the builder and `_corners` both walk
-## it and a hand that existed in only one of them would make the clip assertion a
-## measurement of a different weapon than the one on screen. Positions and sizes
-## are the ancestor's canvas figures over the 1.9 it drew the parts at (see
-## `HAND_POS`), and the exclusion list at `:1233` is `ONE_HANDED`.
+## **THIS AND `_support_hand_rows` WERE ONE `_hands(key, g)` UNTIL THE RELOAD
+## PACKAGE.** The pair is split because a segmented reload moves the support hand and
+## leaves the trigger hand where it is, and a mesh cannot be posed in halves — so the
+## support pair lives in its own `ArrayMesh` now (`build_support_hand`) while these
+## two rows stay welded to the weapon. That is a departure from the ancestor, which
+## draws all four rects into the one canvas (html:1223-1238), and it is recorded there.
+##
+## One list per pair rather than four calls, and that property survives the split
+## intact: the builder and `_corners` both walk THIS list, `build_support_hand` and
+## `support_corners` both walk the other, and a hand that existed in only one of a
+## pair would make the clip assertion a measurement of a different weapon than the
+## one on screen. Positions and sizes are the ancestor's canvas figures over the 1.9
+## it drew the parts at (see `HAND_POS`).
 ##
 ## They are deliberately *not* inflated by `PROUD`: the cuff sits strictly inside
 ## the glove in the y-z plane and 0.14 units proud of it in x, and neither shares
 ## an edge line with any part in `ART`, so there is no coplanar pair here to break.
-static func _hands(key: String, g: Vector2) -> Array:
-	var out: Array = [
+## **That exemption is STRUCTURAL and is worth keeping so** — the polygon's whole
+## path is `_hand_rect` -> `_extrude`, which takes no `proud` argument at all, so
+## nothing can inflate a glove by accident. Routing it through `_part_poly` for
+## tidiness would put a rank of `PROUD` on every hand on the roster, silently:
+## `_inflate` never sees a depth, so the depth checks that watch this geometry
+## cannot falsify it (`checks/frame.gd` records that same trap in its own words).
+static func _grip_hand_rows(g: Vector2) -> Array:
+	return [
 		[_hand_rect(g, HAND_POS, HAND_SIZE), HAND_HALF, HAND_MAIN],
 		[_hand_rect(g, CUFF_POS, CUFF_SIZE), HAND_HALF + LAYER, HAND_CUFF]]
+
+
+## The support glove and its cuff, in the same shape and for every weapon — whether
+## a weapon HAS one is `_support_rows`' question and not this function's.
+##
+## Unconditional on purpose. These two rows are pure geometry off the grip, exactly
+## as `_grip_hand_rows` is; the roster fact belongs beside the roster, stated once,
+## rather than once per caller. `_hands` answered both questions in one function and
+## that was right while there was one list and two walks over it; there are two
+## builders and two corner walks now.
+static func _support_hand_rows(g: Vector2) -> Array:
+	return [
+		[_hand_rect(g, SUPPORT_POS, SUPPORT_SIZE), HAND_HALF, HAND_MAIN],
+		[_hand_rect(g, SUPPORT_CUFF_POS, SUPPORT_CUFF_SIZE),
+			HAND_HALF + LAYER, HAND_CUFF]]
+
+
+## The support rows this weapon actually gets — the ancestor's own exclusion list
+## (`:1233`, verbatim in `ONE_HANDED`), applied in ONE place.
+##
+## `build_support_hand` and `support_corners` both come through here, so the mesh and
+## the corner walk cannot disagree about which weapons have a second hand. Two
+## `if ONE_HANDED.has(key)` guards, one per public entry point, would be the same
+## copied-expression trap `part_half()` exists to prevent — and with a worse failure
+## mode, because a Ray Gun whose corner walk grew sixteen points nothing draws would
+## inflate the clip budget rather than shrink it, and no aggregate metric distinguishes
+## a budget that is too generous from one that is right.
+static func _support_rows(key: String, g: Vector2) -> Array:
 	if ONE_HANDED.has(key):
-		return out
-	out.append([_hand_rect(g, SUPPORT_POS, SUPPORT_SIZE), HAND_HALF, HAND_MAIN])
-	out.append([_hand_rect(g, SUPPORT_CUFF_POS, SUPPORT_CUFF_SIZE),
-		HAND_HALF + LAYER, HAND_CUFF])
-	return out
+		return []
+	return _support_hand_rows(g)
 
 
 ## One box, positioned relative to the grip rather than in absolute art space,

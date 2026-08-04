@@ -86,6 +86,7 @@ static func run(v: Verify, main: Node3D) -> void:
 	_flash_art(v, main)
 	_flash_drawn(v, main)
 	_gun_depth(v)
+	_gun_hands(v)
 	_gun_bands(v)
 	_gun_shade(v)
 	_gun_sights(v)
@@ -1346,7 +1347,7 @@ static func _flash_materials(v: Verify, main: Node3D) -> void:
 # different questions about the same table, and the second one is the reason the
 # first is trustworthy.
 #
-# THE COMMITTED MESH IS READ BACK. `gunart.gd:1195-1200` argues, correctly, that a
+# THE COMMITTED MESH IS READ BACK. `gunart.gd:1466-1472` argues, correctly, that a
 # safety assertion must not hang on `surface_get_arrays()` — a silently empty
 # result under the dummy driver would make it pass by measuring nothing. That
 # argument is about `_measure()`, which has no way to notice an empty set. It does
@@ -1369,9 +1370,19 @@ const SHIPPED_MAX_HALF := 4.00
 
 
 ## Every distinct |x| in a weapon's committed meshes, in art units.
+##
+## `build_support_hand` is in the list since the support pair was split out into a
+## mesh of its own, so this stays a statement about every vertex the renderer is
+## handed. It adds no NEW depth — the support glove and its cuff sit at `HAND_HALF`
+## and `HAND_HALF + LAYER`, which the grip pair already supplies — and that is worth
+## saying out loud, because it is exactly why `_gun_hands` below has to carry the
+## split's own assertions: the three checks in `_gun_depth` are blind to whether the
+## support hand is built at all. MEASURED, and reported as the honesty control of the
+## package rather than argued: with this call removed the depth checks stay green.
 static func _mesh_halves(key: String) -> Array:
 	var out := {}
-	for m: ArrayMesh in [GUNART.build_body(key, false), GUNART.build_slide(key, false)]:
+	for m: ArrayMesh in [GUNART.build_body(key, false), GUNART.build_slide(key, false),
+			GUNART.build_support_hand(key)]:
 		if m == null:
 			continue
 		var vs: PackedVector3Array = m.surface_get_arrays(0)[Mesh.ARRAY_VERTEX]
@@ -1382,10 +1393,13 @@ static func _mesh_halves(key: String) -> Array:
 	return k
 
 
-## The same, off the corner walk that feeds `viewmodel._measure()`.
+## The same, off the corner walk that feeds `viewmodel._measure()`. Three walks now,
+## for the reason `_mesh_halves` gives: the two have to be asked the same question or
+## the comparison between them stops being one.
 static func _corner_halves(key: String) -> Array:
 	var out := {}
-	for c: PackedVector3Array in [GUNART.body_corners(key), GUNART.slide_corners(key)]:
+	for c: PackedVector3Array in [GUNART.body_corners(key), GUNART.slide_corners(key),
+			GUNART.support_corners(key)]:
 		for p: Vector3 in c:
 			out[snappedf(absf(p.x) / GUNART.UNIT, 0.0001)] = true
 	var k := out.keys()
@@ -1450,10 +1464,13 @@ static func _gun_depth(v: Verify) -> void:
 
 	# M5 A14, stated over the table rather than over the mesh, and computed through
 	# the same `part_half()` the builder calls rather than re-derived. The gloves
-	# are pinned at HAND_HALF and HAND_HALF + LAYER (`gunart.gd:1163` and `:1421-1429`,
-	# where `_hands` assigns those two literally) and do NOT ride the ramp, so a gun
-	# part landing on either z-fights its caps against a glove. Provenance:
-	# `gunart.gd:841-851`, the z-fight the ramp exists to fix.
+	# are pinned at HAND_HALF and HAND_HALF + LAYER (`gunart.gd:1386` for the constant,
+	# `:1744-1747` for `_grip_hand_rows` and `:1758-1762` for `_support_hand_rows`,
+	# which assign those two literally) and do NOT ride the ramp, so a gun part landing
+	# on either z-fights its caps against a glove. FOUR generations of these citations
+	# have now rotted; `_hands` is not even a function any more, and this rewrite is the
+	# support-hand split's, not a mapping.
+	# Provenance: `gunart.gd:1022-1032`, the z-fight the ramp exists to fix.
 	#
 	# BOTH CITATIONS ON THIS LINE WERE WRONG BEFORE THE BANDS PACKAGE TOUCHED THE FILE,
 	# and neither was caught by mapping them forward — they were checked. `529-535`
@@ -1461,6 +1478,14 @@ static func _gun_depth(v: Verify) -> void:
 	# mentions a glove; `190-200` was the tail of the `SLIDE` table, which never
 	# mentions a z-fight. Recorded rather than silently corrected, because "the
 	# citation was already wrong" is a finding.
+	#
+	# ...AND ALL THREE WERE WRONG AGAIN ON 2026-08-04, found the same way, by opening
+	# every line rather than by mapping any of them: `1163` was the middle of the
+	# Stakeout's `DEPTH` row, `1421-1429` the middle of `body_corners()`'s docstring,
+	# and `841-851` the knife's detail comment running into the head of `RANKS`. Three
+	# generations of one sentence have now rotted, which is the finding: a line
+	# reference into `gunart.gd` survives roughly one package, so check it, and do not
+	# assume the previous author's correction is still good.
 	#
 	# The first draft of F7 gave a different mechanism for this rule — the hands'
 	# `PROUD` exemption — and that mechanism is false: `_inflate` never sees a
@@ -1534,6 +1559,263 @@ static func _gun_depth(v: Verify) -> void:
 		"blade %.2f against handle %.2f art units" % [k_blade, k_handle])
 
 
+# --- part 11a: the support hand, split out of the weapon mesh ------------------
+#
+# The support pair used to be two of the four rows `gunart._hands()` returned, so it
+# was extruded into `build_body`'s `ArrayMesh` and walked into `body_corners()`. A
+# segmented reload needs it to move on its own, so it is `build_support_hand()` /
+# `support_corners()` now and it hangs off its own `MeshInstance3D`.
+#
+# **NOTHING ALREADY IN THIS FILE CAN SEE THAT SPLIT, and that is why these exist.**
+# `_gun_depth`'s three checks compare distinct half-depths, and the support glove and
+# cuff sit at `HAND_HALF` and `HAND_HALF + LAYER` — the same two the grip pair
+# supplies. So the depth sets are identical whether the support hand is built, halved,
+# doubled or deleted. MEASURED, not reasoned: `_mesh_halves` was run with
+# `build_support_hand` dropped from its list and `...and every one of them is a
+# distinct depth, gloves included` stayed GREEN on all thirteen weapons. That check
+# must not be cited as coverage of anything below.
+#
+# The four claims are deliberately independent, because no one of them is sufficient:
+#
+#   THE ANCESTOR       — the four figures are `kriegsnacht.html:1235` / `:1237` over
+#                        the 1.9 at `:1217`, all three READ AT CHECK TIME. This is the
+#                        only expectation in the package that is not a constant the
+#                        code itself reads, and it is the first live read of
+#                        `ONE_HANDED` anywhere in `scripts/dev` (checked 2026-08-04:
+#                        `grep -rn ONE_HANDED scripts/dev` returned nothing).
+#   THE PARTITION      — `body_corners + support_corners` per weapon against counts
+#                        MEASURED before the split, so corners can only have MOVED.
+#   THE CARDINALITY    — 16 corners and 72 vertices, both as literals with their
+#                        derivation, so a fifth rect goes red and gets re-provenanced
+#                        instead of quietly moving both sides of a comparison.
+#   THE RIG            — `checks/systems.gd`, which drives the real viewmodel: the
+#                        node is pinned at identity and shown on exactly the ten
+#                        two-handed weapons.
+#
+# The pixels are the fifth leg and the weakest: `notes/perf/frames/golden.json` puts
+# `tolerance.probe` at rel 0.05 on a `spawn.probes.gun_px` of 21431, which is about a
+# thousand pixels of slack. `tools/frames.ps1` catches a glove that moved or vanished;
+# it cannot catch one that moved a pixel. The identity pin carries the real weight.
+
+## Where the ancestor draws the support hand, and the line whose scale every one of
+## its canvas figures is quoted in. Asserted rather than assumed: if the ancestor is
+## ever reformatted these regexes stop matching and the failure reads "the citation
+## moved", which is the finding, instead of a silent pass over the wrong lines.
+const HANDS_SCALE_LINE := 1217
+const HANDS_EXCLUDE_LINE := 1233
+const SUPPORT_GLOVE_LINE := 1235
+const SUPPORT_CUFF_LINE := 1237
+
+## Half of the last place `SUPPORT_POS` and its three siblings carry. They are the
+## ancestor's integers over 1.9 rounded to three decimals (-58/1.9 = -30.526315...
+## against a stored -30.526), so the band is the rounding and nothing else — it is
+## 0.0005 art units, i.e. 5e-7 m, and a one-tenth-of-a-unit edit to any of the four
+## is seventy times too large to hide in it.
+const HAND_ROUND := 0.0005
+
+## Two rects, four corners each, two extrusion caps per corner — `_prism_corners`
+## appends `+half` and `-half` for every polygon vertex (`gunart.gd:1713-1714`).
+const SUPPORT_CORNERS := 16
+
+## `_extrude` emits `2*(n-2)` cap triangles and `2*n` side triangles, i.e. `12n - 12`
+## vertices, and nothing indexes them away (`gunart.gd:1956-1989`, and the 252-vertex
+## M1911 measurement at the head of part 11). At n = 4 that is 36; two rects, 72.
+##
+## A LITERAL AND NOT `rows.size() * 36`, on purpose. Written the second way, a third
+## support rect would move the expectation and the subject together and the check
+## could not fail — which is the shape this project has shipped four times. Written
+## this way a fifth rect goes red and someone has to re-derive the number and say
+## where it came from, which is the point.
+const SUPPORT_VERTS := 72
+
+## `GUNART.body_corners(key).size()` on commit 2fc7422, BEFORE the support pair was
+## split out — MEASURED by walking the accessor under `--headless`, not copied from
+## anywhere. The support hand's sixteen corners are inside every one of these.
+##
+## This is the whole safety argument for the split written as thirteen integers: the
+## no-clip guarantee is measured over `body_corners()`, so the one thing the split may
+## not do is lose a point. A snapshot of today's numbers would endorse whatever the
+## code did the day it was written; these predate the change they are guarding.
+const PRE_SPLIT_BODY := {
+	"m1911": 80, "olympia": 120, "m14": 128, "mp40": 128, "pm63": 112,
+	"ak74u": 136, "stakeout": 120, "m16": 136, "rpk": 184, "chinalake": 132,
+	"raygun": 172, "thundergun": 200, "knife": 82,
+}
+
+
+## One line of the ancestor, or "" when there is no such line. 1-based, because every
+## citation in this project is.
+static func _anc_line(lines: PackedStringArray, n: int) -> String:
+	if n < 1 or n > lines.size():
+		return ""
+	return lines[n - 1]
+
+
+## `roundRect(gp[0]*1.9-58, gp[1]*1.9-2, 28, 22, 5)` -> `[-58, -2, 28, 22]`, or []
+## when the line is not one. The corner radius is dropped: it is the one thing that
+## does not survive the port at all (a box has no fillet), and `gunart.gd` says so.
+static func _round_rect(line: String) -> Array:
+	# Built at call time: `RegEx.create_from_string(...)` is a CALL and a `const` that
+	# is not a constant expression is a hard parse error in this project.
+	var re := RegEx.create_from_string(
+		"roundRect\\(\\s*gp\\[0\\]\\*([0-9.]+)\\s*([+-][0-9.]+)?\\s*,"
+		+ "\\s*gp\\[1\\]\\*([0-9.]+)\\s*([+-][0-9.]+)?\\s*,"
+		+ "\\s*([0-9.]+)\\s*,\\s*([0-9.]+)")
+	var m := re.search(line)
+	if m == null:
+		return []
+	# The two scales are captured as well as the offsets, so a rect quoted at a
+	# different multiplier than `drawParts` uses cannot come out the far end looking
+	# like agreement.
+	return [float(m.get_string(1)), _offset(m.get_string(2)),
+		float(m.get_string(3)), _offset(m.get_string(4)),
+		float(m.get_string(5)), float(m.get_string(6))]
+
+
+## An optional signed offset. Absent means zero — `gp[1]*1.9` with no tail is how the
+## ancestor writes the support cuff's y (`:1237`), and reading that as a failed match
+## would make the check pass by never running.
+static func _offset(s: String) -> float:
+	if s.is_empty():
+		return 0.0
+	return float(s.lstrip("+"))
+
+
+## `x !== 'a' && x !== 'b'` -> ["a", "b"], in the order written.
+static func _excluded_keys(line: String) -> Array:
+	var re := RegEx.create_from_string("key\\s*!==\\s*'([A-Za-z0-9_]+)'")
+	var out: Array = []
+	for m: RegExMatch in re.search_all(line):
+		out.append(m.get_string(1))
+	return out
+
+
+static func _gun_hands(v: Verify) -> void:
+	# The same fold `ancestor_art.read()` makes and for the same reason: `core.autocrlf`
+	# is true with no `.gitattributes`, so this file is LF here and CRLF in every fresh
+	# checkout of the same commit. A SECOND reader of `kriegsnacht.html`, which
+	# `ancestor_art.gd`'s own docstring warns against — that warning is about the
+	# `GUNART` block, which `read()` slices out and returns parsed, and the gloves are
+	# drawn twenty-six lines past the end of it, so there is nothing in its result to
+	# read. The sha pin stays where it is, in `_gun_ancestor`.
+	var lf := FileAccess.get_file_as_string(ANCESTOR_ART.ANCESTOR_PATH).replace("\r\n", "\n")
+	var lines := lf.split("\n")
+
+	# 1. THE FOUR FIGURES, AGAINST THE FILE THEY WERE TRANSLITERATED FROM. Both sides
+	# come from different places by construction: the expectation is parsed out of
+	# `kriegsnacht.html` on this run and the subject is the four constants `gunart.gd`
+	# hands `_hand_rect`. Editing either alone goes red.
+	#
+	# The 1.9 is read too, out of `drawParts(g, GUNART[key], 1.9)` at `:1217`, rather
+	# than typed here — it is the ancestor's own scale and the whole reason our art
+	# space is what it is, so a check that hard-coded it would be pinning our arithmetic
+	# rather than its.
+	var scale_m := RegEx.create_from_string("drawParts\\([^,]+,[^,]+,\\s*([0-9.]+)\\s*\\)") \
+		.search(_anc_line(lines, HANDS_SCALE_LINE))
+	var scale := 0.0 if scale_m == null else float(scale_m.get_string(1))
+	var glove := _round_rect(_anc_line(lines, SUPPORT_GLOVE_LINE))
+	var cuff := _round_rect(_anc_line(lines, SUPPORT_CUFF_LINE))
+	var fault := ""
+	if scale <= 0.0:
+		fault += "no drawParts scale at html:%d " % HANDS_SCALE_LINE
+	if glove.size() != 6:
+		fault += "no roundRect at html:%d " % SUPPORT_GLOVE_LINE
+	if cuff.size() != 6:
+		fault += "no roundRect at html:%d " % SUPPORT_CUFF_LINE
+	if fault.is_empty():
+		# [scale_x, dx, scale_y, dy, w, h], all six, so a rect drawn at a scale of its
+		# own is a failure and not a silent reinterpretation.
+		var want := [
+			["SUPPORT_POS", Vector2(glove[1], glove[3]), GUNART.SUPPORT_POS, glove[0], glove[2]],
+			["SUPPORT_SIZE", Vector2(glove[4], glove[5]), GUNART.SUPPORT_SIZE, glove[0], glove[2]],
+			["SUPPORT_CUFF_POS", Vector2(cuff[1], cuff[3]), GUNART.SUPPORT_CUFF_POS, cuff[0], cuff[2]],
+			["SUPPORT_CUFF_SIZE", Vector2(cuff[4], cuff[5]), GUNART.SUPPORT_CUFF_SIZE, cuff[0], cuff[2]],
+		]
+		for row: Array in want:
+			var name: String = row[0]
+			var raw: Vector2 = row[1]
+			var ours: Vector2 = row[2]
+			var sx: float = row[3]
+			var sy: float = row[4]
+			if not v.near(sx, scale, 1e-9) or not v.near(sy, scale, 1e-9):
+				fault += "%s drawn at %.3f/%.3f not %.3f " % [name, sx, sy, scale]
+				continue
+			var theirs := raw / scale
+			if not v.near(ours.x, theirs.x, HAND_ROUND) or not v.near(ours.y, theirs.y, HAND_ROUND):
+				fault += "%s is (%.4f, %.4f), ancestor gives (%.4f, %.4f) " % [
+					name, ours.x, ours.y, theirs.x, theirs.y]
+	v.check("the support hand is the ancestor's own two rects over the scale it drew them at",
+		fault.is_empty(), fault)
+
+	# 2. AND THE WEAPONS THAT DO NOT GET ONE. The exclusion is a separate claim from
+	# the geometry and fails separately: this is the list the ancestor writes at
+	# `:1233` against `ONE_HANDED`, in order, and until this line `ONE_HANDED` had
+	# ZERO live readers in `scripts/dev` — nothing anywhere asserted which weapons are
+	# held in one hand, so a Ray Gun growing a second glove was a silent change.
+	var excluded := _excluded_keys(_anc_line(lines, HANDS_EXCLUDE_LINE))
+	v.check("ONE_HANDED is the ancestor's own exclusion list, in its order",
+		excluded == GUNART.ONE_HANDED and excluded.size() == 3,
+		"html:%d gives %s, ONE_HANDED is %s" % [HANDS_EXCLUDE_LINE, excluded,
+			GUNART.ONE_HANDED])
+
+	# 3. THE PARTITION. Nothing may have been lost, because `body_corners()` is what
+	# M-VMCLIP measures the no-clip guarantee over and a corner that stopped being
+	# walked shrinks the budget rather than failing it. Both buckets are asserted, so
+	# leaving `_support_hand_rows` in `_corners` as well as in `support_corners` — the
+	# obvious half-done split — reddens this on a double count rather than passing.
+	var lost := ""
+	var covered := 0
+	for key: String in GUNART.keys():
+		if not PRE_SPLIT_BODY.has(key):
+			lost += "%s has no pre-split count " % key
+			continue
+		covered += 1
+		var was: int = PRE_SPLIT_BODY[key]
+		var body: int = GUNART.body_corners(key).size()
+		var hand: int = GUNART.support_corners(key).size()
+		if body + hand != was:
+			lost += "%s body %d + support %d != %d " % [key, body, hand, was]
+	v.check("the split moved the support hand's corners rather than losing any",
+		lost.is_empty() and covered == GUNART.keys().size()
+			and PRE_SPLIT_BODY.size() == GUNART.keys().size(),
+		"%d of %d weapons covered by a %d-row table; %s" % [covered,
+			GUNART.keys().size(), PRE_SPLIT_BODY.size(), lost])
+
+	# 4. THE CARDINALITY, both buckets, both sides of the fence. Sixteen corners and no
+	# mesh at all are two different claims about the same three weapons and a check
+	# that only asserted the refusal would pass against a `support_corners` that had
+	# stopped returning anything for anybody.
+	#
+	# The selector is `ONE_HANDED` itself — which would ordinarily be the expectation
+	# and the subject coming from one place. It is not, because check 2 above anchors
+	# `ONE_HANDED` to the ancestor: an edit that moved this bucket has to get past
+	# `kriegsnacht.html:1233` first.
+	var wrong := ""
+	var two_handed := 0
+	for key: String in GUNART.keys():
+		var one: bool = GUNART.ONE_HANDED.has(key)
+		if not one:
+			two_handed += 1
+		var want_corners := 0 if one else SUPPORT_CORNERS
+		var got_corners: int = GUNART.support_corners(key).size()
+		if got_corners != want_corners:
+			wrong += "%s corners %d want %d " % [key, got_corners, want_corners]
+		var mesh: ArrayMesh = GUNART.build_support_hand(key)
+		if one:
+			if mesh != null:
+				wrong += "%s is one-handed and got a mesh " % key
+			continue
+		if mesh == null:
+			wrong += "%s got no support mesh " % key
+			continue
+		var vs: PackedVector3Array = mesh.surface_get_arrays(0)[Mesh.ARRAY_VERTEX]
+		if vs.size() != SUPPORT_VERTS:
+			wrong += "%s mesh has %d vertices want %d " % [key, vs.size(), SUPPORT_VERTS]
+	v.check("every two-handed weapon gets sixteen support corners and a 72-vertex glove, and no one-handed weapon gets either",
+		wrong.is_empty() and two_handed == 10,
+		"%d two-handed of %d; %s" % [two_handed, GUNART.keys().size(), wrong])
+
+
 # --- part 11b: the walk, decomposed -------------------------------------------
 #
 # `gunart.gd`'s walk is `ART + SIGHTS + DETAIL` and a part's place in the PAINTING
@@ -1544,7 +1826,7 @@ static func _gun_depth(v: Verify) -> void:
 # covers the half of the ordinal nothing here could see at all.
 #
 # EVERY WALK BELOW LIVES IN `ancestor_art.gd`, not here. This file aborts its parse
-# gate at `:1077` on the documented `Identifier not found: Rng` false positive,
+# gate at `:1088` on the documented `Identifier not found: Rng` false positive,
 # hundreds of lines above this point, so nothing written down here is gateable;
 # `ancestor_art.gd` names no autoload and gates clean on its own. What is left in
 # this file is a driver line and a `v.check`, which is as much as an ungateable file
@@ -1844,7 +2126,7 @@ static func _gun_sights(v: Verify) -> void:
 # part of all 13 weapons moves 0 of 2080 px; reversing a whole part list moves 28-83
 # px at a worst channel-sum delta of 3-6 of 765, which is antialias rounding; and only
 # 8 of the 13 keys have a plaque at all (m1911, rpk, chinalake, raygun and thundergun
-# have none). So COLOUR and ORDER stand on `_tint` (`gunart.gd:1595-1599`) turning
+# have none). So COLOUR and ORDER stand on `_tint` (`gunart.gd:1943-1947`) turning
 # each hex into the mesh's vertex colours, on `SLIDE` indexing `ART` by position, and
 # on CLAUDE.md's departure doctrine — NOT on the plaque. What this package protects is
 # the RECORD and the viewmodel mesh; geometry and kind on the 8 plaqued weapons is the
@@ -1864,7 +2146,11 @@ static func _gun_sights(v: Verify) -> void:
 # written down.
 #
 # THE PARSE GATE GIVES THIS ZERO COVERAGE. `--check-only --script
-# scripts/dev/checks/frame.gd` aborts at `frame.gd:1077` on the documented
+# scripts/dev/checks/frame.gd` aborts at `frame.gd:1088` on the documented
+# (RE-MEASURED 2026-08-04. `1077` was wrong at 2fc7422 too, where the abort was
+# already at 1087 — `git show 2fc7422:... | grep -n Rng.stream(Rng.VISUAL)`. This is a
+# measured runtime output, so it names the file as it stands and was re-run, not
+# mapped forward.)
 # `Identifier not found: Rng` autoload false positive, hundreds of lines above here,
 # so everything below it is unparsed. Anyone who runs it, recognises the familiar
 # autoload noise and concludes "clean apart from that" has checked nothing. That is
@@ -1928,8 +2214,8 @@ static func _gun_ancestor(v: Verify) -> void:
 	# work.
 	var keys := ANCESTOR_ART.shared_keys(anc, GUNART.ART)
 
-	# `_parts()`, not `ART`: it is what `_build` (`gunart.gd:1336`) and `_corners`
-	# (`:1003`) both walk, and :1411-1422 above already ties that walk to the committed
+	# `_parts()`, not `ART`: it is what `_build` (`gunart.gd:1634`) and `_corners`
+	# (`:1675`) both walk, and :1428-1449 above already ties that walk to the committed
 	# `ArrayMesh` — so the chain runs from `kriegsnacht.html` to the vertices on screen
 	# with no copy in the middle. A test that does not read what the game reads is
 	# testing a copy.

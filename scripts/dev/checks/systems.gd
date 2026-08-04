@@ -35,6 +35,10 @@ const ATMOS := preload("res://scripts/systems/atmosphere.gd")
 const GUNART := preload("res://scripts/data/gunart.gd")
 const VIEWMODEL := preload("res://scripts/entities/viewmodel.gd")
 const WEAPON := preload("res://scripts/entities/weapon.gd")
+## The reload timeline's tables, classifier and sampler. Preloaded here rather than
+## reached through `VIEWMODEL`, so a check can put the classifier a question the rig
+## never asks it.
+const RELOAD := preload("res://scripts/data/reload.gd")
 ## Read-only, and for one constant: the frames gate's own ADS probe rect. The
 ## sighted silhouette has to stay inside it or the gate measures a clipped weapon
 ## and reports a number about the rectangle. This package does not own that file.
@@ -1220,9 +1224,13 @@ static func _animation(v: Verify, main: Node3D) -> void:
 	_slide_bolt_hold(v, main)
 	_segmented_reload(v)
 	_shell_cycles(v, main)
+	_reload_timeline(v, main)
 	_arc_sweep(v, main)
 	_ads_geometry(v, main)
 	_ads_asymmetry(v, main)
+	# LAST of the group, because it re-shows all thirteen weapons and leaves
+	# `_shown_key` on the knife; the restore block below is what puts the rig back.
+	_support_hand(v, main)
 
 	p._fire_held = held_was
 	p._fire_buffer = buf_was
@@ -1623,6 +1631,384 @@ static func _count_reload_cycles(main: Node3D, start_mag: int) -> Array:
 	return [crossings, int(vm._slide_cycles) - before]
 
 
+# --- the reload timeline ------------------------------------------------------
+#
+# `scripts/data/reload.gd` is a table plus a classifier plus a sampler, and the
+# five checks below are one per thing that can go wrong with that without any
+# symptom the rest of this suite would see. NONE of them recompute the tables:
+# every expected value is either a rule of the state machine, a figure out of
+# `weapons.gd`, or a constant of the rig, and the detail strings carry the measured
+# numbers so a failure reads as a measurement rather than as a boolean.
+
+static func _seg_name(seg: int) -> String:
+	match seg:
+		RELOAD.WHOLE: return "WHOLE"
+		RELOAD.OPEN: return "OPEN"
+		RELOAD.EACH: return "EACH"
+		RELOAD.CLOSE: return "CLOSE"
+	return "NONE"
+
+
+static func _seq_names(seq: Array) -> String:
+	var out := PackedStringArray()
+	for s: int in seq:
+		out.append(_seg_name(s))
+	return "/".join(out)
+
+
+static func _reload_timeline(v: Verify, main: Node3D) -> void:
+	_reload_table(v)
+	_reload_segments(v, main)
+	_reload_close_survives_ammo(v, main)
+	_reload_phase_not_seconds(v, main)
+	_reload_returns_once(v, main)
+
+
+## THE TABLE IS A NORMALISED SHAPE, AND `_measure()` CANNOT TELL YOU THAT.
+##
+## The clip sweep pushes the dip channel over `[0, 1]` at `DIP_ROLL` — the `dip` row
+## of `viewmodel.gd::arcs()`, which `sweep()` folds over; it used to spell that arc
+## inline and the citation named the inline call — and nothing wider, so all four
+## clipping assertions —
+## "no viewmodel vertex can reach a wall", "the viewmodel fits its design budget",
+## "no viewmodel vertex crosses the near plane" and "the clip budget still fits
+## inside the player capsule" — are statements about dip in [0, 1] ONLY. Author a
+## knot at 1.4 and every one of them stays green while the rig poses the weapon 40%
+## further round the roll than anything was ever measured at. That gap is the whole
+## reason this check exists, and the provenance of the [0, 1] is that sweep and not
+## the table it is checking.
+##
+## Walked twice on purpose. The knots are the authored values and a bad one has to
+## be caught even in an archetype no weapon currently reaches; `sample()` is what
+## the rig actually calls, and it is swept as well so that an interpolator which
+## overshoots its own knots cannot hide behind them. MEASURED: 41 knots and 905
+## samples on the table as it stands, and the sabotage that proved it discriminates
+## was `TRACKS[TUBE][OPEN]`'s deepest knot moved from 1.00 to 1.40 — one red check
+## here, all four M-VMCLIP assertions still green.
+static func _reload_table(v: Verify) -> void:
+	var bad := ""
+	var knots_seen := 0
+	for script_id: int in RELOAD.TRACKS:
+		var by_seg: Dictionary = RELOAD.TRACKS[script_id]
+		for seg: int in by_seg:
+			var knots: Array = by_seg[seg]
+			var last_p := -1.0
+			for k: Array in knots:
+				knots_seen += 1
+				# THE SCHEMA, not the values: three columns, because `sample()` reads
+				# index 2 and the hand column has to exist before it carries anything.
+				# A later stage puts DATA in it and this check does not move.
+				if k.size() != 3:
+					bad += "%d/%s has a %d-column row " % [script_id, _seg_name(seg), k.size()]
+					continue
+				var p := float(k[0])
+				var d := float(k[1])
+				if p <= last_p:
+					bad += "%d/%s phase %.3f does not follow %.3f " % [
+						script_id, _seg_name(seg), p, last_p]
+				last_p = p
+				if d < 0.0 or d > 1.0:
+					bad += "%d/%s dip %.3f outside [0,1] " % [script_id, _seg_name(seg), d]
+			if knots.size() < 2 or not is_equal_approx(float(knots[0][0]), 0.0) \
+					or not is_equal_approx(float(knots[-1][0]), 1.0):
+				bad += "%d/%s does not span phase 0..1 " % [script_id, _seg_name(seg)]
+
+	# ...and the same bound through the function the rig calls, at 41 phases plus
+	# every knot's own phase, over every archetype and every segment kind.
+	var swept := 0
+	for script_id: int in RELOAD.TRACKS:
+		for seg: int in [RELOAD.WHOLE, RELOAD.OPEN, RELOAD.EACH, RELOAD.CLOSE]:
+			var phases: Array[float] = []
+			for i in 41:
+				phases.append(float(i) / 40.0)
+			for k: Array in RELOAD.track(script_id, seg):
+				phases.append(float(k[0]))
+			for p: float in phases:
+				var s: Vector2 = RELOAD.sample(script_id, seg, p)
+				swept += 1
+				if s.x < 0.0 or s.x > 1.0:
+					bad += "sample(%d,%s,%.3f).dip = %.4f " % [
+						script_id, _seg_name(seg), p, s.x]
+
+	# THE FALLBACK IS A SAFETY NET AND NOT A SUPPORTED STATE, which is only true if
+	# something refuses the omission. The roster is `Weapons.TABLE` — a different
+	# source from the table under test — and it is checked both ways, so a weapon
+	# retired from the game leaves a stale row behind just as loudly.
+	var roster := ""
+	for key: String in Weapons.TABLE:
+		if not RELOAD.SCRIPT.has(key):
+			roster += key + ":missing "
+	for key: String in RELOAD.SCRIPT:
+		if not Weapons.TABLE.has(key):
+			roster += key + ":stale "
+	v.check("every reload knot is a shape in [0,1] and every weapon has its own script row",
+		bad.is_empty() and roster.is_empty(),
+		"%d knots and %d samples walked; %s%s" % [knots_seen, swept, bad, roster])
+
+
+## THE SEGMENT SEQUENCE, off a reload the reload key actually starts.
+##
+## The expected shape comes from `weapon.gd`'s own transition rules and from
+## `Weapons.TABLE`, neither of which is `reload.gd`: `begin_reload` enters ONE
+## opening segment that also credits the first shell (`weapon.gd:214-220`), then
+## `_load_shell` re-enters a feed segment while the tube has room and the reserve
+## has rounds and a closing segment otherwise (`weapon.gd:386-389`). A magazine of
+## `mag` loaded from empty is therefore 1 opening, `mag - 1` feeds and 1 close.
+##
+## The re-entry edge is `state_t` jumping back up, which is the same sawtooth
+## `viewmodel.gd::_tick_slide` gates the pump stroke on — and it is needed here for
+## the same reason: two consecutive feed segments are the same KIND, so nothing in
+## the classifier's answer alone can tell you there were five of them.
+static func _reload_segments(v: Verify, main: Node3D) -> void:
+	var p: Player = main.player
+	var vm := _equip(main, "stakeout")
+	var gun: Dictionary = p.current_gun()
+	var cap: int = int(Weapons.TABLE["stakeout"].mag)
+	gun.mag = 0
+	p._fire_held = false
+	p._fire_buffer = 0.0
+	p._start_reload()
+	var seq: Array[int] = []
+	var prev_t := INF
+	var guard := 0
+	while guard < 1200 and int(gun.state) == WEAPON.State.RELOAD_SHELL:
+		p._update_fire(STEP)
+		vm._process(STEP)
+		guard += 1
+		if int(gun.state) != WEAPON.State.RELOAD_SHELL:
+			break
+		var t: float = gun.state_t
+		if seq.is_empty() or t > prev_t:
+			seq.append(RELOAD.segment(gun))
+		prev_t = t
+	var want: Array[int] = [RELOAD.OPEN]
+	for i in cap - 1:
+		want.append(RELOAD.EACH)
+	want.append(RELOAD.CLOSE)
+	v.check("a driven shell reload runs one opening segment, one feed per shell and one close",
+		seq == want and int(gun.mag) == cap,
+		"got %s, want %s, tube %d of %d" % [_seq_names(seq), _seq_names(want),
+			int(gun.mag), cap])
+
+
+## THE CLASSIFIER READS THE CLOCK AND NOT THE AMMUNITION, and this is the only
+## check that can tell the difference.
+##
+## `mag >= def.mag or res <= 0` is the obvious classifier — it is literally the
+## condition `_load_shell` opens with (`weapon.gd:372`) — and it passes the sequence
+## check above perfectly, because on a reload that runs to completion the tube
+## filling up and the closing segment starting are the same event. They come apart
+## exactly once: when the closing segment was entered because the RESERVE ran dry
+## rather than because the tube filled, and then a Max Ammo lands. `weapon.gd:305-309`
+## settles a reload mid-flight only when the MAGAZINE has been filled from outside,
+## so this reload keeps running — and an ammunition-driven classifier flips to a feed
+## segment inside a segment whose length says otherwise, sending the weapon back down
+## to the port for a shell it will not load until the next segment.
+##
+## Bounded at both ends, because a classifier hard-wired to CLOSE would pass the
+## refusal on its own: the same reload has to come back out of CLOSE and report a
+## feed segment once the state machine really has entered one.
+static func _reload_close_survives_ammo(v: Verify, main: Node3D) -> void:
+	var p: Player = main.player
+	var vm := _equip(main, "stakeout")
+	var gun: Dictionary = p.current_gun()
+	var cap: int = int(Weapons.TABLE["stakeout"].mag)
+	gun.mag = 0
+	# Two rounds in reserve against a six-round tube: the reload runs out of
+	# ammunition before it runs out of room, which is the only way into CLOSE that
+	# does not also fill the magazine.
+	gun.res = 2
+	p._fire_held = false
+	p._fire_buffer = 0.0
+	p._start_reload()
+	var guard := 0
+	while guard < 1200 and RELOAD.segment(gun) != RELOAD.CLOSE:
+		p._update_fire(STEP)
+		vm._process(STEP)
+		guard += 1
+	# Far enough into the close that the track is on its way back up, so a flip to a
+	# feed segment would RAISE the pose — which is the visible half of the defect.
+	for i in 12:
+		p._update_fire(STEP)
+		vm._process(STEP)
+	var before: int = RELOAD.segment(gun)
+	var dip_before: float = vm._dip
+	var res_before: int = int(gun.res)
+	var mag_before: int = int(gun.mag)
+
+	gun.res = 30
+	WEAPON.on_ammo_added(gun)
+	p._update_fire(STEP)
+	vm._process(STEP)
+	var after: int = RELOAD.segment(gun)
+	var dip_after: float = vm._dip
+
+	# The acceptance half: keep driving, and the reload has to reach a feed segment
+	# again once the state machine actually enters one. Without this clause a
+	# classifier that answered CLOSE unconditionally would pass everything above.
+	var reached_each := false
+	var g2 := 0
+	while g2 < 1200 and int(gun.state) == WEAPON.State.RELOAD_SHELL:
+		p._update_fire(STEP)
+		vm._process(STEP)
+		g2 += 1
+		if RELOAD.segment(gun) == RELOAD.EACH:
+			reached_each = true
+	v.check("a close entered on a dry reserve stays a close when ammunition arrives",
+		before == RELOAD.CLOSE and after == RELOAD.CLOSE and res_before == 0
+			and mag_before < cap and dip_after <= dip_before and reached_each,
+		"entered %s with mag %d res %d, after the grant %s; dip %.5f -> %.5f; feed segment seen again: %s" % [
+			_seg_name(before), mag_before, res_before, _seg_name(after), dip_before,
+			dip_after, reached_each])
+
+
+## PHASE, NOT SECONDS. The tracks are indexed by where the segment is, so Speed Cola
+## plays the same shape twice as fast rather than half the shape.
+##
+## Driven twice through the real rig, at `reload_scale` 1.0 and at
+## `Game.SPEED_RELOAD_MULT` — the perk's own constant (`game_state.gd:53`) rather
+## than a literal, so the assertion moves if the perk does. **The second run steps at
+## half the delta**, and that is the only way to compare MATCHED phases at all: at a
+## common `dt` the fast reload lands on half as many phase points, and the sampling
+## grid alone would move the pose by up to 0.09 — a thousand times the tolerance
+## here. With `dt` scaled the two runs are the same number of ticks and `done` is
+## equal tick for tick, so any difference left is the rig reading seconds.
+##
+## Bounded at the other end by the clocks: the two runs really are a 3.4 s reload and
+## a 1.7 s one, both filling the magazine, so the poses cannot be matching because
+## nothing moved. `def.reload` is `weapons.gd:50` and `:46`, and the overshoot window
+## is the one `_segmented_reload` documents — `tick()` ends a segment on the first
+## tick past zero, so a reload of N segments can run up to N ticks long, and that is
+## `mag + 1` for a tube and 1 for a magazine.
+##
+## **BOTH FAMILIES OF TRACK, which is the second job this check has.** The Stakeout
+## drives `OPEN`/`EACH`/`CLOSE` through `SHELL_SCALE` and the M14 drives `WHOLE` at
+## full amplitude, and nothing else in this section enters `State.RELOADING` at all —
+## so without the second weapon `_drive`'s magazine branch would be reached by no
+## assertion that runs the rig.
+##
+## MEASURED healthy: the Stakeout runs 208 ticks each way with a worst gap of
+## **0.000000000** over ALL 208 — the two poses are bit-identical, not merely inside
+## 1e-4 — at clocks 3.466667 s and 1.733333 s. The tolerance is loose against that on
+## purpose; it is there for a future track whose arithmetic is not exactly symmetric,
+## not to paper over drift.
+static func _reload_phase_not_seconds(v: Verify, main: Node3D) -> void:
+	var p: Player = main.player
+	var mult: float = Game.SPEED_RELOAD_MULT
+	var bad := ""
+	var told := ""
+	for key: String in ["stakeout", "m14"]:
+		var spec: Dictionary = Weapons.TABLE[key]
+		var cap: int = int(spec.mag)
+		var full: float = float(spec.reload)
+		var slop: int = (cap + 1) if bool(spec.get("shells", false)) else 1
+		var runs: Array = []
+		for cfg: Array in [[1.0, STEP], [mult, STEP * mult]]:
+			var vm := _equip(main, key)
+			var gun: Dictionary = p.current_gun()
+			gun.mag = 0
+			p._fire_held = false
+			p._fire_buffer = 0.0
+			vm._dip = 0.0
+			var dt: float = cfg[1]
+			WEAPON.begin_reload(gun, float(cfg[0]))
+			var dips: Array[float] = []
+			var clock := 0.0
+			var guard := 0
+			while guard < 2400 and RELOAD.segment(gun) != RELOAD.NONE:
+				p._update_fire(dt)
+				vm._process(dt)
+				clock += dt
+				guard += 1
+				dips.append(float(vm._dip))
+			runs.append([dips, clock, int(gun.mag)])
+
+		var a: Array = runs[0]
+		var b: Array = runs[1]
+		var dips_a: Array = a[0]
+		var dips_b: Array = b[0]
+		var worst := 0.0
+		var at := -1
+		var n: int = mini(dips_a.size(), dips_b.size())
+		# Twenty evenly spaced phases across the whole reload, which is the claim: the
+		# shape is the same everywhere and not merely at its endpoints.
+		for k in 20:
+			var i: int = mini(n - 1, int(floor(float(k + 1) * float(n) / 20.0)) - 1)
+			if i < 0:
+				continue
+			var d := absf(float(dips_a[i]) - float(dips_b[i]))
+			if d > worst:
+				worst = d
+				at = i
+		var clock_a: float = a[1]
+		var clock_b: float = b[1]
+		var ok := dips_a.size() == dips_b.size() and dips_a.size() > 0 and worst <= 1e-4 \
+			and clock_a >= full and clock_a <= full + float(slop) * STEP \
+			and clock_b >= full * mult and clock_b <= full * mult + float(slop) * STEP * mult \
+			and int(a[2]) == cap and int(b[2]) == cap
+		if not ok:
+			bad += key + " "
+		told += "%s: %d vs %d ticks, worst |dip| gap %.7f at tick %d, clocks %.6f/%.6f s against %.6f/%.6f (+%d ticks), mags %d/%d of %d; " % [
+			key, dips_a.size(), dips_b.size(), worst, at, clock_a, clock_b, full,
+			full * mult, slop, int(a[2]), int(b[2]), cap]
+	v.check("the reload dip is indexed by phase, so Speed Cola plays it faster and not shallower",
+		bad.is_empty(), "failed on %s-- %s" % [bad, told])
+
+
+## THE WEAPON COMES BACK TO THE EYE ONCE, and the shipped rig brought it back SEVEN
+## times in one six-shell reload — once per segment, because it ran `sin(done*PI)`
+## in each of them and every segment ends at zero.
+##
+## MEASURED on commit 2fc7422 before this landed: 7 returns on a base Stakeout, 10 on
+## a Pack-a-Punched one under Speed Cola. The reference holds a segmented reload down
+## across the whole feed and racks the weapon once at the end, which is what
+## `reload.gd`'s `HELD` is for.
+##
+## BOUNDED AT BOTH ENDS BY THE SAME NUMBER: more than one return is the defect, and
+## ZERO returns is a weapon that never comes back up — a track whose close was left
+## parked off the eye line would sail past a check that only refused the excess. The
+## peak clause is the third end: `SHELL_SCALE` is the rig's own amplitude ceiling for
+## this family (`viewmodel.gd`), so a reload that never gets halfway to it is not one
+## the player can see, and this cannot pass against an inert dip.
+static func _reload_returns_once(v: Verify, main: Node3D) -> void:
+	var p: Player = main.player
+	var vm := _equip(main, "stakeout")
+	var gun: Dictionary = p.current_gun()
+	var cap: int = int(Weapons.TABLE["stakeout"].mag)
+	gun.mag = 0
+	p._fire_held = false
+	p._fire_buffer = 0.0
+	vm._dip = 0.0
+	p._start_reload()
+	# Exactly zero, not an epsilon. `TRACKS[TUBE][CLOSE]` holds a flat tail at rest
+	# for the last tenth of the closing segment precisely so that the return does not
+	# depend on which side of the last tick the segment happens to end — see there.
+	var returns := 0
+	var was_rest := true
+	var peak := 0.0
+	var guard := 0
+	while guard < 1200 and int(gun.state) == WEAPON.State.RELOAD_SHELL:
+		p._update_fire(STEP)
+		vm._process(STEP)
+		guard += 1
+		var d: float = vm._dip
+		peak = maxf(peak, d)
+		var rest := d <= 0.0
+		if rest and not was_rest:
+			returns += 1
+		was_rest = rest
+	v.check("a six-shell reload brings the weapon back to the eye line exactly once",
+		returns == 1 and peak > 0.5 * VIEWMODEL.SHELL_SCALE and int(gun.mag) == cap,
+		"%d returns over %d ticks, peak dip %.5f against SHELL_SCALE %.3f, tube %d of %d" % [
+			returns, guard, peak, VIEWMODEL.SHELL_SCALE, int(gun.mag), cap])
+	p._fire_held = false
+	p._fire_buffer = 0.0
+	# The pose channels go back by hand for the same reason `_animation`'s tail puts
+	# `_sprint` back: this suite steps no frames of its own, so anything these checks
+	# leave lit stays lit for every later reader of `_mesh.transform`.
+	vm._dip = 0.0
+
+
 ## The arc construction, in three parts: it is CORRECT, it is SOLVED rather than
 ## tabulated, and it is the one `_measure()` actually calls.
 ##
@@ -1657,18 +2043,22 @@ static func _arc_sweep(v: Verify, main: Node3D) -> void:
 		/ tan(0.5 * deg_to_rad(VIEWMODEL.VIEWMODEL_FOV))
 	var r := 0.06
 	var bad := ""
-	for arc: float in [VIEWMODEL.DIP_ROLL,
-			VIEWMODEL.REST_YAW * VIEWMODEL.ADS_YAW
-				+ absf(VIEWMODEL.REST_PITCH) * VIEWMODEL.ADS_LEVEL,
-			absf(VIEWMODEL.KICK_PITCH) * VIEWMODEL.KICK_MAX,
-			absf(VIEWMODEL.MELEE_ROT)]:
+	# OUT OF `viewmodel.gd::arcs()`, AND THAT IS THE REPAIR. This array used to spell
+	# the same four amplitudes `sweep()` spelled for itself, in a second literal — so
+	# a fifth rotational channel added to the rig and forgotten here would have left
+	# the one check whose entire job is policing rotational sampling looking at four
+	# channels while five were live, and neither list would have reddened. The channel
+	# name goes into the detail string as well, so a failure says WHICH arc it was
+	# rather than making the reader match a float back to a constant.
+	for ch: Dictionary in VIEWMODEL.arcs():
+		var arc: float = ch["amp"]
 		var k: int = VIEWMODEL._arc_k(arc, r, ratio)
 		var at_k := ratio * r * (1.0 - cos(arc / float(k) * 0.5))
 		var at_less := ratio * r * (1.0 - cos(arc / float(maxi(k - 1, 1)) * 0.5))
 		if k >= VIEWMODEL.ARC_MAX_SAMPLES or at_k > VIEWMODEL.ARC_TOL \
 				or (k > 1 and at_less <= VIEWMODEL.ARC_TOL):
-			bad += "arc %.4f -> K=%d excess %.6f (K-1 gives %.6f) " % [arc, k, at_k,
-				at_less]
+			bad += "%s arc %.4f -> K=%d excess %.6f (K-1 gives %.6f) " % [
+				str(ch["name"]), arc, k, at_k, at_less]
 	v.check("every rotational channel is sampled just finely enough to stay conservative",
 		bad.is_empty(), bad)
 
@@ -1680,6 +2070,10 @@ static func _arc_sweep(v: Verify, main: Node3D) -> void:
 	# 0.057368, which is the extra samples and nothing else. Two mechanisms, two
 	# metrics, two checks.
 	var interior: Vector3 = vm.sweep(true)
+	# Read BETWEEN the two sweeps, and that is load-bearing: `arc_growth()` reports
+	# the sweep the caller last drove, and `sweep(false)` folds no factors at all and
+	# empties it rather than reporting stale ones. See `viewmodel.gd::arc_growth`.
+	var grew: Dictionary = vm.arc_growth()
 	var endpoints: Vector3 = vm.sweep(false)
 	# The SAMPLES. A rotated point's nearest approach to the lens is not at either
 	# end of its arc, and this is the only number in the sweep that can say so.
@@ -1712,10 +2106,55 @@ static func _arc_sweep(v: Verify, main: Node3D) -> void:
 		stale.is_empty() and swept.size() == GUNART.keys().size(),
 		"%s(%d of %d)" % [stale, swept.size(), GUNART.keys().size()])
 
+	# THE OTHER HALF OF THE SINGLE-SOURCE REPAIR. Making `arcs()` the one list stops
+	# the rig and the solver check above disagreeing about WHICH channels exist; it
+	# does nothing about the rig declaring a channel and then not folding it into the
+	# pose inflation, and that failure is every bit as quiet. `grow` is a single
+	# float, every component of `_extreme` clears its bound by millimetres, and the
+	# melee factor is exactly 1.0 on twelve of the thirteen weapons — so a dropped
+	# factor moves the four M-VMCLIP refusals by less than a tuning pass does, and
+	# dropping the melee one moves nothing whatsoever.
+	#
+	# NOT A SELF-COMPARISON, and it is worth saying why, because it walks a list that
+	# `sweep()` also walks. The two sides are "what `arcs()` declares" and "what the
+	# fold actually multiplied", the second read off the record `sweep()` writes as it
+	# multiplies. Editing `arcs()` moves both together, which is the point — the
+	# divergence this catches is a fold that stops consuming the whole list, and that
+	# is exactly the sabotage that was run against it.
+	#
+	# The `>= 4` is a FLOOR and not the expectation. Four is the count of channels
+	# entering `_mesh_pose`'s basis today — dip, ads, kick, melee — and the check is
+	# meant to go on passing at five; without the clause an `arcs()` that returned
+	# nothing would satisfy the equality vacuously, which is the skip that passes.
+	var declared := PackedStringArray()
+	var unnamed := 0
+	for ch: Dictionary in VIEWMODEL.arcs():
+		var id: String = str(ch.get("name", ""))
+		# A duplicate name is counted with the unnamed ones because it fails the same
+		# way: the record is keyed by name, so two channels sharing one collapse into
+		# a single factor and the fold's own count would agree with a list it lost an
+		# entry to.
+		if id.is_empty() or declared.has(id):
+			unnamed += 1
+			continue
+		declared.append(id)
+	var adrift := ""
+	for id: String in declared:
+		if not grew.has(id):
+			adrift += id + " declared and never folded; "
+	for id: String in grew:
+		if not declared.has(id):
+			adrift += id + " folded and never declared; "
+	v.check("every rotational channel the sweep declares is one it folds into the pose inflation",
+		unnamed == 0 and adrift.is_empty() and grew.size() == declared.size() \
+			and declared.size() >= 4,
+		"%d named channels (%d unnamed or duplicated), %d factors folded %s -- %s" % [
+			declared.size(), unnamed, grew.size(), str(grew), adrift])
+
 
 ## The sighted pose, as the closed-form projection rather than as a photograph.
 ##
-## `viewmodel.gd:180-188` states in its own words why twelve degrees of profile yaw
+## `viewmodel.gd:209-217` states in its own words why twelve degrees of profile yaw
 ## exists — "extruded flat plates viewed from behind read as a stack of rectangles"
 ## — and `ADS_YAW` at 1.0 removed all of it at the one pose where the player is
 ## studying the weapon hardest. Reducing it is R10; this is the bound that makes the
@@ -1826,6 +2265,91 @@ static func _ads_asymmetry(v: Verify, main: Node3D) -> void:
 		out_t > Player.ADS_TIME * 1.5,
 		"REPORTED HUNK, NOT YET LANDED (player.gd is another package's file): out %.3f s against ADS_TIME %.3f — see this function's docstring for the exact edit" % [
 			out_t, Player.ADS_TIME])
+
+
+## Two rects, four corners each, both extrusion caps — `gunart._prism_corners`
+## appends `+half` and `-half` per polygon vertex. Stated here as a literal rather
+## than read back out of `GUNART.support_corners()`, because this check's whole
+## subject is whether the SWEEP still walks that function: an expectation taken from
+## the same call would move with it and could not fail.
+const SUPPORT_CORNERS := 16
+
+## The support hand, in the rig rather than in the tables: **it is inert, it is on
+## the ten weapons the ancestor draws it on, and the clip sweep still sees it.**
+##
+## `checks/frame.gd` proves the geometry is the ancestor's and that the split lost no
+## corners. None of that says anything about the node the renderer is handed, and the
+## split is only safe if that node draws where `build_body` used to draw it.
+##
+## EXACT EQUALITY, and `is_equal_approx` would be the wrong tool here rather than a
+## looser one. The claim is not "the hand is roughly where it was", it is "nothing
+## writes this transform yet" — a claim about code, not about a distance — and a
+## tolerance would pass a reload pose that had landed with a small amplitude, which is
+## precisely the state this stage must not ship in. Swept at both ends of the sights
+## because `_apply()` recomputes the whole pose from `_player.ads()` and a writer
+## added inside the ADS branch would be invisible at the hip.
+static func _support_hand(v: Verify, main: Node3D) -> void:
+	var vm: Node3D = main.viewmodel
+	var p: Player = main.player
+	var ads_was: float = p._ads
+	var key_was: String = vm._want_key
+	var pap_was: bool = vm._want_pap
+
+	var moved := ""
+	var mis_shown := ""
+	var two_handed := 0
+	for key: String in GUNART.keys():
+		# THE REAL ENTRY POINT. `player.weapon_changed` carries exactly this dictionary
+		# and `_on_weapon_changed` reads exactly these two fields, so this is the call
+		# the game makes; `_apply()` then runs `_show` and every pose writer for real.
+		# Going at `vm._support` directly through `_show` would skip the writer under
+		# test, which is the failure mode half this suite exists to close.
+		vm._on_weapon_changed({"key": key, "pap": false})
+		var one: bool = GUNART.ONE_HANDED.has(key)
+		if not one:
+			two_handed += 1
+		for ads: float in [0.0, 1.0]:
+			p._ads = ads
+			vm._apply()
+			# `!=` on Transform3D is exact. A 1e-4 nudge added to the write in
+			# `viewmodel._apply()` reddens this and nothing else in the suite.
+			if vm._support.transform != Transform3D.IDENTITY:
+				moved += "%s at ads %.0f: %s " % [key, ads, vm._support.transform]
+		# Bounded at both ends: the hand is SHOWN on the ten and HIDDEN on the three.
+		# Half of this — the refusal alone — would pass against a rig that had stopped
+		# building support hands at all.
+		var shown: bool = vm._support.visible and vm._support.mesh != null
+		if shown == one:
+			mis_shown += "%s one_handed=%s shown=%s " % [key, one, shown]
+	v.check("the support hand is pinned at identity on every weapon, at both ends of the sights",
+		moved.is_empty(), moved)
+	v.check("the support hand is drawn on exactly the ten two-handed weapons",
+		mis_shown.is_empty() and two_handed == 10,
+		"%d two-handed of %d; %s" % [two_handed, GUNART.keys().size(), mis_shown])
+
+	# THE READOUT, and it is the only thing that can say the clip sweep still walks the
+	# support hand. Every component of `_extreme` is insensitive to it — the hand sits
+	# thirty art units forward of the grip and inside the barrel's own reach on all ten
+	# weapons — so deleting `_collect(support, ...)` outright leaves all four clipping
+	# assertions green, exactly as `swept_travels()` records for the group's travel.
+	# The readout is a delta measured across that call inside `sweep()`, not a copy of
+	# `support_corners().size()`, so it reads zero the moment the call goes away.
+	var swept: Dictionary = vm.swept_support()
+	var unswept := ""
+	for key: String in GUNART.keys():
+		var want := 0 if GUNART.ONE_HANDED.has(key) else SUPPORT_CORNERS
+		var got: int = int(swept.get(key, -1))
+		if got != want:
+			unswept += "%s swept %d want %d " % [key, got, want]
+	v.check("the clip sweep collected every two-handed weapon's support hand",
+		unswept.is_empty() and swept.size() == GUNART.keys().size(),
+		"%s(%d of %d)" % [unswept, swept.size(), GUNART.keys().size()])
+
+	# Put the rig back. `_animation`'s tail restores the pose channels and calls
+	# `_apply()` again, but it does not know about these three and `_ads` at 1.0 would
+	# leave every later reader of `_mesh.transform` measuring a sighted weapon.
+	p._ads = ads_was
+	vm._on_weapon_changed({"key": key_was, "pap": pap_was})
 
 
 # --- the split is a relocation, not a rewrite --------------------------------

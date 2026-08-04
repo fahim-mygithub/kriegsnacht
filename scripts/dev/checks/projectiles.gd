@@ -571,7 +571,7 @@ static func _ads(v: Verify, main: Node3D) -> void:
 	var pivot_was: Vector3 = p._recoil_pivot.position
 	# **Forced WHILE THE CAMERA IS STILL AT THE HIP, and read again later rather than
 	# measured later.** `viewmodel._measure()` caches on first call and bakes in
-	# `tan(_cam.fov/2)/tan(VIEWMODEL_FOV/2)` as it goes (viewmodel.gd:829), so the
+	# `tan(_cam.fov/2)/tan(VIEWMODEL_FOV/2)` as it goes (viewmodel.gd:1268), so the
 	# first caller in the whole suite decides the ratio every later caller sees. This
 	# section narrows the camera by a third; if it were ever to run before
 	# `verify.gd::_viewmodel`, M-VMCLIP — another package's no-clip SAFETY assertion —

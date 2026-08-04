@@ -338,7 +338,83 @@ const CHECK_MODULES := {
 ## `DETAIL_ROWS` 14 to 38), which is the shape a data change ought to have.
 ##
 ## RAISED ADDITIVELY: 796 + 1. Do not read this as a reconciliation.
-const ASSERTION_FLOOR := 797
+##
+## +5 for the RELOAD TIMELINE, which moves the reload pose out of one line of
+## trigonometry in the rig and into `scripts/data/reload.gd` — a per-archetype,
+## per-segment keyframe table with a classifier that says which segment a gun is in.
+## All five are in `checks/systems.gd::_reload_timeline` and each has a sabotage the
+## rest of the suite cannot see:
+##
+##   1. every knot is a shape in [0,1] and every weapon has its own script row. The
+##      four M-VMCLIP assertions sweep dip through `_arc(0.0, 1.0, DIP_ROLL, ...)`
+##      and nothing wider, so a knot authored at 1.4 poses the weapon 40% further
+##      round the roll than anything was ever measured at and all four stay green.
+##   2. a driven Stakeout reload runs OPEN, EACH x5, CLOSE. Swap the classifier's two
+##      thresholds and it reads OPEN, EACH x5, OPEN.
+##   3. the discriminating one. Enter the close because the RESERVE ran dry rather
+##      than because the tube filled, then grant ammunition: the classifier must
+##      still say close. The obvious `mag >= def.mag or res <= 0` implementation
+##      passes 2 perfectly and fails only here.
+##   4. the tracks are indexed by phase and not by seconds, so Speed Cola plays the
+##      same shape faster. Twenty matched phases agree to 1e-4 while the clocks read
+##      3.4 s and 1.7 s.
+##   5. the weapon comes back to the eye line exactly ONCE in a six-shell reload. The
+##      shipped rig brought it back seven times — once per segment — and ten times on
+##      a Pack-a-Punched Stakeout under Speed Cola. Bounded at both ends by the same
+##      number: zero returns is a close left parked off the eye line.
+##
+## RAISED ADDITIVELY: 797 + 5. Do not read this as a reconciliation.
+##
+## +7 for the SUPPORT HAND, which leaves the weapon mesh and becomes a
+## `MeshInstance3D` of its own so a later stage can move it during a reload. Nothing
+## animates yet; the whole package is a change of topology that must not be a change
+## of picture. Four in `checks/frame.gd::_gun_hands` and three in
+## `checks/systems.gd::_support_hand`, and the reason there are seven rather than two
+## is that no one of them is sufficient — the depth checks already in `frame.gd` are
+## blind to the split outright, MEASURED and reported rather than assumed:
+##
+##   1. the four support-rect figures against `kriegsnacht.html:1235`/`:1237` over the
+##      1.9 at `:1217`, all three READ AT CHECK TIME. The only expectation in the
+##      package that is not a constant the code itself reads.
+##   2. `ONE_HANDED` against the ancestor's own exclusion at `:1233`, in order. The
+##      FIRST live read of `ONE_HANDED` anywhere in `scripts/dev` — until now nothing
+##      asserted which weapons are held in one hand.
+##   3. `body_corners + support_corners` per weapon against thirteen counts MEASURED
+##      on 2fc7422 before the split, so a corner can only have MOVED. This is what
+##      catches the half-done split that leaves the rows in `_corners` as well:
+##      it reddens on the double count.
+##   4. sixteen corners and a 72-vertex glove on the ten, and neither on the three.
+##      Both literals, with their derivation, so a fifth rect goes red and has to be
+##      re-provenanced instead of moving both sides of the comparison at once.
+##   5. the node's transform is EXACTLY `Transform3D.IDENTITY` — `==`, not
+##      `is_equal_approx` — on all thirteen weapons at ads 0 and ads 1. The claim is
+##      "nothing writes this yet", which a tolerance cannot make.
+##   6. it is drawn on exactly the ten two-handed weapons and hidden on the three,
+##      bounded both ways: the refusal alone passes against a rig that stopped
+##      building support hands at all.
+##   7. `viewmodel.swept_support()`, because every component of the clip sweep is
+##      insensitive to the hand and deleting its `_collect` leaves all four clipping
+##      assertions green — the same shape `swept_travels()` exists for.
+##
+## RAISED ADDITIVELY: 802 + 7. Do not read this as a reconciliation.
+##
+## +1 for ARCS AS THE SINGLE SOURCE OF ROTATIONAL CHANNELS. `viewmodel.gd::sweep`
+## enumerated its four rotational arcs by hand and `checks/systems.gd::_arc_sweep`
+## restated the same four in a second literal array, so a fifth channel added to one
+## and forgotten in the other left the check whose entire job is policing rotational
+## sampling testing four channels while five were live — and neither list reddened.
+## `viewmodel.gd::arcs()` is now the only list; the solver check reads it, and
+## `sweep()` builds both its samples and its inflation product by folding over it.
+## The new assertion, "every rotational channel the sweep declares is one it folds
+## into the pose inflation", is in `_arc_sweep` and is driven off `arc_growth()` —
+## the record the fold writes as it multiplies — because `grow` is one float and no
+## component of `_extreme` can tell you a factor stopped being applied. Refactor
+## only: `sweep(true)` and `sweep(false)` return the pre-change triples
+## 0.201372 / 0.057188 / 0.231964 and 0.201161 / 0.057496 / 0.231758 unchanged to
+## six decimals, measured either side of the change.
+##
+## RAISED ADDITIVELY: 809 + 1. Do not read this as a reconciliation.
+const ASSERTION_FLOOR := 810
 
 var _pass := 0
 var _fail := 0

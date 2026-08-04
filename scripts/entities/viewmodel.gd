@@ -35,7 +35,7 @@ extends Node3D
 ## `ratio = 1` it collapses to the plain sphere the plan assumed, which is why the
 ## plain sphere looked sufficient and is not. Measured over every weapon, every
 ## pose and every sway the rig can reach, the worst is **0.232 m against 0.24**;
-## the plain radius is 0.201 and the nearest depth 0.0574 m against a 0.05 m near
+## the plain radius is 0.201 and the nearest depth 0.0572 m against a 0.05 m near
 ## plane. Those three are a CIRCUMSCRIBED bound rather than a sampled one — see
 ## `_measure()` — so the margin they report is one the rig provably cannot exceed
 ## rather than one it was not caught exceeding.
@@ -49,7 +49,7 @@ extends Node3D
 ## Node chain, and rule "one writer per node" applies with full force:
 ##
 ##   Camera3D
-##   └ ViewmodelRoot   (this node)  sway and bob — written only by _apply()
+##   └ ViewmodelRoot   (this node)  sway and bob — TRANSFORM written only by _apply()
 ##     └ WeaponMesh                 rest pose, recoil, reload, swap, melee
 ##       ├ Slide                    the reciprocating group, z only
 ##       └ MuzzlePoint              static per weapon; read by flash_anchor()
@@ -60,10 +60,14 @@ extends Node3D
 ## everything with a clock. There is no second notion anywhere in this file of what
 ## the weapon is doing.
 
-## preload rather than the class name for both: a freshly added script is not in
-## the class registry until the editor rescans, and a headless run has no editor.
+## preload rather than the class name for all three: a freshly added script is not
+## in the class registry until the editor rescans, and a headless run has no editor.
 const GUNART := preload("res://scripts/data/gunart.gd")
 const WEAPON := preload("res://scripts/entities/weapon.gd")
+## The reload timeline. Same relationship this file has to `GUNART`: that one says
+## what the weapon is made of, this one says what it does while it is being
+## reloaded, and neither of them knows a node exists.
+const RELOAD := preload("res://scripts/data/reload.gd")
 
 
 # --- the projection override -------------------------------------------------
@@ -157,7 +161,7 @@ const CLIP_RADIUS := 0.22
 ##
 ## The z is what the whole budget turns on: at `GUNART.UNIT` the worst corner over
 ## every weapon and every pose lands 0.201 m from the lens against the 0.22 m
-## design ceiling, the nearest 0.0575 m along it against the 0.05 m near plane, and
+## design ceiling, the nearest 0.0572 m along it against the 0.05 m near plane, and
 ## the projection-widened radius the header derives at 0.232 m against
 ## `Player.RADIUS`'s 0.24. `_measure()` re-derives all three from the same corners
 ## the meshes are built from.
@@ -169,15 +173,30 @@ const CLIP_RADIUS := 0.22
 ## pushes the stock 8 mm away from the near plane, and both more than pay for the
 ## drop — the sighted extremes come out strictly inside the hip ones.
 ##
-## MEASURED, and re-measured 2026-08-02 because two things in this package moved
-## them: **0.201372 / 0.057368 / 0.231964**. The previous record was
-## 0.201249 / 0.057540 / 0.231884, and the difference is not drift. The sweep now
-## CIRCUMSCRIBES four rotational arcs it used to sample at their endpoints (see
-## `_measure()`), which raises every bound in the safe direction; and `ADS_YAW`
-## went to 0.95, which changes the size of one of those arcs. Against the same
-## constants the endpoint-only sweep reads 0.201161 / 0.057496 / 0.231758, so the
-## construction is worth 0.21 mm on the widened radius and 0.13 mm on the near
-## plane. Margin against `Player.RADIUS`: **8.036 mm**.
+## MEASURED: **0.201372 / 0.057188 / 0.231964**. Re-measured 2026-08-04 on commit
+## 2fc7422, out of `sweep(true)` — the call `_measure()` itself makes — rather than
+## by re-deriving it, and the middle figure came back different from the one this
+## line carried.
+##
+## THE CORRECTION, because "which number is it" turns out to have a real answer.
+## This said 0.057368, and that is a genuine measurement of a DIFFERENT
+## configuration: the interior samples with the circumscribing inflation switched
+## off. `checks/systems.gd` measures exactly that on purpose, to separate the two
+## mechanisms, and quotes 0.057368 correctly — confirmed here by forcing `grow` to
+## 1.0 and re-running, which reproduces 0.201161 / 0.057368 / 0.231758. The shipped
+## sweep has both mechanisms and both lower `nearest`, so what was pasted in here
+## was the half-sabotaged figure and it overstated the near-plane clearance by
+## 0.18 mm. `worst` and `widest` were exact.
+##
+## The record before this package was 0.201249 / 0.057540 / 0.231884, and that
+## difference is not drift either: the sweep now CIRCUMSCRIBES four rotational arcs
+## it used to sample at their endpoints (see `_measure()`), and `ADS_YAW` went to
+## 0.95, which changes the size of one of those arcs. Against the same constants
+## the endpoint-only sweep still reads 0.201161 / 0.057496 / 0.231758 exactly, so
+## the construction is worth 0.21 mm on the widened radius and 0.31 mm on the near
+## plane — the 0.13 mm quoted here before was the stale figure's own subtraction.
+## Margin against `Player.RADIUS`: **8.036 mm**; against the 0.05 m near plane,
+## 7.188 mm.
 const REST_POS := Vector3(0.038, -0.032, -0.1161)
 
 ## -0.13 rad of muzzle-down cant, and both halves of it are the ancestor's:
@@ -293,22 +312,31 @@ const KICK_BACK := 0.005
 # --- reload, swap, sprint, melee ---------------------------------------------
 
 ## `rel = 1-(reloading/reloadMax); s = sin(rel*PI)` then `y += s*cssH*0.30`,
-## `rot += s*0.5`, `x += s*cssW*0.03` (html:3121-3128). A single arc down and back
-## with a half-radian roll at its peak. `state_t`/`state_len` give exactly the same
-## `rel` for free, which is what those two fields were added for.
+## `rot += s*0.5`, `x += s*cssW*0.03` (html:3121-3128). The three AMPLITUDES are
+## still the ancestor's, converted through `M_PER_H`/`M_PER_W`, and they are all
+## that is left of it here: the `sin(rel*PI)` that used to supply the 0..1 they
+## multiply now comes out of `scripts/data/reload.gd`, per weapon and per segment.
+## The departure is recorded there, at the head of the file.
 const DIP := 0.03623            # 0.30 of screen height
 const DIP_X := 0.00644          # 0.03 of screen width
 const DIP_ROLL := 0.5           # radians, verbatim
-## How fast the dip may unwind when it is *interrupted*. Only reachable through
-## `RELOAD_SHELL` — firing cancels a shell reload mid-shell, which is most of the
-## reason to load shell by shell at all — and it is the one place a pose has to
-## return to rest without a clock telling it how.
+## How fast the dip may unwind when it is *interrupted* — and, since the tracks
+## landed, that is the ONLY thing it does. Firing cancels a shell reload mid-shell
+## (`weapon.gd::can_fire`), which is most of the reason to load shell by shell at
+## all, and a cancel is the one case with no clock left to read: there is no
+## remaining phase to play the weapon back out on, so the pose has to come home on
+## a rate. See `_settle` and `_drive`, which is the pair this constant now divides.
 const DIP_RATE := 6.0
 
-## A shell is not a magazine. `RELOAD_SHELL` re-enters itself once per shell, so
-## `state_t` sawtooths and the same `sin(rel*PI)` arc repeats — at a third of the
-## amplitude, because a Stakeout's six shells at the full magazine arc is a weapon
-## thrashing. Invented; the ancestor never distinguished the two reloads.
+## A shell is not a magazine: the amplitude the whole `RELOAD_SHELL` family of
+## tracks is scaled by, because a Stakeout's six shells at the full magazine arc is
+## a weapon thrashing. Invented; the ancestor never distinguished the two reloads.
+##
+## **Read at exactly one site — `_drive` — and deliberately NOT folded into
+## `reload.gd`'s tables.** The tables are pure shape so their rows stay comparable
+## to each other; the moment an amplitude is baked into half of them, a reader
+## comparing a `WHOLE` row against an `EACH` row is comparing two different units
+## and will not notice.
 const SHELL_SCALE := 0.35
 
 ## `if(P.swapT>0) y += (P.swapT/0.45)*cssH*0.42` (html:3136) — the weapon rises
@@ -484,17 +512,22 @@ const PUMP_STROKE := 0.55
 # --- how finely the clip sweep looks inside a rotation ------------------------
 
 ## How much of the clip margin one rotational channel's arc sampling is allowed to
-## be wrong by, in metres. 0.2 mm against 8.1 mm of margin, four channels, so the
-## whole construction can cost at most 1% of the budget — and it costs it in the
-## SAFE direction, because the samples circumscribe the arc rather than being
-## inscribed in it. See `_measure()`.
+## be wrong by, in metres. 0.2 mm a channel against the 8.036 mm of margin measured
+## at `REST_POS`, four channels, so the whole construction can cost at most 0.8 mm
+## — **a tenth of the margin, not the "1%" this said**; 4 x 0.2 / 8.036 is 9.9% and
+## no reading of the numbers gives 1%, so the old figure is corrected rather than
+## re-derived. It costs it in the SAFE direction, because the samples circumscribe
+## the arc rather than being inscribed in it. See `_measure()`.
 const ARC_TOL := 0.0002
 
 ## A bound on the sample-count solver's loop, not a tuning knob. The largest arc
-## anything authors today is the knife's 0.85 rad and it solves to 7; this binds
-## only for an amplitude nobody has written, and if it ever bound the sweep would
-## quietly stop being conservative — so `checks/systems.gd` asserts every solved
-## count is strictly under it rather than trusting the loop to be generous.
+## anything authors today is the knife's 0.85 rad and it solves to K = 6 against the
+## knife's own `r_max` — MEASURED 2026-08-04 out of the live sweep; this said 7,
+## which is what a radius of 0.06 m gives and no weapon that swings has. See `_arc`
+## for why the count is per weapon at all. This binds only for an amplitude nobody
+## has written, and if it ever bound the sweep would quietly stop being
+## conservative — so `checks/systems.gd` asserts every solved count is strictly
+## under it rather than trusting the loop to be generous.
 const ARC_MAX_SAMPLES := 64
 
 
@@ -525,6 +558,13 @@ var _player: Player
 var _cam: Camera3D
 var _mesh: MeshInstance3D
 var _slide: MeshInstance3D
+## The support hand, split out of the weapon mesh so a segmented reload can move it
+## on its own. **INERT IN THIS STAGE**: `_apply()` writes it `Transform3D.IDENTITY`
+## and nothing else ever writes it, so it draws exactly where `build_body` used to
+## draw it and no frame changes. `checks/systems.gd` asserts that identity exactly —
+## `==`, not `is_equal_approx` — on all thirteen weapons at both ends of the sights,
+## because "it has not started animating yet" is a claim a tolerance cannot make.
+var _support: MeshInstance3D
 var _muzzle: Marker3D
 var _mat: ShaderMaterial
 
@@ -538,6 +578,12 @@ var _mat: ShaderMaterial
 ## is a load-time decision on its own and not a prerequisite of the assertion.
 var _body := {}
 var _slides := {}
+## Weapon key -> the support hand's `ArrayMesh`. Keyed by KEY ALONE and not by
+## `_cache_key`, because `GUNART.build_support_hand()` takes no `pap` argument: the
+## gloves are drawn after the ancestor's Pack-a-Punch composite (html:1220 against
+## :1229-1237) so a tinted variant would be a mesh that is never correct to show.
+## Absent for the three `ONE_HANDED` weapons, which is how `_show` hides it.
+var _support_meshes := {}
 ## What is currently on the mesh, so `_show` is two comparisons on a frame where
 ## nothing changed. Deliberately not a valid key on the first frame, so the first
 ## `_show` always lands.
@@ -618,6 +664,14 @@ var _measured := false
 ## Weapon key -> the travel `sweep()` actually collected the group's far end at.
 ## See `swept_travels()` for why a readout and not a refusal.
 var _swept := {}
+## Weapon key -> how many NEW points the support hand's corners added to that
+## weapon's pool. See `swept_support()`, and see `_swept` for the shape of the bug
+## both of these exist to catch.
+var _swept_support := {}
+## Rotational channel name -> the circumscribing factor the last INTERIOR `sweep()`
+## actually folded into that weapon's `grow`. Written by the fold itself, one entry
+## per multiply; see `arc_growth()` for why a readout and not a refusal.
+var _arc_grew := {}
 
 
 # --- setup -------------------------------------------------------------------
@@ -654,6 +708,25 @@ func bind(p: Player) -> void:
 	_slide.gi_mode = GeometryInstance3D.GI_MODE_DISABLED
 	_mesh.add_child(_slide)
 
+	# Beside the group and under the weapon mesh, so it inherits the whole pose and
+	# its own transform is a DEPARTURE from the weapon rather than a pose of its own —
+	# which is what makes `Transform3D.IDENTITY` the meaningful rest value and what
+	# will make a reload keyframe readable when one lands.
+	#
+	# `material_override = _mat` and not a second material, deliberately: `materials()`
+	# is the shader warm-up's whole input and `verify.gd` asserts that every material
+	# the game owns is in that list. A hand with its own `ShaderMaterial` would be a
+	# main-thread GLSL compile on the first frame a two-handed weapon is drawn, on the
+	# web, and the assertion that would have caught it would have had to be edited to
+	# let it through. Same shadow and GI settings as everything else here, for the
+	# torch reason given above.
+	_support = MeshInstance3D.new()
+	_support.name = "SupportHand"
+	_support.material_override = _mat
+	_support.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+	_support.gi_mode = GeometryInstance3D.GI_MODE_DISABLED
+	_mesh.add_child(_support)
+
 	_muzzle = Marker3D.new()
 	_muzzle.name = "MuzzlePoint"
 	_mesh.add_child(_muzzle)
@@ -677,6 +750,11 @@ func bind(p: Player) -> void:
 
 func _prebuild() -> void:
 	for key: String in GUNART.keys():
+		# Once per weapon and outside the `pap` loop, for the reason `_support_meshes`
+		# gives: there is no tinted support hand and there must not be one.
+		var hand: ArrayMesh = GUNART.build_support_hand(key)
+		if hand != null:
+			_support_meshes[key] = hand
 		for pap: bool in [false, true]:
 			# The knife is never Pack-a-Punched — it is not a slot — so its tinted
 			# variant would be a mesh nothing can ever show.
@@ -890,12 +968,16 @@ func _tick_states(dt: float) -> void:
 		done = clampf(1.0 - t / span, 0.0, 1.0)
 		left = clampf(t / span, 0.0, 1.0)
 
-	var dip := 0.0
-	if state == WEAPON.State.RELOADING:
-		dip = sin(done * PI)
-	elif state == WEAPON.State.RELOAD_SHELL:
-		dip = sin(done * PI) * SHELL_SCALE
-	_dip = _settle(_dip, dip, DIP_RATE, dt)
+	# THE RELOAD DIP, and the two halves are now different mechanisms rather than one
+	# with a special case. A segment that is running has a clock and a track, so the
+	# track IS the pose (`_drive`). A reload that has been cancelled has neither, so
+	# the pose comes home on a rate (`_settle`). `segment()` is the only thing that
+	# decides which, and it decides from the state machine's own clock — see there.
+	var seg := RELOAD.segment(gun)
+	if seg == RELOAD.NONE:
+		_dip = _settle(_dip, 0.0, DIP_RATE, dt)
+	else:
+		_dip = _drive(RELOAD.script_for(gun.key), seg, done)
 
 	var swap := 0.0
 	if state == WEAPON.State.SWAPPING:
@@ -982,10 +1064,54 @@ func _rest_pose(gun: Dictionary) -> float:
 ## stops driving it. `move_toward` and never `lerp`, exactly as the brief for this
 ## package and M1 F5 both insist: `lerp` is asymptotic and produces the weapon
 ## that never quite re-centres.
+##
+## **It no longer carries the DRIVEN reload dip; `_drive` does.** It still carries
+## the CANCEL, which is the case it was always right for, and the swap drop, which
+## has a clock but reads its own fraction directly.
 static func _settle(cur: float, target: float, rate: float, dt: float) -> float:
 	if target > cur:
 		return target
 	return move_toward(cur, target, rate * dt)
+
+
+## The driven reload pose: the track IS the pose, sampled at the segment's own
+## phase and written straight through with no filter between them.
+##
+## **WHY THIS IS NOT `_settle`, and it is a measured defect and not a retiming.**
+## `_settle` is a rate-limited follower — it snaps UP outright and limits the way
+## DOWN to `DIP_RATE` — and both halves of that are wrong for a shape somebody
+## authored. The snap makes every authored rise a step, so a keyframe that exists
+## to make a shell read as a *push* arrives as a glitch instead. The limit makes
+## the fall a straight ramp whenever the shape descends faster than 6.0/s, which is
+## a rate with no relationship to any track and is already exceeded by the code
+## this replaces. MEASURED on commit 2fc7422, driving the real state machine:
+##
+##   base Stakeout, no perks     EACH segment 0.372954 s, limiter binds  0 of 208 ticks
+##   PaP Stakeout + Speed Cola   EACH segment 0.123469 s, limiter binds 17 of  96 ticks,
+##                               worst |pose - shape| 0.038186, i.e. 10.9% of SHELL_SCALE
+##
+## The 0.123469 s is exact and it is the shortest segment the game can reach:
+## `papify` takes the Stakeout to mag 9 and reload 2.992 s (`weapons.gd:289-291`),
+## `SPEED_RELOAD_MULT` halves it (`game_state.gd:53`), and `shell_unit * SHELL_EACH`
+## is 0.217758370 * 0.567. Across a segment that short the shipped
+## `sin(done*PI)*SHELL_SCALE` reaches a peak SLOPE of `SHELL_SCALE*PI/0.123469` =
+## **8.905535/s against DIP_RATE 6.0**.
+##
+## **AND A CORRECTION TO THE CLAIM THAT SENT ME LOOKING.** The brief for this stage
+## said those arcs "merge into one held dip". They do not, and the arithmetic says
+## why: merging needs the whole descent to outrun the limiter, i.e.
+## `EACH < 2*SHELL_SCALE/DIP_RATE` = 0.116667 s, and the shortest reachable EACH is
+## 0.123469 s — clear by 6.8 ms. Measured rather than argued: the shipped rig
+## returns the weapon all the way to rest **7 times** in a base six-shell reload and
+## **10 times** in a Pack-a-Punched nine-shell one, once per segment, every time.
+## That count is the actual defect and it is what `checks/systems.gd` asserts on;
+## the rate limit is a real but secondary distortion of the shape on the way there.
+static func _drive(script: int, seg: int, phase: float) -> float:
+	# THE ONE SITE `SHELL_SCALE` IS READ. A magazine reload is authored at full
+	# amplitude and a shell reload is the same tables scaled, so the two families
+	# stay comparable row for row in `reload.gd` — see the constant.
+	var amp := 1.0 if seg == RELOAD.WHOLE else SHELL_SCALE
+	return RELOAD.sample(script, seg, phase).x * amp
 
 
 func _tick_flash(dt: float) -> void:
@@ -1014,6 +1140,20 @@ func _apply() -> void:
 	# distance from the lens. It is *not* free of `max_screen_radius()`, which
 	# weighs the lateral terms more heavily than z and so is not rotation
 	# invariant; that is why `_measure()` sweeps sway at all.
+	#
+	# TWO CORRECTIONS TO THE HEADER'S CHAIN, both checked 2026-08-04, because "one
+	# writer per node" gets read as more than it says and this line is where it is
+	# read. The node is called `Viewmodel` at runtime and not `ViewmodelRoot`
+	# (`main.gd:125`); `ViewmodelRoot` is the role, and it is the name CLAUDE.md's
+	# camera chain and the M5/M6 notes use, so the two do not resolve to each other
+	# by grep. And the rule that actually holds is about the TRANSFORM: the line
+	# below is its only writer anywhere in the project, but `main.gd:_bare_frame()`
+	# writes `viewmodel.visible` either side of a second draw (`main.gd:776` and
+	# `:779`) to photograph the room without the gun in it. That is not a second
+	# pose writer and it cannot move a vertex, which is why the clip argument is
+	# untouched by it — but "written only by `_apply()`" is not literally true of
+	# the node, and a reader auditing the guarantee should not have to find that out
+	# from `main.gd`.
 	transform = Transform3D(Basis.from_euler(Vector3(_sway.x, _sway.y, 0.0)),
 		Vector3(_bob.x, _bob.y, 0.0))
 
@@ -1023,6 +1163,14 @@ func _apply() -> void:
 	_mesh.transform = _mesh_pose(_kick, _dip, _swap + _sprint, melee, _player.ads(),
 		_sight)
 	_slide.position = Vector3(0.0, 0.0, _slide_offset())
+	# THE SUPPORT HAND IS ANIMATION-INERT IN THIS STAGE, and this line is the claim.
+	# Written rather than left at whatever `MeshInstance3D.new()` happened to give,
+	# because "nobody has touched it" and "one writer writes it, and writes identity"
+	# are different guarantees and only the second survives a second writer appearing.
+	# It is also the seam the reload keyframes land on: when a segment pose arrives it
+	# replaces THIS expression, so the check that pins it to identity is the check that
+	# will go red the day it starts moving — which is exactly when someone should look.
+	_support.transform = Transform3D.IDENTITY
 
 
 ## The WeaponMesh's whole local transform, as a pure function of the five pose
@@ -1096,6 +1244,16 @@ func _show(key: String, pap: bool) -> void:
 	_mesh.mesh = body
 	_slide.mesh = slide
 	_slide.visible = slide != null
+	# **VISIBILITY FOLLOWS `ONE_HANDED` AND NOTHING ELSE, exactly as it did while the
+	# hand was part of `build_body`.** No weapon gains or loses a hand in this stage:
+	# the dictionary is missing precisely the three keys `GUNART.build_support_hand`
+	# returned null for, so this is the same predicate the ancestor's `if(key!=='m1911'
+	# && key!=='knife' && key!=='raygun')` is (html:1233), reached through the mesh
+	# cache rather than restated here. Keyed off `key` and not `k`: there is no
+	# Pack-a-Punched glove.
+	var hand: Mesh = _support_meshes.get(key)
+	_support.mesh = hand
+	_support.visible = hand != null
 	# Both latched off the key actually shown, for the same reason `_sight` is: a
 	# per-frame dictionary lookup for a value that changes on the frames the mesh
 	# changes and never otherwise. Travel is forced to zero when there is no group,
@@ -1218,6 +1376,45 @@ func _measure() -> void:
 	_extreme = sweep(true)
 
 
+## The rotational channels of `_mesh_pose`'s basis, named, with the arc each one
+## sweeps and the interval `sweep()` samples it over. **THE SINGLE SOURCE, because
+## there used to be two and they could not disagree out loud.** `sweep()` enumerated
+## these four by hand and `checks/systems.gd`'s "every rotational channel is sampled
+## just finely enough to stay conservative" restated the same four literally in a
+## second array — so a fifth channel added here and forgotten there would have left
+## the check whose entire job is policing rotational sampling testing four channels
+## while five were live, and NEITHER list would have reddened. Both read this one now.
+##
+## Everything else in the pose is a translation, whose reachable set is a segment and
+## which endpoints already bracket exactly; only a rotation traces an arc, and an arc
+## is what `_arc` and `_arc_grow` exist for. See `_measure()` for the derivation.
+##
+## `amp` is that arc in radians, which is what the sampler is solved against. `lo`
+## and `hi` are the units `_mesh_pose` takes for the channel, which is why kick's
+## interval is `[0, KICK_MAX]` and the other three are `[0, 1]` — the amplitude and
+## the interval are different quantities and conflating them is how a channel gets
+## sampled against the wrong arc. `knife_only` is the melee channel and nothing else:
+## `_apply()` only ever shows the knife while it is lit, so pairing a rifle's muzzle
+## with a full melee sweep would measure a frame the rig cannot draw, and it costs
+## 4 mm of an 8 mm margin to do it.
+##
+## ADS's amplitude is a SUM because the sighted pose removes `REST_YAW`'s yaw and
+## `REST_PITCH`'s cant together, so the arc it traces is neither of them alone.
+##
+## Static because it is a statement about the constants above and nothing about a
+## live rig — `checks/systems.gd` reads it without an instance.
+static func arcs() -> Array:
+	return [
+		{"name": "dip", "amp": DIP_ROLL, "lo": 0.0, "hi": 1.0, "knife_only": false},
+		{"name": "ads", "amp": REST_YAW * ADS_YAW + absf(REST_PITCH) * ADS_LEVEL,
+			"lo": 0.0, "hi": 1.0, "knife_only": false},
+		{"name": "kick", "amp": absf(KICK_PITCH) * KICK_MAX,
+			"lo": 0.0, "hi": KICK_MAX, "knife_only": false},
+		{"name": "melee", "amp": absf(MELEE_ROT), "lo": 0.0, "hi": 1.0,
+			"knife_only": true},
+	]
+
+
 ## The sweep itself, with the arc construction switchable — and the switch is here
 ## for one reason: **an assertion that the interior sampling is doing anything has
 ## to be able to ask for the sweep without it, and it must be THIS sweep and not a
@@ -1241,13 +1438,22 @@ func sweep(interior: bool) -> Vector3:
 	var nearest := 1e9
 	var widest := 0.0
 	_swept.clear()
+	_swept_support.clear()
 	for key: String in GUNART.keys():
 		var into := {}
-		# Annotated rather than inferred, all three: a call through a preloaded
+		# Annotated rather than inferred, all four: a call through a preloaded
 		# script constant is the kind of expression this project builds as an error
 		# when its result is handed to a typed parameter unchecked.
 		var body: PackedVector3Array = GUNART.body_corners(key)
 		var slide: PackedVector3Array = GUNART.slide_corners(key)
+		# **THE OTHER HALF OF `body_corners`, AND THE WHOLE SAFETY ARGUMENT FOR THE
+		# SPLIT.** Until the reload package these sixteen points per two-handed weapon
+		# came out of `body_corners` itself; taking them separately at zero offset
+		# makes the pool below IDENTICAL to the pre-split one, which is what keeps
+		# every clip figure a statement about the same weapon it was measured on.
+		# Zero offset because this stage poses the hand at identity — the day it moves,
+		# this call gains that motion's endpoints and this comment is where to start.
+		var support: PackedVector3Array = GUNART.support_corners(key)
 		# THE TRAP THIS LINE EXISTS TO CLOSE. This used to be the global
 		# `SLIDE_TRAVEL`, and travel is per weapon now. Every component of `_extreme`
 		# is insensitive to slide travel BY CONSTRUCTION — rearward travel moves the
@@ -1258,6 +1464,14 @@ func sweep(interior: bool) -> Vector3:
 		var travel: float = GUNART.slide_travel(key)
 		_collect(body, into, 0.0)
 		_collect(slide, into, 0.0)
+		# The readout is a MEASUREMENT OF THE POOL rather than a copy of
+		# `support.size()`, for the reason `_swept` states one line down: a count taken
+		# off the argument would go on reporting sixteen corners beside a deleted
+		# `_collect`. `_collect` returns its offset and cannot answer this, so the
+		# question is put to `into` itself, either side of the call.
+		var pooled := into.size()
+		_collect(support, into, 0.0)
+		_swept_support[key] = into.size() - pooled
 		# The readout is the RETURN of the collect and not a copy of its argument,
 		# deliberately: a `_swept[key] = travel` beside a deleted `_collect` would go
 		# on reporting a travel nothing swept, which is the exact shape of the bug
@@ -1272,38 +1486,55 @@ func sweep(interior: bool) -> Vector3:
 		for p: Vector3 in pts:
 			r_max = maxf(r_max, p.length())
 
-		# The four channels that enter `_mesh_pose`'s BASIS, and their arc amplitudes
-		# in radians. Everything else in the pose is a translation and its reachable
-		# set is a segment, which endpoints already bracket exactly.
-		var dip_arc := DIP_ROLL
-		# ADS removes REST_YAW's yaw and REST_PITCH's cant together, so the arc it
-		# traces is the sum of the two and not either alone.
-		var ads_arc := REST_YAW * ADS_YAW + absf(REST_PITCH) * ADS_LEVEL
-		var kick_arc := absf(KICK_PITCH) * KICK_MAX
-		var melee_arc := absf(MELEE_ROT)
-		var dips: Array[float] = [0.0, 1.0]
-		var adss: Array[float] = [0.0, 1.0]
-		var kicks: Array[float] = [0.0, KICK_MAX]
-		# The melee channel is lit for the knife alone, because `_apply()` only ever
-		# shows the knife while it is lit. Pairing a rifle's muzzle with a full melee
-		# sweep would measure a frame the rig cannot draw, and it costs 4 mm of an
-		# 8 mm margin to do it.
-		var melees: Array[float] = [0.0]
-		if key == "knife":
-			melees = [0.0, 1.0]
+		# The channels that enter `_mesh_pose`'s BASIS, folded out of `arcs()` rather
+		# than enumerated a second time here. Their samples and their inflation come
+		# off ONE walk of that list, so a channel cannot be sampled without being
+		# inflated for, nor inflated for without being sampled.
+		var lanes := {}
 		var grow := 1.0
-		if interior:
-			dips = _arc(0.0, 1.0, dip_arc, r_max, ratio)
-			adss = _arc(0.0, 1.0, ads_arc, r_max, ratio)
-			kicks = _arc(0.0, KICK_MAX, kick_arc, r_max, ratio)
-			if key == "knife":
-				melees = _arc(0.0, 1.0, melee_arc, r_max, ratio)
-			# One inflation for the whole pose, and it is the PRODUCT of the
-			# per-channel factors rather than the largest of them: the four compose
-			# into one basis, and a product of terms each >= 1 circumscribes every one
-			# of them.
-			grow = _arc_grow(dips, dip_arc) * _arc_grow(adss, ads_arc) \
-				* _arc_grow(kicks, kick_arc) * _arc_grow(melees, melee_arc)
+		_arc_grew.clear()
+		for ch: Dictionary in arcs():
+			var id: String = ch["name"]
+			var amp: float = ch["amp"]
+			var lo: float = ch["lo"]
+			var hi: float = ch["hi"]
+			var lit: bool = key == "knife" or not bool(ch["knife_only"])
+			# An unlit channel collapses to its own `lo`, which is the identity pose
+			# for it — one point in the nest below, and `_arc_grow` reads 1.0 off a
+			# single sample, so it costs nothing in the margin either. That is exactly
+			# what the melee channel did on twelve of the thirteen weapons before.
+			var s: Array[float] = [lo]
+			if lit:
+				if interior:
+					s = _arc(lo, hi, amp, r_max, ratio)
+				else:
+					s.append(hi)
+			lanes[id] = s
+			if interior:
+				# One inflation for the whole pose, and it is the PRODUCT of the
+				# per-channel factors rather than the largest of them: the channels
+				# compose into one basis, and a product of terms each >= 1
+				# circumscribes every one of them.
+				#
+				# Recorded and then multiplied from the record, in that order and off
+				# that one value: `grow` is a single float and every component of
+				# `_extreme` clears its bound by millimetres, so a factor quietly
+				# dropped moves the metrics by less than a retune does and no refusal
+				# in this project can see it — melee's factor is exactly 1.0 on twelve
+				# of thirteen weapons, so dropping THAT one moves nothing at all.
+				# `arc_growth()` is what can see it, and it only can if the record and
+				# the multiply cannot come apart.
+				_arc_grew[id] = _arc_grow(s, amp)
+				grow *= float(_arc_grew[id])
+		# By name, out of the same walk. The nest below takes its channels as named
+		# `_mesh_pose` arguments and so it cannot be written generically; a channel
+		# renamed in `arcs()` and not here throws on this line rather than silently
+		# sweeping an empty lane, which is the loud failure and the reason the nest
+		# is allowed to go on naming its four.
+		var dips: Array[float] = lanes["dip"]
+		var adss: Array[float] = lanes["ads"]
+		var kicks: Array[float] = lanes["kick"]
+		var melees: Array[float] = lanes["melee"]
 		var swept := PackedVector3Array()
 		for p: Vector3 in pts:
 			swept.append(p * grow)
@@ -1345,15 +1576,69 @@ func swept_travels() -> Dictionary:
 	return _swept.duplicate()
 
 
+## Weapon key -> how many points the support hand actually put into that weapon's
+## pool: 16 on a two-handed weapon (two rects, four corners each, both extrusion
+## caps) and 0 on the three `ONE_HANDED` ones.
+##
+## **THE SAME KIND OF READOUT `swept_travels()` IS, AND FOR THE SAME REASON.** The
+## support hand sits thirty art units forward of the grip and five art units either
+## side of it, which is inside every weapon's own barrel reach — so it sets none of
+## `worst`, `nearest` or `widest` on any weapon on the roster, and dropping its
+## `_collect` outright leaves all four clipping assertions green. A refusal cannot
+## separate "the split kept every corner" from "the split lost sixteen of them and no
+## metric noticed"; a count can. It is a delta measured across the call rather than a
+## restatement of `support_corners().size()`, so it reads zero the moment the call
+## goes away.
+func swept_support() -> Dictionary:
+	_measure()
+	return _swept_support.duplicate()
+
+
+## Rotational channel name -> the circumscribing factor the last interior `sweep()`
+## folded into `grow` for the last weapon it swept.
+##
+## **THE THIRD READOUT, AND THE SAME ARGUMENT AS THE OTHER TWO.** `arcs()` is now the
+## only list of rotational channels, which is what stops it disagreeing with
+## `checks/systems.gd` — but a list is only worth anything if what reads it actually
+## consumes all of it, and `grow` is one float that cannot say how many factors went
+## into it. A channel declared and never folded in leaves every clip assertion green:
+## the margins clear by millimetres, the factors are hundredths of a percent, and
+## melee's is exactly 1.0 on every weapon but the knife. A count can see it.
+##
+## Deliberately does NOT call `_measure()`, unlike its two siblings: it reports the
+## sweep the caller last drove and an interior sweep is the only kind that folds
+## anything, so a caller that wants this has to ask for `sweep(true)` itself and read
+## it before the next sweep overwrites it. Empty after `sweep(false)`, which applies
+## no factors at all and says so rather than reporting stale ones.
+func arc_growth() -> Dictionary:
+	return _arc_grew.duplicate()
+
+
 ## The samples for one rotational channel: K+1 values across `[lo, hi]`.
 ##
 ## K is solved rather than tabulated — the smallest count whose circumscribing
-## excess `ratio * r * (1 - cos(step/2))` is inside `ARC_TOL`. On the shipped
-## constants that is K = 4 for the dip's 0.5 rad, K = 2 for the ads channel's
-## combined arc, K = 1 — i.e. the endpoints, unchanged — for the kick's 0.06 rad,
-## and K = 7 for the knife's 0.85 rad swing. Solving it is what makes R10's "one
-## float, then re-measure" an actual defence: a wider `ADS_YAW` buys itself another
-## sample instead of quietly widening an arc nothing looks inside.
+## excess `ratio * r * (1 - cos(step/2))` is inside `ARC_TOL`. **It is therefore a
+## property of the weapon and not of the channel**, because `sweep()` passes that
+## weapon's own `r_max`, and this paragraph used to give one set of counts as though
+## it were not. MEASURED 2026-08-04 on commit 2fc7422 by printing the solved counts
+## out of the live sweep, over all thirteen weapons:
+##
+##   dip    0.50000 rad   K = 3 on the m1911 and the PM-63, K = 4 on the other 11
+##   ads    0.32893 rad   K = 2 on the m1911 and the PM-63, K = 3 on the other 11
+##   kick   0.06000 rad   K = 1 — i.e. the endpoints, unchanged — everywhere
+##   melee  0.85000 rad   K = 6, on the knife, the only weapon it is ever lit for
+##
+## The two threes are the two smallest guns and nothing subtler: `r_max` is
+## 0.032489 m on the m1911 and 0.038744 m on the PM-63 against 0.043401-0.059508 m
+## across the other eleven, and a smaller radius reaches the same excess at a
+## coarser step. The set this claimed before — 4 / 2 / 1 / 7 — is no weapon's
+## solve: the 4 and the 7 are what a radius near 0.06 m gives (`checks/systems.gd`
+## sweeps the solver at a synthetic `r = 0.06`, and the Olympia's 0.059508 is the
+## nearest real one), while the 2 is what only the two smallest give.
+##
+## Solving it is what makes R10's "one float, then re-measure" an actual defence: a
+## wider `ADS_YAW` buys itself another sample instead of quietly widening an arc
+## nothing looks inside.
 ##
 ## `ARC_MAX_SAMPLES` is a bound on the loop and not a tuning knob. It is reached
 ## only by an amplitude nobody has authored; if it ever binds, the sweep silently

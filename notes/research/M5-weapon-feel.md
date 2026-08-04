@@ -96,11 +96,18 @@ axis runs along the barrel.
 **Pose.** `scripts/entities/viewmodel.gd` turns three published floats (`state`, `state_t`,
 `state_len`) plus edges into **nine scalar channels** written to exactly three nodes:
 `ViewmodelRoot.transform` (sway + bob), `WeaponMesh.transform` (rest + kick + dip + drop + melee +
-ADS + sight), `Slide.position.z` (:751-773). There is no `AnimationPlayer`, no `Tween`, no clip.
-`_mesh_pose` (:776-805) is **pure**, so `_measure()` (:910-975) can sweep its endpoints — 144 poses
-per weapon over ~1398 corners, 218,016 transformed points — which is the entire proof that the
-weapon cannot clip a wall (`verify.gd:1728-1730`). Measured worst case 0.232 m against
-`Player.RADIUS` 0.24 (`viewmodel.gd:36-38`).
+ADS + sight), `Slide.position.z` (written at `:1059`, computed by `_slide_offset()` at
+`:1103-1113`). There is no `AnimationPlayer`, no `Tween`, no clip. `_mesh_pose` (`:1066-1091`) is
+**pure**, so `_measure()` (`:1248-1252`, through the `sweep()` it calls at `:1265-1366`) can sweep
+its extremes — which is the entire proof that the weapon cannot clip a wall (`verify.gd:1900-1905`).
+Measured worst case 0.232 m against `Player.RADIUS` 0.24 (`viewmodel.gd:36-38`).
+
+*Citations re-checked and rewritten 2026-08-04 on commit 2fc7422; only `viewmodel.gd:36-38` still
+resolved and it was left alone. The pose and point counts this paragraph used to give — "144 poses
+per weapon over ~1398 corners, 218,016 transformed points" — are also from before the arc
+construction landed and are no longer a single number: the sweep now samples each rotational
+channel at a count solved against that weapon's own `r_max`, so the pose count is per weapon. See
+`viewmodel.gd`'s `_arc` docstring for the solved counts. They were not re-measured here.*
 
 **Fire.** `_unhandled_input` latches `_fire_held` / arms an 0.18 s buffer → `_physics_process`
 calls `_update_view(dt, spd)` **then** `_update_fire(dt)` (:570-571) → a bounded
@@ -200,8 +207,13 @@ weapon. **What *is* bounded is `_measure`**: it is linear in corner count, so an
 takes 218,016 transformed points to 1.7 M in GDScript inside a ~5 s suite.
 
 **F7 — Depth is cheap against the clip budget; length is not; the near plane is the binding
-constraint.** Tier 2 — these are conservative analytic bounds on the committed
-0.231884 / 0.201249 / 0.057540, not re-measurements. Doubling every part's and every hand's
+constraint.** Tier 2 — these are conservative analytic bounds on the then-committed
+0.231884 / 0.201249 / 0.057540, not re-measurements. *(Those three are historical. Re-measured
+2026-08-04 on commit 2fc7422 the committed triple is 0.201372 / 0.057188 / 0.231964 — margin
+8.036 mm, near-plane clearance 7.188 mm — so the "8.12 mm" and "7.54 mm" denominators below are
+each about 1% and 5% optimistic. The bounds are left as written because they are the analysis that
+was done against the figures of the day, and re-deriving them was not this stage's work.)*
+Doubling every part's and every hand's
 half-depth raises `max_screen_radius` by at most 0.48 mm of 8.12 mm of headroom (5.9%), and
 `max_corner_radius` to at most 0.2066 against 0.22. But the added `x` rotated through
 `REST_YAW + SWAY_MAX` costs up to **1.38 mm of the 7.54 mm near-plane clearance, 18%**.
