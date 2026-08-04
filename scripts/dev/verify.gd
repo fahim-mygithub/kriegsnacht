@@ -312,7 +312,9 @@ const CHECK_MODULES := {
 ## place in the walked ARRAY so that optional geometry becomes possible later without
 ## renumbering anything that ships today. Five in `checks/frame.gd`'s new `_gun_bands`
 ## — the rank pin, the walk-is-the-bands reconstruction, the two-sided ordinal
-## stability property, the proud-of-host relation over the 27 nested parts, and the
+## stability property, the proud-of-host relation over the nested parts (27 when this
+## paragraph was written, 65 today — the count moves with the detail band, so re-measure
+## it rather than trusting this sentence), and the
 ## footprint reconstruction off the committed `ArrayMesh` — and two in `_gun_ancestor`:
 ## the per-band census (101 read out of `kriegsnacht.html` + 18 + 0, which the
 ## `parts_total == 119` it stands beside cannot decompose) and the detail band against
@@ -326,8 +328,17 @@ const CHECK_MODULES := {
 ## structurally blind to because |x| is the `LAYER` half alone. The proud-of-host
 ## relation is the first assertion anywhere that would notice `LAYER` going to zero.
 ##
-## RAISED ADDITIVELY: 789 + 7. Do not read this as a reconciliation.
-const ASSERTION_FLOOR := 796
+## +1 for the SECOND DETAIL PASS, which took the band from 14 rows on four weapons to
+## 38 across all thirteen. ONE assertion, and it is the one the first pass proved was
+## missing: `checks/frame.gd`'s consumer-driven check that a weapon carrying detail
+## rows is photographed by some scenario. Eleven of the first fourteen rows were not,
+## and 22 of this pass's 24 would not have been either — legal, recorded, and invisible
+## to every frame the project takes. Everything else the pass touched moved NUMBERS
+## inside checks that already existed (133 to 157 parts walked, 41 to 65 nested pairs,
+## `DETAIL_ROWS` 14 to 38), which is the shape a data change ought to have.
+##
+## RAISED ADDITIVELY: 796 + 1. Do not read this as a reconciliation.
+const ASSERTION_FLOOR := 797
 
 var _pass := 0
 var _fail := 0

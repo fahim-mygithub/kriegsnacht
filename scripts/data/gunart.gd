@@ -666,6 +666,183 @@ const DETAIL := {
 		["r", 26.6, 20.6, 24.8, 1.4, Color("4e3a24")],
 		["r", 8.6, 25.2, 3, 2.2, Color("1f2123")],
 		["r", 52.8, 22.2, 10.4, 1.6, Color("3e4245")]],
+	# =============================================================================
+	# THE REMAINING NINE. Same three clauses (`seat`, `proud`, `quiet`) and the same
+	# record, plus one constraint the first four never had to state because they
+	# never violated it:
+	#
+	# **THE CONTRAST BAND.** A detail row's luminance against the part it is drawn on
+	# is held to [0.55x, 2.70x] — the range the four SHIPPED weapons already occupy,
+	# floor `rpk:1`/`rpk:3` at 0.555x and ceiling `stakeout:0` at 2.687x, all measured
+	# with the sRGB EOTF and Rec.709 (`notes/perf/frames/README.md`). Not a house
+	# style: a row at 1.0x is invisible and a row at 20x is a sticker, and BOTH were
+	# authored here before being measured — a `b9bec4` bolster pin on the knife read
+	# 20.5x and a `3a3d40` top lever on the Olympia's brown breech read 1.199x, under
+	# anything shipped. The band is what a MEASUREMENT replaced them with.
+	#
+	# **AND THE HEX ROSTER DID NOT GROW.** Every colour below is already in `ART`,
+	# nearly always on the same weapon. Three roles recur: `3a3d40` is steel on a dark
+	# body (the m1911 record's own argument, `:66`), `26282b` is a stamped highlight
+	# too quiet for `3a3d40`, and `1f2123` is a groove.
+	# =============================================================================
+	# --- olympia: the break gun, and the joint the ancestor drew as no joint ------
+	# 0  The wooden forend. `ART` part 5 is a STEEL band (`3a3d40`) laid across both
+	#    barrels where a break-action double carries a WOODEN forend — the piece that
+	#    latches the barrels to the action and the one a hand actually holds. FIREARM
+	#    FACT and not a corpus read: `notes/research/visual-corpus/` holds no Olympia
+	#    and no double gun of any kind, so no sentence here begins "BO1 shows". In
+	#    `4b3218`, this weapon's OWN breech brown (`:56`), at 0.834x — wood sits UNDER
+	#    a steel band's highlight, not over it. Bottom held to y30.4 against the lower
+	#    barrel's own y30: a row flush with the barrel inflates PAST it and adds
+	#    silhouette, which is the one thing this band must never do.
+	# 1  The barrel joint. The two barrels ABUT at y25 in `2e3033` over `26282b` —
+	#    0.02934 against 0.02104, a 1.39x step, which at this scale is no edge at all,
+	#    so an over/under reads as one slab five units too tall. Drawn INSIDE the lower
+	#    barrel and not across the seam, because `seat` is containment and a row
+	#    straddling y25 is enclosed by neither. 0.8 units, the thinnest row on the
+	#    roster, because it is a LINE and not a band.
+	# 2  The top lever. FIREARM FACT: every break-action opens with a lever on the top
+	#    strap, and it is the one control that says "this gun breaks" instead of "this
+	#    gun has a bolt". Above y21.6 so it clears the glove — `GRIP` is (62, 26) and
+	#    `_hands` hangs below that. `2e3033` at 0.763x after `3a3d40` measured 1.199x.
+	"olympia": [["r", 44.8, 25.4, 8.4, 5, Color("4b3218")],
+		["r", 8, 25.2, 50, 0.8, Color("1f2123")],
+		["r", 61.4, 20.2, 5.2, 1.4, Color("2e3033")]],
+	# --- m14: one hex for two different pieces of furniture -----------------------
+	# 0  The handguard's seam. `ART` gives parts 1 and 2 — handguard and buttstock —
+	#    the IDENTICAL `5a3b1e` (0.05395 both), so the rifle's whole middle is one
+	#    unbroken plank from x36 to x90 and the receiver between them has no line at
+	#    all. This is the darker `42301a` (the weapon's own pistol-grip brown) at
+	#    0.620x, run along the handguard's own top. Held to y20.6-22.4 so it does not
+	#    reach the barrel at y22 and pick the barrel up as a second host.
+	# 1  The gas cylinder. FIREARM FACT: the M14's gas system is an external tube
+	#    under the barrel forward of the handguard, and the ancestor's barrel is one
+	#    plain rect from muzzle to receiver. `26282b` at 0.778x — the shadowed
+	#    underside of a tube, not a highlight.
+	# 2  The front sight base. FIREARM FACT: the M14's blade rides a base clamped to
+	#    the flash suppressor, and `SIGHTS["m14"][0]` stands a bare blade on nothing —
+	#    the same hole the MP40's rear sight had, and the same answer, because SIGHTS
+	#    is out of bounds for this band. `3a3d40` at 1.705x. Stops at y23.6 rather
+	#    than y23.2 so the barrel RIB does not enclose it: the rib is `D_BODY` at rank
+	#    6 (3.18) and would need a deeper row than a rank-11 `D_THIN` can supply.
+	"m14": [["r", 38, 20.6, 20, 1.8, Color("42301a")],
+		["r", 12, 24.6, 22, 2, Color("26282b")],
+		["r", 10.8, 22.2, 4.4, 1.4, Color("3a3d40")]],
+	# --- pm63: the weapon whose receiver IS its slide ----------------------------
+	# NOT ONE ROW TOUCHES PART 1, and that is forced. `SLIDE["pm63"]` is `[1]`, so
+	# `_build`'s `slide.has(i) != want_slide` filter puts every index that is not 1
+	# into the BODY mesh — a detail row drawn on the slide would be left behind by
+	# `TRAVEL` on every shot. Same trap the m1911 record records for slide
+	# serrations, and on this weapon it rules out the whole receiver flank.
+	# 0  The muzzle compensator. FIREARM FACT: the PM63's defining feature is the
+	#    upturned muzzle deflector that fights climb, and it is the first thing an
+	#    RAK is identified by. `3a3d40` at 1.850x.
+	# 1  The foregrip's finger grooves. The folding foregrip is `ART` part 4, a plain
+	#    5x11 block. `1f2123` at 0.713x, a groove and so darker than its host. At x26
+	#    it is well forward of the glove, which starts near `GRIP` x48.
+	# 2  The magazine's floor rib. Held to y29.2-30.6, BELOW the slide's own y29:
+	#    higher and the slide encloses it, and the slide is deeper (3.00) than the
+	#    magazine (2.62), so the row would be drawn on the part it is not about and
+	#    would sit still while that part travelled. `26282b` at 1.402x.
+	"pm63": [["r", 12.6, 25.2, 4.8, 2.2, Color("3a3d40")],
+		["r", 26.6, 30.4, 3.8, 3, Color("1f2123")],
+		["r", 46.6, 29.2, 3.8, 1.4, Color("26282b")]],
+	# --- ak74u: the same missing seam the RPK had, on the same rifle's carbine ----
+	# 0  The upper handguard. FIREARM FACT: an AK forearm is TWO wooden pieces, a
+	#    lower under the barrel and an upper over the gas tube, and `ART` draws one
+	#    26x9 rect for both — identical to the RPK's case and given the identical
+	#    answer, so the two rifles read as the same family. `5a3b1e`, this weapon's
+	#    own stock wood, at 1.937x against the darker `3a2c1c` handguard.
+	# 1  The magazine's stamped ribs. `26282b` at 1.402x and NOT `3a3d40`, which
+	#    measured 3.071x on this host and would have made a black magazine look
+	#    chromed. Below the handguard's y29 so the handguard does not enclose it.
+	# 2  The muzzle booster. FIREARM FACT: the AKS-74U's booster is a conical
+	#    expansion chamber, fitted because the short barrel will not cycle the action
+	#    without one, and it is why a Krinkov's muzzle is fatter than its barrel.
+	#    `3a3d40` at 1.705x.
+	"ak74u": [["r", 26, 21.6, 22, 1.4, Color("5a3b1e")],
+		["r", 44.6, 28, 4.8, 1.6, Color("26282b")],
+		["r", 6.6, 24.6, 5.8, 2.4, Color("3a3d40")]],
+	# --- m16: the carry handle, and the one row `quiet` nearly refused ------------
+	# 0  The carry handle's sight channel. FIREARM FACT: the M16's carry handle is a
+	#    bridge with the rear aperture down its middle, so it is a CHANNEL and not the
+	#    solid 18x3 slab `ART` part 2 draws. `1f2123` at 0.713x.
+	#    THE TIGHTEST `quiet` ON THE ROSTER: at rank 10 this inflates to art y17.20
+	#    against the weapon's own roof of 16.92 — 0.28 art units of margin, which is
+	#    seven `PROUD` steps. Move it up by 0.3 and it becomes the top of the weapon
+	#    and takes the sight line the rig poses with.
+	# 1  The front sight tower's base, on the barrel under `SIGHTS["m16"][0]`. Same
+	#    argument as the M14's and the MP40's. `3a3d40` at 1.850x.
+	# 2  The magazine's ribs. `26282b` at 1.402x for the reason given on the AK.
+	#    Stops at x53.4 so `ART` part 1 (x26-52) does not enclose it.
+	"m16": [["r", 32, 17.6, 14, 1, Color("1f2123")],
+		["r", 5.4, 23.2, 4, 1.8, Color("3a3d40")],
+		["r", 48.6, 28, 4.8, 1.6, Color("26282b")]],
+	# --- chinalake: every host is D_BULK or D_FAT, so every row must be D_BODY ----
+	# THE DEPTH BUDGET IS THE DESIGN HERE. This weapon's shallowest part is the grip
+	# at 3.28, so `D_THIN` clears NOTHING on it at any rank a three-row band reaches,
+	# and `D_FAT` is 4.12 at the first detail slot — over `checks/frame.gd`'s
+	# `SHIPPED_MAX_HALF` 4.00. `D_BODY` at ranks 9, 10 and 11 (3.60, 3.74, 3.88) is
+	# the entire budget, and rank 12 is 4.02, so THREE ROWS IS THIS WEAPON'S CEILING
+	# for all time under the present cap.
+	# 0  The action bar. FIREARM FACT: a pump gun drives its bolt through bars that
+	#    run from the fore-end back to the receiver along the tube, and `ART` draws
+	#    the pump (part 6) connected to nothing. `2a2c24` at 0.684x.
+	# 1  The trigger, on the grip and forward of it. Same argument as the m1911's,
+	#    including the part it refuses: NOT a dark inset standing for the guard's
+	#    opening, because `proud` builds every row RAISED and a hole built raised is a
+	#    lie about the mechanic. `3a3d33` at 1.849x.
+	# 2  The muzzle collar. Genuinely inside the muzzle ring and not merely inside its
+	#    BOX — the far corner is 4.17 units from the circle's centre against a radius
+	#    of 6.2. Worth stating because `seat` reads `_part_box`, so a circle's corners
+	#    are a loophole a row could sit in and be nowhere on the drawn weapon.
+	"chinalake": [["r", 28, 27.4, 22, 1.4, Color("2a2c24")],
+		["r", 52.6, 28.4, 1.8, 2.2, Color("3a3d33")],
+		["r", 8.4, 22.4, 7.2, 4.2, Color("3a3d33")]],
+	# --- raygun: TWO rows, and the count is the cap and not taste -----------------
+	# `D_BODY` at rank 12 is 4.02, over `SHIPPED_MAX_HALF` 4.00, and every host on
+	# this weapon is 3.04 or deeper, which no `D_THIN` rank below 13 reaches. Ranks 10
+	# and 11 are therefore the whole band. Both rows are cooling fins on the body
+	# because that is what the budget bought: a scope-block rail was authored, seated
+	# and proud at rank 11, and thrown away when it measured 0.245x against the bright
+	# `5e7044` block — the palette has nothing between `3e4a2e` (0.423x) and `8fe04a`
+	# (4.1x), so there is no legal hex for a row on that part at all.
+	# OUR DECISION, and it is the only honest provenance available: the Ray Gun is
+	# fictional, there is no firearm fact to cite and no Ray Gun card in the corpus.
+	# `2e3822` is the weapon's own lens-housing green (`:93`), at 0.576x.
+	"raygun": [["r", 22, 26.6, 26, 1.8, Color("2e3822")],
+		["r", 22, 30, 26, 1.6, Color("2e3822")]],
+	# --- thundergun: ONE row, and the budget is spent --------------------------
+	# The deepest-hosted weapon on the roster. `ART` runs to eleven parts, so the
+	# first detail slot is rank 11 and `D_BODY` there is 3.88; rank 12 is 4.02 and
+	# over the cap. The shallowest host is the grip at 3.18, which `D_THIN` does not
+	# clear until rank 14 — a rank a second row cannot occupy without a third and
+	# fourth in front of it. So the Thundergun gets exactly one row until either
+	# `SHIPPED_MAX_HALF` is re-measured or `RANK` stops being the identity.
+	# 0  The casing seam. OUR DECISION: the Thundergun is fictional, but a moulded
+	#    shell of this size is made in two halves and BO1's model carries the join.
+	#    `5a5f66`, the weapon's own shell-rib hex, at 2.444x.
+	"thundergun": [["r", 24, 26.4, 30, 1.4, Color("5a5f66")]],
+	# --- knife: the one weapon whose parts are POLYGONS ---------------------------
+	# 0  The edge bevel. FIREARM FACT: a knife's cutting edge is a ground facet that
+	#    catches light differently from the flat, and `ART` gives the blade a spine
+	#    highlight (part 1) and nothing along the edge. `e2e7ec` at 1.553x.
+	#    THE ROW IS INSIDE THE POLYGON AND NOT ONLY THE BOX, which on this weapon is a
+	#    real distinction: the blade's bounding box is x[10,50] y[22,33] and the blade
+	#    itself is a wedge, so most of that box is off the knife. At x38 the blade's
+	#    lower edge is y31.35 and this row stops at y31.20. It is also held BELOW part
+	#    1's box (y22-31) on purpose — inside it the row's host would have been part 1
+	#    at its own hex, i.e. a 1.000x self-comparison that could never read.
+	# 1  The bolster pin. FIREARM FACT: a bolster is pinned through, and the pins show.
+	#    `3a3d40` at 1.850x, after `b9bec4` measured 20.5x and would have been a white
+	#    dot. Stops at x52.4, clear of the blade box's x50, so the blade cannot host it.
+	# 2  The handle's grip groove. Held to y26.4-27.6, ABOVE the glove: `GRIP` is
+	#    (56, 27) and the hand takes the handle from about y28 back, so a groove
+	#    authored down the whole handle would have been drawn almost entirely inside a
+	#    fist. Same lesson the m1911's checkering was cut to five units for.
+	"knife": [["r", 20, 30.3, 18, 0.9, Color("e2e7ec")],
+		["r", 49.6, 26.6, 2.8, 2.8, Color("3a3d40")],
+		["r", 56, 26.4, 14, 1.2, Color("4e3a24")]],
 }
 
 ## Authored paint-order ranks, keyed by `part_id`. **Empty: every band is walked in
@@ -937,10 +1114,20 @@ const DEPTH := {
 	"m1911": [D_BODY, D_BODY, D_THIN, D_FAT, D_BODY, D_THIN, D_BODY, D_THIN, D_THIN,
 		D_BODY, D_THIN, D_THIN],
 	# two stacked barrels, breech, stock, stock rib, barrel band, top rib, bead.
-	"olympia": [D_BODY, D_BODY, D_FAT, D_FAT, D_FAT, D_BODY, D_BODY, D_THIN],
+	# ...then detail: forend, barrel joint, top lever. The forend and the lever are
+	# D_BODY because they lie on the steel band (3.04) and the breech (3.14), neither
+	# of which a D_THIN rank in a three-row band reaches; the joint is on the lower
+	# barrel at 2.48 and D_THIN clears it at rank 9 with 0.08 to spare.
+	"olympia": [D_BODY, D_BODY, D_FAT, D_FAT, D_FAT, D_BODY, D_BODY, D_THIN,
+		D_BODY, D_THIN, D_BODY],
 	# barrel, handguard, buttstock, stock rib, pistol grip, magazine, barrel rib,
 	# front post, rear blade.
-	"m14": [D_BODY, D_FAT, D_FAT, D_FAT, D_BODY, D_BODY, D_BODY, D_THIN, D_THIN],
+	# ...then detail: handguard seam, gas cylinder, front sight base. The seam is on
+	# the D_FAT handguard (3.00) and takes the one D_BODY slot; both barrel rows sit
+	# on 2.34 where D_THIN clears from rank 8 on. D_FAT is dead on this weapon at its
+	# first detail slot — 4.12 against SHIPPED_MAX_HALF 4.00.
+	"m14": [D_BODY, D_FAT, D_FAT, D_FAT, D_BODY, D_BODY, D_BODY, D_THIN, D_THIN,
+		D_BODY, D_THIN, D_THIN],
 	# barrel, receiver tube, magazine, trigger housing, stock hinge, folding stock,
 	# bolt handle, barrel rib, front post, rear blade. ...then detail: rear sight
 	# base, and two barrel collars. The base is D_BODY because it must clear the
@@ -951,11 +1138,21 @@ const DEPTH := {
 		D_THIN, D_THIN, D_BODY, D_THIN, D_THIN],
 	# barrel, slide, magazine, folding stock, foregrip, barrel rib. The rib takes
 	# D_FAT because it runs across the slide, not only across the barrel.
-	"pm63": [D_BODY, D_FAT, D_BODY, D_THIN, D_THIN, D_FAT, D_THIN, D_THIN],
+	# ...then detail: muzzle compensator, foregrip grooves, magazine floor rib. The
+	# first two sit on the barrel (2.34) and the foregrip (1.86), the shallowest host
+	# on the roster. The magazine rib is D_BODY rather than the D_THIN 2.70 that would
+	# also clear its 2.62 host: 0.08 art units is one PROUD step of margin, and this
+	# row is the one that must not sink, because sunk it looks like nothing at all.
+	"pm63": [D_BODY, D_FAT, D_BODY, D_THIN, D_THIN, D_FAT, D_THIN, D_THIN,
+		D_THIN, D_THIN, D_BODY],
 	# barrel, handguard, magazine, dust cover, stock, foregrip, barrel rib,
 	# charging handle, front post, rear blade.
+	# ...then detail: upper handguard, magazine ribs, muzzle booster. Same shape as
+	# the RPK's, which is the same rifle: the wood row takes the D_BODY slot to clear
+	# the D_FAT handguard at 3.00, and the two steel rows ride D_THIN over the 2.62
+	# magazine and the 2.34 barrel. D_FAT is 4.26 at rank 10 and dead here too.
 	"ak74u": [D_BODY, D_FAT, D_BODY, D_FAT, D_FAT, D_BODY, D_FAT, D_THIN,
-		D_THIN, D_THIN],
+		D_THIN, D_THIN, D_BODY, D_THIN, D_THIN],
 	# barrel, magazine tube, pump, receiver, stock, stock rib, grip, barrel rib,
 	# bead. ...then detail: receiver top rib, shield slot band, shield rear collar.
 	# The top rib is D_BODY and first because its host is 3.28 and D_FAT — the tier
@@ -966,8 +1163,12 @@ const DEPTH := {
 		D_BODY, D_THIN, D_THIN],
 	# barrel, upper receiver, carry handle, magazine, lower receiver, stock, grip,
 	# barrel rib, front tower, rear blade.
+	# ...then detail: carry handle channel, front sight base, magazine ribs. The only
+	# weapon whose whole detail band is D_THIN, because its three hosts are the
+	# shallowest trio on the roster — the carry handle is itself D_THIN at 1.58, and
+	# the barrel and magazine are 2.34 and 2.76 against D_THIN's 2.84 and 2.98.
 	"m16": [D_BODY, D_FAT, D_THIN, D_BODY, D_FAT, D_FAT, D_BODY, D_FAT,
-		D_THIN, D_THIN],
+		D_THIN, D_THIN, D_THIN, D_THIN, D_THIN],
 	# barrel, handguard, magazine, receiver, stock, drum housing, drum, barrel rib,
 	# charging handle, front post, rear blade. The drum is the fattest gun part on
 	# the roster, which is the one thing an RPK's silhouette is for.
@@ -981,21 +1182,37 @@ const DEPTH := {
 		D_THIN, D_THIN, D_BODY, D_THIN, D_THIN, D_THIN, D_THIN],
 	# launcher tube, tube rib, muzzle ring, grip, stock, stock rib, pump, front
 	# post, ladder sight.
-	"chinalake": [D_BULK, D_BULK, D_BULK, D_FAT, D_FAT, D_FAT, D_FAT, D_THIN, D_THIN],
+	# ...then detail: action bar, trigger, muzzle collar — all three D_BODY, which is
+	# the whole budget. Nothing on this weapon is shallower than the 3.28 grip, so
+	# D_THIN clears no host at any rank a three-row band reaches, and D_FAT is 4.12 at
+	# the first slot. Rank 12 D_BODY is 4.02, so three rows is the ceiling.
+	"chinalake": [D_BULK, D_BULK, D_BULK, D_FAT, D_FAT, D_FAT, D_FAT, D_THIN, D_THIN,
+		D_BODY, D_BODY, D_BODY],
 	# body, body rib, lens housing, lens mid, lens core, grip, scope block, scope
 	# emitter, rear block, rear emitter. The three concentric lens circles MUST
 	# step outward in that order or the inner ones are inside the outer ones.
+	# ...then detail: two body fins, both D_BODY at ranks 10 and 11 (3.74, 3.88) over
+	# the D_BULK body's 3.25. Rank 12 is 4.02 and over the cap, which is why the band
+	# is two rows and not three.
 	"raygun": [D_BULK, D_BULK, D_BULK, D_BULK, D_BULK, D_BODY, D_FAT, D_FAT,
-		D_BODY, D_BODY],
+		D_BODY, D_BODY, D_BODY, D_BODY],
 	# shell, shell rib, two emitter housings, two emitter cores, grip, stock,
 	# stock rib, mid ring, mid core.
+	# ...then detail: the casing seam, D_BODY at rank 11 = 3.88 over the D_BULK
+	# shell's 3.25. THE ONLY LEGAL DETAIL ROW THIS WEAPON HAS: eleven ART parts put
+	# the first detail slot at rank 11, and rank 12 D_BODY is 4.02.
 	"thundergun": [D_BULK, D_BULK, D_BULK, D_BULK, D_BULK, D_BULK, D_BODY, D_FAT,
-		D_FAT, D_BODY, D_BODY],
+		D_FAT, D_BODY, D_BODY, D_BODY],
 	# blade, blade highlight, bolster, handle, handle rib. The blade at 2.60 units
 	# thick against a 6.56-unit handle is the change this whole table exists for:
 	# it used to be 5.20 against 6.04, i.e. a blade five sixths as thick as the
 	# grip it folds out of.
-	"knife": [D_THIN, D_THIN, D_BODY, D_FAT, D_FAT],
+	# ...then detail: edge bevel, bolster pin, handle groove. The ONLY weapon with
+	# room for all three tiers, because five ART parts put the band at ranks 5-7 where
+	# D_FAT is still 3.84 and under the cap. Each row takes the shallowest tier that
+	# clears its host — 1.30 blade, 2.62 bolster, 3.28 handle — rather than the
+	# deepest available, so the knife spends none of a budget it does not need.
+	"knife": [D_THIN, D_THIN, D_BODY, D_FAT, D_FAT, D_THIN, D_BODY, D_FAT],
 }
 
 ## And how much each subsequent part is grown *sideways*, in art units.

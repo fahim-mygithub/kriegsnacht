@@ -1201,13 +1201,169 @@ const DETAIL_RECORD := {
 			+ "itself contradicts is the unrecorded-departure failure, so no row here depends "
 			+ "on settling either.",
 	},
+	"olympia": {
+		"rows": ["r|44.8|25.4|8.4|5.0|4b3218ff", "r|8.0|25.2|50.0|0.8|1f2123ff",
+			"r|61.4|20.2|5.2|1.4|2e3033ff"],
+		"why": "NO SENTENCE HERE BEGINS 'BO1 SHOWS'. notes/research/visual-corpus/ holds six "
+			+ "cards and none is an Olympia, a double gun or a shotgun of any kind, so this "
+			+ "weapon is in the same evidential position as the Stakeout and the record says so "
+			+ "rather than inventing a frame. [0] FIREARM FACT: a break-action double latches "
+			+ "its barrels through a WOODEN forend, and ART part 5 draws that piece as a steel "
+			+ "band (3a3d40) across both barrels. 4b3218 is this weapon's own breech brown, at "
+			+ "0.834x its host — wood sits under a steel band's highlight, not over it. Bottom "
+			+ "at y30.4 against the lower barrel's y30 so the row does not inflate past the "
+			+ "barrel and add silhouette. [1] OUR DECISION: the two barrels ABUT at y25 in "
+			+ "2e3033 over 26282b, measured 0.02934 against 0.02104 — a 1.39x step, no edge at "
+			+ "this scale, so an over/under reads as one slab five units too tall. Drawn INSIDE "
+			+ "the lower barrel and not across the seam because seat is containment and a row "
+			+ "straddling y25 is enclosed by neither. 0.8 units, the thinnest row on the "
+			+ "roster, because it is a line. [2] FIREARM FACT: every break-action opens with a "
+			+ "lever on the top strap and it is the one control that says the gun breaks. Above "
+			+ "y21.6 to clear the glove (GRIP is (62,26); _hands hangs below it). 2e3033 at "
+			+ "0.763x AFTER 3a3d40 was authored and measured 1.199x on this brown host — under "
+			+ "the 1.464x floor of everything shipped, i.e. a control nobody could see.",
+	},
+	"m14": {
+		"rows": ["r|38.0|20.6|20.0|1.8|42301aff", "r|12.0|24.6|22.0|2.0|26282bff",
+			"r|10.8|22.2|4.4|1.4|3a3d40ff"],
+		"why": "[0] OUR DECISION, forced by a measurement: ART parts 1 and 2 — handguard and "
+			+ "buttstock — carry the IDENTICAL 5a3b1e, 0.05395 both, so the rifle's middle is "
+			+ "one unbroken plank from x36 to x90 with no line where the receiver is. 42301a "
+			+ "(this weapon's own pistol-grip brown) at 0.620x, along the handguard's top. Held "
+			+ "to y20.6-22.4 so it stops short of the barrel at y22 and does not pick the "
+			+ "barrel up as a second, deeper host. [1] FIREARM FACT: the M14's gas system is an "
+			+ "external cylinder under the barrel forward of the handguard; the ancestor draws "
+			+ "one plain rect from muzzle to receiver. 26282b at 0.778x, the shadowed underside "
+			+ "of a tube rather than a highlight. [2] FIREARM FACT: the M14's front blade rides "
+			+ "a base clamped to the flash suppressor, and SIGHTS['m14'][0] stands a bare blade "
+			+ "on nothing — the same hole the MP40's rear sight had, and the same answer, "
+			+ "because SIGHTS is out of bounds for this band. 3a3d40 at 1.705x. Stops at y23.6 "
+			+ "rather than y23.2 so the barrel rib does not enclose it: the rib is D_BODY at "
+			+ "rank 6 (3.18) and no rank-11 D_THIN clears that.",
+	},
+	"pm63": {
+		"rows": ["r|12.6|25.2|4.8|2.2|3a3d40ff", "r|26.6|30.4|3.8|3.0|1f2123ff",
+			"r|46.6|29.2|3.8|1.4|26282bff"],
+		"why": "NOT ONE ROW TOUCHES PART 1, and that is forced rather than chosen. "
+			+ "SLIDE['pm63'] is [1] — on a PM63 the receiver IS the bolt — so _build's "
+			+ "slide.has(i) != want_slide filter puts every other index in the BODY mesh, and a "
+			+ "row drawn on the slide would be left behind by TRAVEL on every shot. That is the "
+			+ "m1911 record's slide-serration trap, and on this weapon it rules out the entire "
+			+ "receiver flank. [0] FIREARM FACT: the PM63's defining feature is the upturned "
+			+ "muzzle deflector that fights climb; it is what an RAK is identified by. 3a3d40 "
+			+ "at 1.850x. [1] OUR DECISION: the folding foregrip is a plain 5x11 block. 1f2123 "
+			+ "at 0.713x — a groove, so darker. At x26 it is well forward of the glove, which "
+			+ "starts near GRIP x48. [2] FIREARM FACT: a box magazine ends in a floor plate. "
+			+ "Held to y29.2-30.6, BELOW the slide's own y29: any higher and the SLIDE encloses "
+			+ "it, and the slide is deeper (3.00) than the magazine (2.62), so the row would be "
+			+ "painted on the part it is not about and would sit still while that part "
+			+ "travelled. 26282b at 1.402x.",
+	},
+	"ak74u": {
+		"rows": ["r|26.0|21.6|22.0|1.4|5a3b1eff", "r|44.6|28.0|4.8|1.6|26282bff",
+			"r|6.6|24.6|5.8|2.4|3a3d40ff"],
+		"why": "[0] FIREARM FACT: an AK forearm is TWO wooden pieces, a lower under the barrel "
+			+ "and an upper over the gas tube, and ART draws one 26x9 rect for both. Identical "
+			+ "to the RPK's case and given the identical answer on purpose, so the two rifles "
+			+ "read as one family. 5a3b1e, this weapon's own stock wood, at 1.937x against the "
+			+ "darker 3a2c1c handguard. Held to y21.6-23.0 so it stops above the barrel's y23 "
+			+ "and the barrel is not a second host. [1] FIREARM FACT: AK magazines are stamped "
+			+ "with horizontal reinforcing ribs. 26282b at 1.402x and NOT 3a3d40, which "
+			+ "measured 3.071x here and would have made a black magazine look chromed — over "
+			+ "the 2.687x ceiling of everything shipped. Below the handguard's y29 so the "
+			+ "handguard does not enclose it. [2] FIREARM FACT: the AKS-74U carries a conical "
+			+ "booster because a barrel that short will not cycle the action without one, and "
+			+ "it is why a Krinkov's muzzle is fatter than its barrel. 3a3d40 at 1.705x.",
+	},
+	"m16": {
+		"rows": ["r|32.0|17.6|14.0|1.0|1f2123ff", "r|5.4|23.2|4.0|1.8|3a3d40ff",
+			"r|48.6|28.0|4.8|1.6|26282bff"],
+		"why": "[0] FIREARM FACT: the M16's carry handle is a BRIDGE with the rear aperture "
+			+ "down its middle, not the solid 18x3 slab ART part 2 draws. 1f2123 at 0.713x. "
+			+ "THIS IS THE TIGHTEST quiet MARGIN ON THE ROSTER: at rank 10 the row inflates to "
+			+ "art y17.20 against the weapon's own roof of 16.92, i.e. 0.28 art units or seven "
+			+ "PROUD steps. Raise it 0.3 and it becomes the top of the weapon and takes the "
+			+ "sight line the rig poses with — the exact failure quiet exists to catch, and the "
+			+ "reason this row is 1.0 units tall and not 1.4. [1] FIREARM FACT: the front blade "
+			+ "sits on a tower base clamped to the barrel; same argument as the M14's and the "
+			+ "MP40's. 3a3d40 at 1.850x. [2] FIREARM FACT: STANAG magazines are stamped with "
+			+ "ribs. 26282b at 1.402x for the reason given on the AK. Stops at x53.4 so ART "
+			+ "part 1 (x26-52) does not enclose it and become a 3.00 host a D_THIN cannot "
+			+ "clear.",
+	},
+	"chinalake": {
+		"rows": ["r|28.0|27.4|22.0|1.4|2a2c24ff", "r|52.6|28.4|1.8|2.2|3a3d33ff",
+			"r|8.4|22.4|7.2|4.2|3a3d33ff"],
+		"why": "THE DEPTH BUDGET IS THE DESIGN. Every host on this weapon is D_BULK or D_FAT "
+			+ "and the shallowest is the 3.28 grip, so D_THIN clears nothing at any rank a "
+			+ "three-row band reaches and D_FAT is 4.12 at the first detail slot, over "
+			+ "SHIPPED_MAX_HALF 4.00. D_BODY at ranks 9, 10 and 11 (3.60, 3.74, 3.88) is the "
+			+ "whole budget and rank 12 is 4.02, so THREE ROWS IS THIS WEAPON'S CEILING under "
+			+ "the present cap. [0] FIREARM FACT: a pump gun drives its bolt through action "
+			+ "bars running from the fore-end back to the receiver, and ART draws the pump "
+			+ "(part 6) connected to nothing at all. 2a2c24 at 0.684x. [1] OUR DECISION: the "
+			+ "trigger, on the grip and forward of it — and explicitly NOT a dark inset "
+			+ "standing for the guard's opening, because proud builds every row RAISED and a "
+			+ "hole built raised is a lie about the mechanic. Same refusal the m1911 record "
+			+ "records. 3a3d33 at 1.849x. [2] OUR DECISION: a raised collar at the muzzle. "
+			+ "GENUINELY INSIDE THE CIRCLE and not merely inside its BOX — the far corner is "
+			+ "4.17 units from the centre against a radius of 6.2. Stated because seat reads "
+			+ "_part_box, so a circle's corners are a loophole a row could sit in while being "
+			+ "nowhere on the drawn weapon.",
+	},
+	"raygun": {
+		"rows": ["r|22.0|26.6|26.0|1.8|2e3822ff", "r|22.0|30.0|26.0|1.6|2e3822ff"],
+		"why": "TWO ROWS, AND THE COUNT IS THE CAP. D_BODY at rank 12 is 4.02, over "
+			+ "SHIPPED_MAX_HALF 4.00, and every host here is 3.04 or deeper, which no D_THIN "
+			+ "rank below 13 reaches; ranks 10 and 11 are the whole band. OUR DECISION for both "
+			+ "rows and that is the only honest provenance available — the Ray Gun is "
+			+ "fictional, there is no firearm fact to cite, and the corpus holds no Ray Gun "
+			+ "card. Cooling fins on the body, in 2e3822 (the weapon's own lens-housing green, "
+			+ "gunart.gd:93) at 0.576x. RECORDED REJECTION: a scope-block mounting rail was "
+			+ "authored at rank 11, seated and proud and legal, and thrown away when it "
+			+ "measured 0.245x against the bright 5e7044 block. The palette has nothing between "
+			+ "3e4a2e (0.423x) and 8fe04a (4.1x), so there is NO legal hex for any row on that "
+			+ "part — a fact about the weapon's colours, not about this row.",
+	},
+	"thundergun": {
+		"rows": ["r|24.0|26.4|30.0|1.4|5a5f66ff"],
+		"why": "ONE ROW, AND THE BUDGET IS SPENT. This is the deepest-hosted weapon on the "
+			+ "roster: eleven ART parts put the first detail slot at rank 11, where D_BODY is "
+			+ "3.88 over the D_BULK shell's 3.25, and rank 12 is 4.02 — over the cap. The "
+			+ "shallowest host is the 3.18 grip, which D_THIN does not clear until rank 14, a "
+			+ "rank no second row can occupy without a third and fourth ahead of it. So the "
+			+ "Thundergun carries exactly one detail row until either SHIPPED_MAX_HALF is "
+			+ "re-measured or RANK stops being the identity. OUR DECISION: the Thundergun is "
+			+ "fictional, but a moulded shell this size is made in two halves and the join "
+			+ "shows. 5a5f66, the weapon's own shell-rib hex, at 2.444x.",
+	},
+	"knife": {
+		"rows": ["r|20.0|30.3|18.0|0.9|e2e7ecff", "r|49.6|26.6|2.8|2.8|3a3d40ff",
+			"r|56.0|26.4|14.0|1.2|4e3a24ff"],
+		"why": "THE ONE WEAPON WHOSE PARTS ARE POLYGONS, which changes what seat means. [0] "
+			+ "FIREARM FACT: a knife's cutting edge is a ground facet that catches light "
+			+ "differently from the flat, and ART gives the blade a spine highlight (part 1) "
+			+ "and nothing along the edge. e2e7ec at 1.553x. THE ROW IS INSIDE THE POLYGON AND "
+			+ "NOT ONLY THE BOX: the blade's bounding box is x[10,50] y[22,33] and the blade is "
+			+ "a wedge, so most of that box is off the knife — at x38 the blade's lower edge is "
+			+ "y31.35 and this row stops at y31.20. It is ALSO held below part 1's box (y22-31) "
+			+ "on purpose: inside it, the deepest enclosing host would have been part 1 in its "
+			+ "own hex, i.e. a 1.000x self-comparison that could never read. [1] FIREARM FACT: "
+			+ "a bolster is pinned through and the pins show. 3a3d40 at 1.850x, AFTER b9bec4 "
+			+ "was authored and measured 20.5x — a white dot. Stops at x52.4, clear of the "
+			+ "blade box's x50, so the blade cannot host it. [2] OUR DECISION: a grip groove, "
+			+ "held to y26.4-27.6 ABOVE the glove. GRIP is (56,27) and the hand takes the "
+			+ "handle from about y28 back, so a groove down the whole handle would have been "
+			+ "drawn almost entirely inside a fist — the same lesson the m1911's checkering was "
+			+ "cut to five units for.",
+	},
 }
 
 ## Rows the detail band holds today. Zero until this package; the FIRST ROW REDDENED
 ## THIS — which was the intent, not an obstacle: new geometry of ours should be a loud,
 ## argued edit, exactly as an `ART` cardinality change is. Move it, and write the reason
 ## into `DETAIL_RECORD`.
-const DETAIL_ROWS := 14
+const DETAIL_ROWS := 38
 
 ## The detail band's own record validator, mirroring `record_faults()`.
 static func detail_faults() -> String:
@@ -1485,8 +1641,17 @@ static func walk_faults() -> Dictionary:
 					bad += "%s walk[%d] has no address; " % [key, i]
 		if got.is_read_only():
 			frozen.append(key)
-	# The three with no `SIGHTS` row and no `DETAIL` row, in `keys()` order.
-	var want_frozen := ["raygun", "thundergun", "knife"]
+	# EMPTY NOW, AND THAT IS THE CHANGE THIS CLAUSE EXISTS TO RECORD. It used to be
+	# `["raygun", "thundergun", "knife"]` — the three weapons with no `SIGHTS` row and,
+	# then, no `DETAIL` row either, so `_parts` handed back the `const ART` array
+	# itself, frozen. All thirteen now carry a detail band, so every walk is a fresh
+	# Array and nothing is read-only.
+	#
+	# STILL A LIVE ASSERTION rather than a tautology: it fires the day anybody adds a
+	# "one band, so skip the copy" fast path to `_parts`, which would hand a caller the
+	# compiler's read-only ART and fail on append — the same shape as `map_data`'s
+	# `_deep` (`scripts/data/map_data.gd:850`). The empty list is the claim.
+	var want_frozen: Array = []
 	if frozen != want_frozen:
 		bad += "the read-only walks are %s, not %s; " % [str(frozen), str(want_frozen)]
 	return {"diff": bad, "n": n}

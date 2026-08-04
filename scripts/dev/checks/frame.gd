@@ -45,6 +45,16 @@ const ATMOSPHERE := preload("res://scripts/systems/atmosphere.gd")
 const GUNART := preload("res://scripts/data/gunart.gd")
 const LIGHTING := preload("res://scripts/world/lighting.gd")
 
+## Weapons whose detail rows are inside a gate WITHOUT a scenario of their own.
+##
+## ONE ENTRY, AND IT EARNS ITS PLACE. The M1911 is the starting weapon, so `spawn`,
+## `downed`, `ads`, `flash_hip` and `flash_ads` all photograph it; a sixth frame of the
+## same gun in the same pose is cost with no coverage behind it. Written as an
+## allowlist rather than an `if` buried in the loop so the exemption is one visible
+## line — the failure this check exists for is coverage nobody can see is missing, and
+## an exemption nobody can see is the same failure wearing the check's own name.
+const DETAIL_SEEN_WITHOUT_SCENARIO := ["m1911"]
+
 ## The scenarios the package was commissioned to cover, restated here from the
 ## brief rather than read back out of the registry. A registry checked against
 ## itself proves nothing — that is the tautology verify.gd's `_registered()` was
@@ -1398,7 +1408,7 @@ static func _gun_depth(v: Verify) -> void:
 		if row.size() != parts.size():
 			bad_rows += "%s %d/%d " % [key, row.size(), parts.size()]
 	v.check("every part of every weapon has an authored depth",
-		bad_rows.is_empty() and parts_total == 133,
+		bad_rows.is_empty() and parts_total == 157,
 		"%d parts across the roster, rows off: %s" % [parts_total, bad_rows])
 
 	# THE LEAD ASSERTION OF THE PACKAGE. `_build` and `_corners` are two walks over
@@ -1549,7 +1559,7 @@ static func _gun_bands(v: Verify) -> void:
 	# nothing.
 	var rk := ANCESTOR_ART.rank_faults()
 	v.check("every part of every band still ranks at its own place in the paint order",
-		String(rk["diff"]).is_empty() and int(rk["n"]) == 133,
+		String(rk["diff"]).is_empty() and int(rk["n"]) == 157,
 		"ranked %d parts; %s" % [int(rk["n"]), rk["diff"]])
 
 	# 2. ...and the walk really is the bands, every part of it is addressable, and the
@@ -1559,7 +1569,7 @@ static func _gun_bands(v: Verify) -> void:
 	# while every count derived from `_parts` moves down with them.
 	var wk := ANCESTOR_ART.walk_faults()
 	v.check("the walk is exactly the bands concatenated, and every part it walks has an address",
-		String(wk["diff"]).is_empty() and int(wk["n"]) == 133,
+		String(wk["diff"]).is_empty() and int(wk["n"]) == 157,
 		"walked %d parts; %s" % [int(wk["n"]), wk["diff"]])
 
 	# 3. THE ORDINAL-STABILITY PROPERTY, driven through the real `_band_base` against
@@ -1576,15 +1586,22 @@ static func _gun_bands(v: Verify) -> void:
 	# 4. A PAINTED HIGHLIGHT IS PROUD OF EVERYTHING IT IS PAINTED ON
 	# (`gunart.gd:903-911`), and until now nothing said so: the depth checks above
 	# assert that no two parts SHARE a depth, never that the one on top is the deeper.
-	# MEASURED 2026-08-03 through the real accessors: 27 parts across the roster are
-	# drawn strictly inside an earlier part's box, all 27 come out deeper than every
-	# host, and fifteen of them are separated by exactly one `LAYER` step — which is
-	# `LAYER` doing the only job it has left since the `DEPTH` table landed, and makes
-	# this the first assertion anywhere that would notice `LAYER` going to zero. It is
-	# also the roster-side control on `detail_rules()`'s `proud` clause.
+	# MEASURED through the real accessors: 65 parts across the roster are drawn
+	# strictly inside an earlier part's box and all 65 come out deeper than every host.
+	#
+	# THE COUNT MOVES WITH THE DETAIL BAND, and the number below is the only thing that
+	# says so. 27 were the ancestor's own nesting when the property was first measured
+	# on 2026-08-03 (fifteen of those separated by exactly one `LAYER` step, which is
+	# `LAYER` doing the only job it has left since `DEPTH` landed, and makes this the
+	# first assertion anywhere that would notice `LAYER` going to zero). The first
+	# detail package added 14 and the second 24, because EVERY detail row is nested
+	# inside its host by construction — that is what `seat` means. The prose here said
+	# 27 while the pin beside it said 41 for a whole package; that is the drift this
+	# rewrite removes, and the reason the arithmetic is now written out.
+	# It is also the roster-side control on `detail_rules()`'s `proud` clause.
 	var ns := ANCESTOR_ART.nest_faults()
 	v.check("every part drawn inside another is extruded proud of it",
-		String(ns["diff"]).is_empty() and int(ns["n"]) == 41,
+		String(ns["diff"]).is_empty() and int(ns["n"]) == 65,
 		"%d nested parts; %s" % [int(ns["n"]), ns["diff"]])
 
 	# 5. AND THE TWO ORDINALS ARE ONE ORDINAL, ASSERTED OFF THE COMMITTED MESH. Depth
@@ -1598,7 +1615,7 @@ static func _gun_bands(v: Verify) -> void:
 	# shift moves the box of all 119 — so there is no part this cannot see.
 	var fp := ANCESTOR_ART.footprint_faults()
 	v.check("every part's footprint in the committed mesh is its own art box grown by its own rank",
-		String(fp["diff"]).is_empty() and int(fp["n"]) == 133,
+		String(fp["diff"]).is_empty() and int(fp["n"]) == 157,
 		"matched %d parts; %s" % [int(fp["n"]), fp["diff"]])
 
 
@@ -1946,7 +1963,7 @@ static func _gun_ancestor(v: Verify) -> void:
 	# prints the handover list rather than a puzzle.
 	var bands := ANCESTOR_ART.band_faults(anc)
 	v.check("the roster's parts decompose into the three bands this project declares, and every band names only weapons ART declares",
-		String(bands["diff"]).is_empty() and int(bands["n"]) == 133,
+		String(bands["diff"]).is_empty() and int(bands["n"]) == 157,
 		"walked %d parts; %s" % [int(bands["n"]), bands["diff"]])
 
 	var bad: Array = []
@@ -2058,6 +2075,32 @@ static func _gun_ancestor(v: Verify) -> void:
 		"the band walks %d rows against DETAIL_ROWS %d, the rules measured %d, the record %d; %s%s%s%s" % [
 			dn, ANCESTOR_ART.DETAIL_ROWS, int(dr["n"]), int(dd["n"]),
 			dr["diff"], dd["diff"], df, dfx])
+
+	# 4d. ...AND SOMETHING ACTUALLY RENDERS IT.
+	#
+	# Every clause above reads `DETAIL` out of the table. Not one of them asks whether
+	# the band is ever PHOTOGRAPHED, and eleven of the first fourteen rows shipped
+	# exactly that way — seated, proud, quiet, recorded, and outside every frame this
+	# project takes, verified only in a painter mock with no FILMIC, no lighting and no
+	# perspective. The second pass would have repeated it at three times the scale: 22
+	# of its 24 rows were on weapons with no scenario at all.
+	#
+	# THE CONSUMER DRIVES IT, which is the shape CLAUDE.md asks of a cross-package
+	# contract. It reads `shot_setup.registry()` — the same dictionary `--frames-list`
+	# and the golden-file audit read — and not a second roster kept alongside it, so
+	# deleting a scenario reddens this rather than quietly shrinking what is covered.
+	# It is a claim about the GATE, not about a frame, so it belongs in `--verify`:
+	# nothing here renders, and it says so.
+	var unphotographed := ""
+	var reg: Dictionary = SHOT_SETUP.registry()
+	for key: String in GUNART.keys():
+		var drows: Array = GUNART.DETAIL.get(key, [])
+		if drows.is_empty() or reg.has(key) or key in DETAIL_SEEN_WITHOUT_SCENARIO:
+			continue
+		unphotographed += "%s(%d) " % [key, drows.size()]
+	v.check("every weapon carrying detail rows is photographed by some scenario",
+		unphotographed.is_empty(),
+		"detail rows no frame ever sees: %s" % unphotographed)
 
 	# 5. And the register is honest. THIS IS THE ONE THAT WOULD OTHERWISE BE A SKIP
 	# THAT PASSES: `DEPARTURES` is legitimately empty, so a validator run over it alone

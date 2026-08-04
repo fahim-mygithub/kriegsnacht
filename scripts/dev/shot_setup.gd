@@ -191,6 +191,22 @@ const LAMP_ROOM := 0
 const VM_RECT_HIP := Rect2i(770, 470, 190, 200)
 const VM_RECT_ADS := Rect2i(600, 359, 80, 177)
 
+## And the knife's, which is a THIRD pose and not either of the two above.
+##
+## MEASURED 2026-08-04 at 1280x720 off the printed silhouette box, the same ruler and
+## the same 6 px pad as the two above: `--frames knife` reports `x 715..894 y 512..652
+## (17389 px over 141 rows)`. It is 55 px left of `VM_RECT_HIP`'s own left edge, so
+## reusing the hip rect here would have cropped 31% of the blade's width and made up
+## the difference with bare wall — a mean measured over the wrong thing, which is the
+## precise failure `VM_RECT_ADS`'s note above records for the ads pose.
+##
+## The knife sits left because `MELEE_X` sweeps it there: the shutter lands on the
+## first frame `_shown_key` is the knife, one frame past the settle floor, where
+## `sin((1 - _melee_t/MELEE_TIME)*PI)` is about 0.095 and the blade is already moving.
+## That is a REPRODUCIBLE pose under `--fixed-fps 60` and not a race — the arrival
+## predicate, not a frame count, decides it.
+const VM_RECT_MELEE := Rect2i(709, 506, 191, 152)
+
 ## The hip viewmodel's silhouette with margin, for probes that must look at the
 ## WORLD and not at the gun in front of it. Deliberately a SECOND constant rather
 ## than a widened `VM_RECT_HIP`, and the distinction is the reason both exist:
@@ -271,6 +287,10 @@ static var _bolt: Node3D = null
 ## Reset by their own `fn`, so a scenario cannot inherit it — even though one
 ## process only ever runs one scenario (see `--frames` in main.gd).
 static var _flash_fired := false
+## The same latch for the knife's swing, and the same reason — `_knife()` refuses a
+## press on its own 0.55 s cooldown, so an unlatched predicate would swing once and
+## then quietly re-arm nothing while the shutter waited.
+static var _knife_swung := false
 
 static var _reg: Dictionary = {}
 
@@ -313,21 +333,64 @@ static func registry() -> Dictionary:
 			"fn": _spawn, "settle": 0.35,   # 21 frames at 60
 			"why": "the default view, byte-for-byte the frame plain --shot takes",
 		},
-		# THE THREE THE GATE COULD NOT SEE — see `_gun_view`. Same 0.35 s budget as
+		# THE ELEVEN THE GATE COULD NOT SEE — see `_gun_view`. Same 0.35 s budget as
 		# `spawn` and for the same reason: identical static pose, and it was measured
 		# byte-identical between a 0.35 s budget and a 0.14 s one. Each is `spawn`
 		# with one thing changed, so `mp40.mean / spawn.mean` isolates the weapon.
+		#
+		# ELEVEN AND NOT THIRTEEN. The M1911 is the starting weapon and is already in
+		# `spawn`, `downed`, `ads`, `flash_hip` and `flash_ads`; the Ray Gun has had its
+		# own scenario since before the detail band, and its two fins are in that frame.
+		# Adding a second scenario for either would photograph a gun this gate already
+		# holds a blessed row for, which is cost with no coverage behind it.
+		# EVERY ONE OF THESE CARRIES AN `until`, and it is not the "crisp end state"
+		# argument the paragraph above makes for the other five — it is `_gun_up`, which
+		# refuses to photograph a weapon the scenario is not named for. A silent
+		# `give_gun` no-op is the failure it was written for; see there.
 		"mp40": {
-			"fn": _mp40, "settle": 0.35,
+			"fn": _mp40, "settle": 0.35, "until": _gun_up.bind("mp40"),
 			"why": "the MP40 in the hand, so its detail rows are inside a gate",
 		},
 		"stakeout": {
-			"fn": _stakeout, "settle": 0.35,
+			"fn": _stakeout, "settle": 0.35, "until": _gun_up.bind("stakeout"),
 			"why": "the Stakeout in the hand, so its detail rows are inside a gate",
 		},
 		"rpk": {
-			"fn": _rpk, "settle": 0.35,
+			"fn": _rpk, "settle": 0.35, "until": _gun_up.bind("rpk"),
 			"why": "the RPK in the hand, so its detail rows are inside a gate",
+		},
+		"olympia": {
+			"fn": _olympia, "settle": 0.35, "until": _gun_up.bind("olympia"),
+			"why": "the Olympia in the hand, so its detail rows are inside a gate",
+		},
+		"m14": {
+			"fn": _m14, "settle": 0.35, "until": _gun_up.bind("m14"),
+			"why": "the M14 in the hand, so its detail rows are inside a gate",
+		},
+		"pm63": {
+			"fn": _pm63, "settle": 0.35, "until": _gun_up.bind("pm63"),
+			"why": "the PM63 in the hand, so its detail rows are inside a gate",
+		},
+		"ak74u": {
+			"fn": _ak74u, "settle": 0.35, "until": _gun_up.bind("ak74u"),
+			"why": "the AK74u in the hand, so its detail rows are inside a gate",
+		},
+		"m16": {
+			"fn": _m16, "settle": 0.35, "until": _gun_up.bind("m16"),
+			"why": "the M16 in the hand, so its detail rows are inside a gate",
+		},
+		"chinalake": {
+			"fn": _chinalake, "settle": 0.35, "until": _gun_up.bind("chinalake"),
+			"why": "the China Lake in the hand, so its detail rows are inside a gate",
+		},
+		"thundergun": {
+			"fn": _thundergun, "settle": 0.35, "until": _gun_up.bind("thundergun"),
+			"why": "the Thundergun in the hand, so its one detail row is inside a gate",
+		},
+		# The knife is swung, not handed over — its predicate is the thing that swings.
+		"knife": {
+			"fn": _knife, "settle": 0.35, "until": _knife_up,
+			"why": "the knife mid-swing, the only pose it is ever drawn in",
 		},
 		# The powered/unpowered PAIR, and they exist as a pair on purpose. An
 		# absolute golden row for "the lit map" has to be re-blessed every time
@@ -637,16 +700,61 @@ static func _spawn(main: Node3D) -> void:
 
 
 ## THE THREE WEAPONS THE GATE COULD NOT SEE. `give_gun` was called exactly once in
-## this whole file — by `_raygun` — so every other scenario ran the starting M1911,
-## and the Ray Gun is the one weapon carrying no detail rows. MEASURED when the
-## detail band landed: with the MP40, Stakeout and RPK rows in the table and only the
-## M1911's removed, `downed` reproduced its committed golden row bit for bit. Eleven
-## of fourteen rows sat outside every gate the project has, verified only in a
-## painter mock with no FILMIC, no lighting and no perspective.
+## this whole file — by `_raygun` — so every other scenario ran the starting M1911.
+## MEASURED when the detail band landed: with the MP40, Stakeout and RPK rows in the
+## table and only the M1911's removed, `downed` reproduced its committed golden row
+## bit for bit. Eleven of fourteen rows sat outside every gate the project has,
+## verified only in a painter mock with no FILMIC, no lighting and no perspective.
+##
+## THE SECOND DETAIL PASS MADE THAT WORSE BEFORE IT MADE IT BETTER: it added 24 rows
+## across the nine remaining weapons, of which eight had no scenario at all, so 22 of
+## the 24 would have landed unphotographed. Hence the eight below. The rule this file
+## now runs on is simply: A WEAPON WITH DETAIL ROWS HAS A FRAME, and `checks/frame.gd`
+## is where that becomes an assertion rather than a habit.
 ##
 ## Framed exactly like `spawn` — same tile, same yaw, same light — so each is that
 ## weapon's own A/B against a frame the gate already holds, and the only difference
-## between the four is which gun is in frame.
+## between any two of them is which gun is in frame.
+## The scenarios that are `spawn` with a different weapon in the hand, and therefore
+## take `spawn`'s pose, `spawn`'s rect and `spawn`'s probes.
+##
+## ONE LIST, read by `registry()`, `probes_expected()`, `probe()` and
+## `silhouette_expected()`. A second roster kept beside this one is how a scenario
+## acquires a frame but not a measurement — which is the same class of hole as a
+## detail row that nothing photographs, one level down.
+##
+## `raygun` is NOT here although it is also a gun view: it predates this list and owns
+## a bolt probe of its own, and giving it the viewmodel probe instead would drop the
+## only measurement the Ray Gun's projectile has.
+const GUN_VIEWS := ["mp40", "stakeout", "rpk", "olympia", "m14", "pm63", "ak74u",
+	"m16", "chinalake", "thundergun"]
+
+## The knife, which is in every list the ten above are in and is NOT one of them: it
+## cannot be handed over, only swung. See `_knife_view`.
+const MELEE_VIEW := "knife"
+
+
+## EVERY GUN VIEW'S ARRIVAL PREDICATE: THE WEAPON ON SCREEN IS THE ONE THE SCENARIO IS
+## NAMED FOR. This is the check that should have existed before the scenarios did.
+##
+## `give_gun` is SILENT about failure. `weapons.gd` has no spec for a key it does not
+## know, so the call falls through and leaves whatever was already in hand. MEASURED,
+## and it is why this function exists: a first draft added a `knife` view that way and
+## produced a frame BYTE-IDENTICAL to `spawn` — mean 0.006661, median 0.000498, black
+## 0.7218, gun_mean 0.04933 and gun_px 21431, every one of them equal to `spawn`'s own.
+## It photographed the M1911 under the knife's name. Blessed, it would have become the
+## knife's baseline while the knife's three detail rows stayed outside every gate, and
+## `checks/frame.gd`'s "every weapon carrying detail rows is photographed by some
+## scenario" would have read GREEN over the hole it was written to close.
+##
+## Reads `viewmodel._shown_key` rather than `player.current_gun().key`, because the
+## MESH ON SCREEN is the subject and the two are allowed to differ: they differ for as
+## long as a raise takes, and during a melee they differ on purpose.
+static func _gun_up(main: Node3D, key: String) -> bool:
+	var vm: Node3D = main.viewmodel
+	return vm != null and is_instance_valid(vm) and String(vm._shown_key) == key
+
+
 static func _gun_view(main: Node3D, key: String) -> void:
 	_place(main, SPAWN_AT, 0.0)
 	var p: Player = main.player
@@ -663,6 +771,60 @@ static func _stakeout(main: Node3D) -> void:
 
 static func _rpk(main: Node3D) -> void:
 	_gun_view(main, "rpk")
+
+
+static func _olympia(main: Node3D) -> void:
+	_gun_view(main, "olympia")
+
+
+static func _m14(main: Node3D) -> void:
+	_gun_view(main, "m14")
+
+
+static func _pm63(main: Node3D) -> void:
+	_gun_view(main, "pm63")
+
+
+static func _ak74u(main: Node3D) -> void:
+	_gun_view(main, "ak74u")
+
+
+static func _m16(main: Node3D) -> void:
+	_gun_view(main, "m16")
+
+
+static func _chinalake(main: Node3D) -> void:
+	_gun_view(main, "chinalake")
+
+
+static func _thundergun(main: Node3D) -> void:
+	_gun_view(main, "thundergun")
+
+
+## THE KNIFE IS NOT A SLOT WEAPON. `weapons.gd` has no `knife` spec at all — grep it —
+## so there is no `give_gun` path to it and `_gun_view` cannot reach it. It arrives on
+## screen exactly one way: `viewmodel._apply()` shows it while `_melee_t > 0`, and
+## `_melee_t` is set by `swing_knife()` off `Player.knifed`.
+##
+## So the SCENARIO places the player and the PREDICATE swings, the same split and the
+## same reason as `_flash_hip`: the pose is transient, so the thing that starts it runs
+## on the frame the shutter is ready rather than a fixed number of frames earlier.
+## MELEE_TIME is 0.55 s, which is long next to the flash's 0.05, so this one is not
+## fighting for a frame — it waits for `_shown_key` to actually BE the knife, which is
+## a state the mesh swap has completed and not a guess about when it will.
+static func _knife(main: Node3D) -> void:
+	_knife_swung = false
+	_place(main, SPAWN_AT, 0.0)
+
+
+static func _knife_up(main: Node3D) -> bool:
+	if _gun_up(main, MELEE_VIEW):
+		return true
+	if _knife_swung:
+		return false
+	_knife_swung = true
+	main.player._knife()
+	return false
 
 
 static func _power_off(main: Node3D) -> void:
@@ -832,9 +994,14 @@ static func _item(main: Node3D, kind: String) -> Dictionary:
 ## gate. `downed` is the ONE scenario with no probe of its own: its whole subject
 ## is the frame's own statistics — dropped eye height, red overlay, forced pistol
 ## — and none of those has a rect worth naming.
+## THE ELEVEN GUN VIEWS ARE IN HERE, and they were not when they were first added —
+## eight scenarios that measured nothing but whole-frame statistics tipped
+## `checks/frame.gd`'s "more than half the scenarios declare a probe" gate to 9 of 21,
+## which is what caught it. Raising that ratio would have been the wrong repair: a
+## gun-in-hand frame has an obvious thing to measure, and it is the gun.
 static func probes_expected(name: String) -> bool:
 	return name in ["spawn", "ads", "horde", "trap_armed", "raygun",
-		"power", "power_off", "flash_hip", "flash_ads"]
+		"power", "power_off", "flash_hip", "flash_ads"] or name in GUN_VIEWS or name == MELEE_VIEW
 
 
 ## EVERY PROBE HERE READS THE LIVE SCENE, so it must run on the frame it is
@@ -847,6 +1014,13 @@ static func probes_expected(name: String) -> bool:
 ## So the split is deliberate: this runs first, against the world that produced
 ## `img`, and `probe_silhouette` runs after, against two images and nothing else.
 static func probe(name: String, main: Node3D, img: Image) -> Dictionary:
+	# Every gun view is `spawn` with one thing changed, so it is measured in `spawn`'s
+	# own rect — which is what makes `mp40.probes.gun_mean / spawn.probes.gun_mean` a
+	# statement about the WEAPON and not about where the rig happened to put it.
+	if name == MELEE_VIEW:
+		return _probe_viewmodel(img, VM_RECT_MELEE)
+	if name in GUN_VIEWS:
+		return _probe_viewmodel(img, VM_RECT_HIP)
 	match name:
 		"spawn":
 			return _probe_viewmodel(img, VM_RECT_HIP)
@@ -872,8 +1046,16 @@ static func probe(name: String, main: Node3D, img: Image) -> Dictionary:
 ##
 ## `spawn` and `ads` are the two poses the rig has, and between them they cover
 ## every screen position the weapon ever occupies.
+##
+## AND EVERY GUN VIEW, because `gun_px` is the consumer-side proof of `seat`. A detail
+## row is required to be drawn INSIDE a part the weapon already has, so it must not
+## change the silhouette by one pixel — while `gun_mean`, measured over the same box,
+## has to move or the row is not being rendered at all. Those two together are the
+## check the detail band actually wants and neither exists in `--verify`, which has no
+## rendering device. `detail_rules()`'s `seat` clause asserts the CLAIM; this measures
+## the consequence.
 static func silhouette_expected(name: String) -> bool:
-	return name in ["spawn", "ads"]
+	return name in ["spawn", "ads"] or name in GUN_VIEWS or name == MELEE_VIEW
 
 
 static func probe_silhouette(name: String, img: Image, bare: Image) -> Dictionary:
