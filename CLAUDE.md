@@ -18,7 +18,14 @@ has the incidents; this file has the rules that came out of them.
   one branch of outright dead code.
 
 Cite line numbers. They drift: several citations in `notes/` were off by two to
-thirty lines and were corrected by agents who checked. Check yours.
+thirty lines and were corrected by agents who checked. Check yours — and once you have
+inserted lines into a file, check the citations pointing **into** it from everywhere
+else, not only the ones you wrote. One package shifted `frame.gd` by +5 and `verify.gd`
+by +23 and broke twelve live-code citations in five files it never opened, while
+reporting that it had audited its own. One exception, and it bites: a **measured
+runtime output** — the line a parse gate aborts at, say — names the file as it stands
+and must not be shifted like a content reference. Mapping one mechanically is how the
+audit itself introduced an error.
 
 **A departure from the ancestor that is not recorded as a deliberate departure is
 wrong even when the departure is right.** The mystery box drawing its result at
@@ -58,6 +65,14 @@ its comment it reads as an accident.
 7. **`scripts/world/los.gd` is the only line-of-sight test.** Four callers must agree;
    when they disagree it is invisible until something dies through a wall. Do not
    write a fifth.
+8. **`core.autocrlf` is true and there is no `.gitattributes`.** Tracked text is LF in
+   the index and CRLF in a fresh working copy; `kriegsnacht.html` is LF here only
+   because it predates the setting, and `git ls-files --eol` shows it disagreeing with
+   every `.gd` beside it. So **never pin the sha of raw file bytes** — a byte pin is
+   green in this checkout and red on every clone, worktree and CI run, and
+   `tools/build.ps1` gates the export on `--verify`, so it breaks the build for
+   everyone but you. Fold `\r\n` to `\n` first, as `tools/gen/extract.js:436` already
+   does. MEASURED: 139 769 bytes here against 143 245 from `git checkout-index`.
 
 ---
 
@@ -87,6 +102,38 @@ its comment it reads as an accident.
 
 ---
 
+## Sizing the work
+
+The rules below are expensive. Applying them at full strength to a small fix has cost
+this project hours for no visible change, and that is a defect in the process rather
+than diligence.
+
+**Say the price before paying it.** A change that meets the assertion standard in this
+file — control, provenance, bounded at both ends — routinely costs several times the
+fix it protects. That is the right trade for a subsystem the game depends on and the
+wrong one for a comment. When the two readings differ by an order of magnitude, state
+both and let the human pick. Choosing silently is how one hollow assertion became
+~3.3 hours and 3.2M agent tokens against a suite that ended five assertions better and
+a game that did not change at all.
+
+**Prove the blocker before removing it.** Work justified by "X blocks Y" needs a
+demonstration that removing X unblocks Y, and that demonstration is nearly always
+cheap. `ANCESTOR_PARTS` was named as what blocked the weapon-model revisions. It was
+replaced in full, correctly, and the models were still blocked — the actual barrier is
+`ART`'s cardinality rule and always was. Five minutes of testing up front would have
+replaced the whole package with a sentence.
+
+**Count the cleanup.** A package that introduces a build break, a self-comparing
+assertion and twelve stale citations spends its second half repairing its first. When
+much of the effort is going into damage the work itself caused, stop and re-scope
+instead of pressing on.
+
+**Scale the machinery to the target.** Twelve agents on one assertion found two real
+defects and manufactured three. More reviewers stops buying correctness once the
+reviewers outnumber the thing reviewed.
+
+---
+
 ## Testing: the rules that matter
 
 The suite is ~483 assertions and it has been green while six real defects shipped.
@@ -113,6 +160,21 @@ Every one of those failures reached *around* the code under test — read the di
 instead of the loader, recomputed the formula instead of driving the function, queried
 the getter instead of the consumer. **A test that does not call what the game calls is
 testing a copy.**
+
+### Both sides of a comparison may not be one source
+
+An assertion whose expectation and whose subject come from the same constant cannot
+fail. A check named for the iron sights passed `GUNART.SIGHTS` in as the expectation
+against a walk that already *was* `ART + SIGHTS`, so every edit moved both sides
+together — a destroyed M16 front tower, reversed RPK sight rows and a magenta M14
+front post each passed the whole 789-assertion suite. Ask of every check where its
+expected value comes from, and whether the edit you are guarding against moves that too.
+
+The same shape hides in a check *named* for a structure that *implements* a scalar.
+`ANCESTOR_PARTS` compared thirteen integers under a name claiming part-for-part
+fidelity, so it saw a part added or removed and nothing else: blind to 406 numeric
+fields, 101 colours and every reordering — and a reorder is not cosmetic, because
+`SLIDE` indexes `ART` positionally and so it moves which part reciprocates.
 
 ### Provenance, not snapshots
 
