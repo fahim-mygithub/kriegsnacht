@@ -339,6 +339,46 @@ const DIP_RATE := 6.0
 ## and will not notice.
 const SHELL_SCALE := 0.35
 
+## How far back along the weapon's own axis the support hand travels at `hand` = 1,
+## in metres. **+z is toward the STOCK** — `gunart.gd:1604` maps canvas x, which
+## increases toward the stock, onto local z — so this carries the hand off the
+## fore-end and back toward the magazine well, which is where the work is.
+##
+## 0.0147 m is 14 canvas units at `GUNART.UNIT`, written as the metres rather than
+## the product because a `const` here has to be a constant expression and this
+## project builds the alternative as a hard parse error.
+##
+## **AND THE CEILING IS MEASURED, because a metric that does not move at one value
+## proves nothing about the next.** Sweeping this constant and reading the clip
+## metrics out of a forced-red `--verify` at six decimals:
+##
+##     reach      widest      nearest
+##     0.0000     0.231964    0.057188
+##     0.0147     0.231964    0.057188   <- shipped
+##     0.0300     0.231964    0.057188
+##     0.0500     0.231964    0.057188
+##     0.0800     0.231964    0.039018   <- the hand is now the nearest point,
+##                                          and it is THROUGH the 0.050 near plane
+##
+## `widest` never moves at all: +z carries the glove toward the stock and away from
+## the muzzle tip that sets it. `nearest` is the binding metric, because the stock is
+## what sits closest to the camera and the hand is walking toward it. Flat until the
+## hand overtakes the M14's stock at about 0.062, crossing the near plane at about
+## **0.069** — so the shipped 0.0147 is 4.7x under the hard ceiling and the gate has
+## not merely passed, it has room. That is the number stage 7 should budget against.
+##
+## Fourteen rather than the ~45 a real reach to a magazine well would be, for a
+## reason the clip budget has no opinion on: the gloves are drawn ON the weapon, so a
+## hand taken that far uncovers fore-end area `GUNART.DETAIL` was never authored for.
+## Widening it is a decision that needs a PNG and not an argument.
+##
+## **AXIAL ONLY, DELIBERATELY.** A vertical or rotational component would need the
+## clip sweep to gain a Vector3 offset or a fifth entry in `arcs()`; a pure z offset
+## is exactly what `_collect` already takes for slide travel, so the sweep bounds the
+## hand EXACTLY at both endpoints rather than by a conservative scalar. The drop and
+## the roll are a later stage and they are a later stage for that reason.
+const SUPPORT_REACH := 0.0147
+
 ## `if(P.swapT>0) y += (P.swapT/0.45)*cssH*0.42` (html:3136) — the weapon rises
 ## into frame out of the bottom of the screen over the swap window. The port reads
 ## the fraction off `state_t/state_len` instead of off a hard-coded 0.45, which is
@@ -609,6 +649,11 @@ var _kick := 0.0
 var _kick_v := 0.0
 
 var _dip := 0.0                   # 0..1, the reload arc
+## 0..1, the support hand's own reload channel — `reload.gd`'s second column. Kept
+## apart from `_dip` rather than derived from it because the two genuinely disagree:
+## a tube reload holds the weapon almost still at the port (`SHELL_SCALE`) while the
+## hand does the whole journey shell after shell, which is the motion it IS.
+var _hand := 0.0
 var _swap := 0.0                  # metres
 var _sprint := 0.0                # metres
 var _melee_t := 0.0
@@ -976,8 +1021,14 @@ func _tick_states(dt: float) -> void:
 	var seg := RELOAD.segment(gun)
 	if seg == RELOAD.NONE:
 		_dip = _settle(_dip, 0.0, DIP_RATE, dt)
+		# The hand comes home on the same rate for the same reason: a cancelled reload
+		# has no clock to index a track with, and a hand left parked at the magazine
+		# well through the next magazine is the visible half of that.
+		_hand = _settle(_hand, 0.0, DIP_RATE, dt)
 	else:
-		_dip = _drive(RELOAD.script_for(gun.key), seg, done)
+		var pose := _drive(RELOAD.script_for(gun.key), seg, done)
+		_dip = pose.x
+		_hand = pose.y
 
 	var swap := 0.0
 	if state == WEAPON.State.SWAPPING:
@@ -1106,12 +1157,19 @@ static func _settle(cur: float, target: float, rate: float, dt: float) -> float:
 ## **10 times** in a Pack-a-Punched nine-shell one, once per segment, every time.
 ## That count is the actual defect and it is what `checks/systems.gd` asserts on;
 ## the rate limit is a real but secondary distortion of the shape on the way there.
-static func _drive(script: int, seg: int, phase: float) -> float:
+static func _drive(script: int, seg: int, phase: float) -> Vector2:
 	# THE ONE SITE `SHELL_SCALE` IS READ. A magazine reload is authored at full
 	# amplitude and a shell reload is the same tables scaled, so the two families
 	# stay comparable row for row in `reload.gd` — see the constant.
 	var amp := 1.0 if seg == RELOAD.WHOLE else SHELL_SCALE
-	return RELOAD.sample(script, seg, phase).x * amp
+	var s := RELOAD.sample(script, seg, phase)
+	# **AND THE HAND IS NOT SCALED.** `SHELL_SCALE` says a shell going into a tube
+	# barely moves the WEAPON, which is true and is why the dip carries it. It says
+	# nothing about the hand: the reach to the loading port is the same reach whether
+	# the weapon nods with it or not, and scaling it here would have the tube family's
+	# hand twitching 5 mm while its own table asks for the whole journey. The two
+	# columns are different quantities and this is the line that keeps them so.
+	return Vector2(s.x * amp, s.y)
 
 
 func _tick_flash(dt: float) -> void:
@@ -1163,14 +1221,17 @@ func _apply() -> void:
 	_mesh.transform = _mesh_pose(_kick, _dip, _swap + _sprint, melee, _player.ads(),
 		_sight)
 	_slide.position = Vector3(0.0, 0.0, _slide_offset())
-	# THE SUPPORT HAND IS ANIMATION-INERT IN THIS STAGE, and this line is the claim.
-	# Written rather than left at whatever `MeshInstance3D.new()` happened to give,
-	# because "nobody has touched it" and "one writer writes it, and writes identity"
-	# are different guarantees and only the second survives a second writer appearing.
-	# It is also the seam the reload keyframes land on: when a segment pose arrives it
-	# replaces THIS expression, so the check that pins it to identity is the check that
-	# will go red the day it starts moving — which is exactly when someone should look.
-	_support.transform = Transform3D.IDENTITY
+	# AND THIS IS THAT DAY. The line this replaces pinned the support hand to identity
+	# and said in as many words that the check guarding it would go red when the hand
+	# started moving; it did, and that is the whole of the notice this needed.
+	#
+	# A pure translation along the weapon's own axis, so the node stays a child of
+	# `_mesh` and inherits the entire weapon pose — the hand travels WITH the dip, not
+	# instead of it. `sweep()` bounds it by collecting the same corners at 0 and at
+	# `SUPPORT_REACH`, which is exact rather than conservative because there is no
+	# rotation here to circumscribe.
+	_support.transform = Transform3D(Basis.IDENTITY,
+		Vector3(0.0, 0.0, _hand * SUPPORT_REACH))
 
 
 ## The WeaponMesh's whole local transform, as a pure function of the five pose
@@ -1451,8 +1512,14 @@ func sweep(interior: bool) -> Vector3:
 		# came out of `body_corners` itself; taking them separately at zero offset
 		# makes the pool below IDENTICAL to the pre-split one, which is what keeps
 		# every clip figure a statement about the same weapon it was measured on.
-		# Zero offset because this stage poses the hand at identity — the day it moves,
-		# this call gains that motion's endpoints and this comment is where to start.
+		#
+		# THE HAND MOVES NOW, so this is collected at BOTH of its endpoints below. The
+		# motion is a pure translation along z, which is the one thing `_collect`'s
+		# offset already expresses — so these are the true extremes and not a bound
+		# around them, and the clip guarantee covers the animated hand as exactly as it
+		# covers the static weapon. A vertical or rotational component would not fit
+		# through this parameter, which is the machinery reason `SUPPORT_REACH` is
+		# axial and the design reason is written there.
 		var support: PackedVector3Array = GUNART.support_corners(key)
 		# THE TRAP THIS LINE EXISTS TO CLOSE. This used to be the global
 		# `SLIDE_TRAVEL`, and travel is per weapon now. Every component of `_extreme`
@@ -1471,6 +1538,10 @@ func sweep(interior: bool) -> Vector3:
 		# question is put to `into` itself, either side of the call.
 		var pooled := into.size()
 		_collect(support, into, 0.0)
+		# The rest pose and the work pose, both into the same pool. Measured across the
+		# PAIR, so dropping either call halves the readout — which is what makes this a
+		# count of what was swept rather than of what was intended.
+		_collect(support, into, SUPPORT_REACH)
 		_swept_support[key] = into.size() - pooled
 		# The readout is the RETURN of the collect and not a copy of its argument,
 		# deliberately: a `_swept[key] = travel` beside a deleted `_collect` would go

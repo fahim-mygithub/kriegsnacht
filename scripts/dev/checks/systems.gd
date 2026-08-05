@@ -1665,6 +1665,7 @@ static func _reload_timeline(v: Verify, main: Node3D) -> void:
 	_reload_amplitude(v, main)
 	_reload_seams(v, main)
 	_reload_beat(v)
+	_reload_hand(v, main)
 
 
 ## The floor a driven reload's peak has to clear, as a fraction of the rig's OWN
@@ -1869,12 +1870,21 @@ static func _reload_table(v: Verify) -> void:
 					continue
 				var p := float(k[0])
 				var d := float(k[1])
+				var h := float(k[2])
 				if p <= last_p:
 					bad += "%d/%s phase %.3f does not follow %.3f " % [
 						script_id, _seg_name(seg), p, last_p]
 				last_p = p
 				if d < 0.0 or d > 1.0:
 					bad += "%d/%s dip %.3f outside [0,1] " % [script_id, _seg_name(seg), d]
+				# THE HAND COLUMN'S BOUND IS THE HARDER OF THE TWO, and it is bounded for
+				# a different reason. A dip outside [0, 1] leaves the pose the four
+				# M-VMCLIP assertions swept; a HAND outside it leaves the two DISCRETE
+				# offsets `viewmodel.gd::sweep()` collects the glove's corners at, and
+				# there is no interpolation between them to be conservative on the
+				# reader's behalf. Nothing else in the project can see that.
+				if h < 0.0 or h > 1.0:
+					bad += "%d/%s hand %.3f outside [0,1] " % [script_id, _seg_name(seg), h]
 			if knots.size() < 2 or not is_equal_approx(float(knots[0][0]), 0.0) \
 					or not is_equal_approx(float(knots[-1][0]), 1.0):
 				bad += "%d/%s does not span phase 0..1 " % [script_id, _seg_name(seg)]
@@ -1895,6 +1905,9 @@ static func _reload_table(v: Verify) -> void:
 				if s.x < 0.0 or s.x > 1.0:
 					bad += "sample(%d,%s,%.3f).dip = %.4f " % [
 						script_id, _seg_name(seg), p, s.x]
+				if s.y < 0.0 or s.y > 1.0:
+					bad += "sample(%d,%s,%.3f).hand = %.4f " % [
+						script_id, _seg_name(seg), p, s.y]
 
 	# THE FALLBACK IS A SAFETY NET AND NOT A SUPPORTED STATE, which is only true if
 	# something refuses the omission. The roster is `Weapons.TABLE` — a different
@@ -2260,11 +2273,17 @@ static func _reload_seams(v: Verify, main: Node3D) -> void:
 	var script: int = RELOAD.script_for("stakeout")
 	var bad := ""
 	for i in range(1, seq.size()):
-		var a: float = RELOAD.sample(script, seq[i - 1], 1.0).x
-		var b: float = RELOAD.sample(script, seq[i], 0.0).x
-		if not is_equal_approx(a, b):
-			bad += "%s ends %.4f then %s starts %.4f " % [
-				_seg_name(seq[i - 1]), a, _seg_name(seq[i]), b]
+		# BOTH COLUMNS. The hand's seams are the ones that matter more, because
+		# `HAND_HELD` and `HELD` are different numbers and a reader fixing one seam has
+		# every opportunity to fix only half of it.
+		var a: Vector2 = RELOAD.sample(script, seq[i - 1], 1.0)
+		var b: Vector2 = RELOAD.sample(script, seq[i], 0.0)
+		if not is_equal_approx(a.x, b.x):
+			bad += "%s ends dip %.4f then %s starts %.4f " % [
+				_seg_name(seq[i - 1]), a.x, _seg_name(seq[i]), b.x]
+		if not is_equal_approx(a.y, b.y):
+			bad += "%s ends hand %.4f then %s starts %.4f " % [
+				_seg_name(seq[i - 1]), a.y, _seg_name(seq[i]), b.y]
 	v.check("every segment of a shell reload starts where the one before it ended",
 		bad.is_empty() and seq.size() == cap + 1,
 		"%d seams over %s; %s" % [maxi(0, seq.size() - 1), _seq_names(seq), bad])
@@ -2314,6 +2333,74 @@ static func _reload_beat(v: Verify) -> void:
 		beat > 0.0,
 		"beat %.4f off a park of %.4f, i.e. %.2f%% of a magazine dip through SHELL_SCALE %.2f" % [
 			beat, park, beat * VIEWMODEL.SHELL_SCALE * 100.0, VIEWMODEL.SHELL_SCALE])
+
+
+## THE SUPPORT HAND ACTUALLY GOES SOMEWHERE, off the node the renderer is handed.
+##
+## The consumer-driven half of the hand column, and the counterpart to
+## `_reload_amplitude`: that one proves the WEAPON moves and this one proves the
+## GLOVE does, because the two are driven from different columns through different
+## code paths and either can die without the other noticing. `_support_hand` pins the
+## transform at both ends of the channel; this drives a real reload and asserts the
+## channel is reached at all.
+##
+## **READ OFF `_support.global_transform`, NOT off `vm._hand`.** The float is the
+## input; the node is what the player sees, and between them sits `_apply()` — which
+## is exactly where stage 2's `Transform3D.IDENTITY` sat for a whole stage. Measured
+## against the SAME weapon's rest pose so the weapon's own dip cancels: what is left
+## is the hand's travel relative to the gun it is holding, which is the motion.
+##
+## Two families and both of them, for the reason `_reload_phase_not_seconds` runs two
+## weapons: the M14 drives `WHOLE` and the Stakeout drives `OPEN`/`EACH`/`CLOSE`, and
+## the tube family is the one whose hand is NOT scaled by `SHELL_SCALE` — so a rig
+## that scaled it after all would show up here as a tube hand that had shrunk to a
+## third while the magazine hand was untouched.
+##
+## MEASURED healthy: both reach 0.014700 m, which is `SUPPORT_REACH` exactly — every
+## archetype's hand column is authored to touch 1.00 somewhere.
+static func _reload_hand(v: Verify, main: Node3D) -> void:
+	var p: Player = main.player
+	var reach: float = VIEWMODEL.SUPPORT_REACH
+	var bad := ""
+	var told := ""
+	for key: String in ["m14", "stakeout"]:
+		var vm := _equip(main, key)
+		var gun: Dictionary = p.current_gun()
+		gun.mag = 0
+		gun.res = int(Weapons.TABLE[key].mag) * 4
+		p._fire_held = false
+		p._fire_buffer = 0.0
+		vm._dip = 0.0
+		vm._hand = 0.0
+		for i in 20:
+			vm._process(STEP)
+		# The glove's world position at rest, and the weapon's with it. Subtracting the
+		# second from the first each tick is what removes the dip from the answer.
+		var rest_hand: Vector3 = vm._support.global_transform.origin
+		var rest_mesh: Vector3 = vm._mesh.global_transform.origin
+		p._start_reload()
+		var peak := 0.0
+		var guard := 0
+		while guard < 2400 and RELOAD.segment(gun) != RELOAD.NONE:
+			p._update_fire(STEP)
+			vm._process(STEP)
+			guard += 1
+			var rel: Vector3 = (vm._support.global_transform.origin - rest_hand) \
+				- (vm._mesh.global_transform.origin - rest_mesh)
+			peak = maxf(peak, rel.length())
+		# Both ends: the hand has to get most of the way out (a column authored shallow,
+		# or a rig that dropped the multiply, fails here) and it may not exceed the
+		# reach at all, because past it the glove is outside both offsets `sweep()`
+		# collected and the clip guarantee stops being a statement about this pose.
+		if peak < reach * 0.9 or peak > reach + 1e-6:
+			bad += key + " "
+		told += "%s peak %.6f m of SUPPORT_REACH %.6f; " % [key, peak, reach]
+	v.check("a real reload carries the support hand out to its reach and no further",
+		bad.is_empty(), "failed on %s-- %s" % [bad, told])
+	main.viewmodel._hand = 0.0
+	main.viewmodel._dip = 0.0
+	p._fire_held = false
+	p._fire_buffer = 0.0
 
 
 ## The arc construction, in three parts: it is CORRECT, it is SOLVED rather than
@@ -2581,20 +2668,35 @@ static func _ads_asymmetry(v: Verify, main: Node3D) -> void:
 ## the same call would move with it and could not fail.
 const SUPPORT_CORNERS := 16
 
-## The support hand, in the rig rather than in the tables: **it is inert, it is on
-## the ten weapons the ancestor draws it on, and the clip sweep still sees it.**
+## ...and the sweep now takes them TWICE, at `hand` 0 and at `hand` 1. Kept as two
+## numbers multiplied rather than a single 32 so that the reason the count doubled is
+## in the count: drop either `_collect` and this halves.
+const SUPPORT_POSES := 2
+
+## The support hand, in the rig rather than in the tables: **it rests where the
+## ancestor drew it, it MOVES when a reload is running, it is on the ten weapons the
+## ancestor draws it on, and the clip sweep still sees it at both poses.**
 ##
 ## `checks/frame.gd` proves the geometry is the ancestor's and that the split lost no
-## corners. None of that says anything about the node the renderer is handed, and the
-## split is only safe if that node draws where `build_body` used to draw it.
+## corners. None of that says anything about the node the renderer is handed.
 ##
-## EXACT EQUALITY, and `is_equal_approx` would be the wrong tool here rather than a
-## looser one. The claim is not "the hand is roughly where it was", it is "nothing
-## writes this transform yet" — a claim about code, not about a distance — and a
-## tolerance would pass a reload pose that had landed with a small amplitude, which is
-## precisely the state this stage must not ship in. Swept at both ends of the sights
-## because `_apply()` recomputes the whole pose from `_player.ads()` and a writer
-## added inside the ADS branch would be invisible at the hip.
+## **THIS CHECK USED TO ASSERT IDENTITY AND NOTHING ELSE, AND THAT IS WHY IT IS HERE
+## TO BE REWRITTEN.** The stage that split the hand out pinned the transform and said
+## in its own comment that the check guarding the pin was the one that would go red
+## the day the hand started moving. It would NOT have: at rest `_hand` is 0 and
+## `Vector3(0, 0, 0 * SUPPORT_REACH)` is the zero vector, so the identity assertion
+## stays perfectly green beside a fully animated hand and would have gone on reporting
+## an inert rig forever. Recorded because the trap is not the pin — it is that a
+## refusal written against a channel that is currently zero cannot tell "nothing
+## writes this" from "the writer happens to be at rest".
+##
+## So both ends, and the moving end is what carries the claim: at `_hand` = 1 the
+## transform must be a pure translation of exactly `SUPPORT_REACH` along **+z** and
+## nothing on x, y or the basis — which is the whole of what makes the two-endpoint
+## sweep in `viewmodel.gd::sweep()` an exact bound rather than an optimistic one.
+## Swept at both ends of the sights because `_apply()` recomputes the entire pose from
+## `_player.ads()` and a writer added inside the ADS branch would be invisible at the
+## hip.
 static func _support_hand(v: Verify, main: Node3D) -> void:
 	var vm: Node3D = main.viewmodel
 	var p: Player = main.player
@@ -2602,7 +2704,9 @@ static func _support_hand(v: Verify, main: Node3D) -> void:
 	var key_was: String = vm._want_key
 	var pap_was: bool = vm._want_pap
 
+	var hand_was: float = vm._hand
 	var moved := ""
+	var stuck := ""
 	var mis_shown := ""
 	var two_handed := 0
 	for key: String in GUNART.keys():
@@ -2617,19 +2721,36 @@ static func _support_hand(v: Verify, main: Node3D) -> void:
 			two_handed += 1
 		for ads: float in [0.0, 1.0]:
 			p._ads = ads
+			# AT REST. `!=` on Transform3D is exact, and it stays exact: a 1e-4 nudge
+			# added to the write in `viewmodel._apply()` reddens this and nothing else.
+			vm._hand = 0.0
 			vm._apply()
-			# `!=` on Transform3D is exact. A 1e-4 nudge added to the write in
-			# `viewmodel._apply()` reddens this and nothing else in the suite.
 			if vm._support.transform != Transform3D.IDENTITY:
 				moved += "%s at ads %.0f: %s " % [key, ads, vm._support.transform]
+			# AT WORK, which is the half the old check could not have had. The expected
+			# vector is built from `SUPPORT_REACH` on the z axis alone, so a hand that
+			# gained a lateral or vertical term — the exact thing that would take it
+			# outside the two offsets `sweep()` collects at — fails here rather than
+			# silently voiding the clip guarantee.
+			vm._hand = 1.0
+			vm._apply()
+			var want := Transform3D(Basis.IDENTITY,
+				Vector3(0.0, 0.0, VIEWMODEL.SUPPORT_REACH))
+			if vm._support.transform != want:
+				stuck += "%s at ads %.0f: %s want %s " % [
+					key, ads, vm._support.transform, want]
+		vm._hand = 0.0
+		vm._apply()
 		# Bounded at both ends: the hand is SHOWN on the ten and HIDDEN on the three.
 		# Half of this — the refusal alone — would pass against a rig that had stopped
 		# building support hands at all.
 		var shown: bool = vm._support.visible and vm._support.mesh != null
 		if shown == one:
 			mis_shown += "%s one_handed=%s shown=%s " % [key, one, shown]
-	v.check("the support hand is pinned at identity on every weapon, at both ends of the sights",
+	v.check("the support hand rests at identity on every weapon, at both ends of the sights",
 		moved.is_empty(), moved)
+	v.check("the support hand travels exactly SUPPORT_REACH along the weapon axis and nowhere else",
+		stuck.is_empty(), stuck)
 	v.check("the support hand is drawn on exactly the ten two-handed weapons",
 		mis_shown.is_empty() and two_handed == 10,
 		"%d two-handed of %d; %s" % [two_handed, GUNART.keys().size(), mis_shown])
@@ -2644,11 +2765,11 @@ static func _support_hand(v: Verify, main: Node3D) -> void:
 	var swept: Dictionary = vm.swept_support()
 	var unswept := ""
 	for key: String in GUNART.keys():
-		var want := 0 if GUNART.ONE_HANDED.has(key) else SUPPORT_CORNERS
+		var want := 0 if GUNART.ONE_HANDED.has(key) else SUPPORT_CORNERS * SUPPORT_POSES
 		var got: int = int(swept.get(key, -1))
 		if got != want:
 			unswept += "%s swept %d want %d " % [key, got, want]
-	v.check("the clip sweep collected every two-handed weapon's support hand",
+	v.check("the clip sweep collected every two-handed weapon's support hand at both of its poses",
 		unswept.is_empty() and swept.size() == GUNART.keys().size(),
 		"%s(%d of %d)" % [unswept, swept.size(), GUNART.keys().size()])
 
@@ -2656,6 +2777,7 @@ static func _support_hand(v: Verify, main: Node3D) -> void:
 	# `_apply()` again, but it does not know about these three and `_ads` at 1.0 would
 	# leave every later reader of `_mesh.transform` measuring a sighted weapon.
 	p._ads = ads_was
+	vm._hand = hand_was
 	vm._on_weapon_changed({"key": key_was, "pap": pap_was})
 
 

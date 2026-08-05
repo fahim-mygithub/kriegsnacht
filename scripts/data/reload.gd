@@ -16,11 +16,24 @@ extends RefCounted
 ## scene tree, an `Rng` stream or global state; `scripts/entities/viewmodel.gd` is
 ## the rig.
 ##
-## **THE DIP COLUMN IS AUTHORED. THE HAND COLUMN IS NOT, AND IT IS HERE ANYWAY.**
-## Every knot is `[phase, dip, hand]` and every `hand` is 0.0. That is deliberate
-## and it is the cheapest insurance in this package: a later stage that animates the
-## off hand then adds DATA to rows that already exist, rather than a SCHEMA to a
-## table that by then has four readers. `sample()` already returns both columns.
+## **BOTH COLUMNS ARE AUTHORED NOW.** Every knot is `[phase, dip, hand]`. The hand
+## column shipped one stage empty, on purpose — adding DATA to rows that already
+## exist is cheaper and far safer than adding a SCHEMA to a table that by then had
+## four readers — and this is the stage that fills it.
+##
+## **THE TWO COLUMNS ARE DIFFERENT QUANTITIES AND ARE NOT DERIVED FROM EACH OTHER.**
+## `dip` is how far the WEAPON comes off the eye line; `hand` is how far the support
+## glove travels back along the weapon's own axis toward the work. They disagree most
+## exactly where the motion is most characteristic: a tube reload holds the weapon
+## almost still at the port — `viewmodel.gd`'s `SHELL_SCALE` scales the dip and
+## deliberately does NOT scale the hand — while the hand makes the whole journey once
+## per shell. A rig that drove one off the other would have the Stakeout's hand
+## twitching five millimetres through a six-shell reload.
+##
+## `hand` is 0 at the fore-end and 1 at `viewmodel.gd`'s `SUPPORT_REACH`, and the
+## bound matters more than the dip's does: the clip sweep collects the glove's
+## corners at exactly those two offsets, so a knot outside [0, 1] poses the hand
+## somewhere nothing was ever measured. `checks/systems.gd` refuses it.
 ##
 ## ---
 ##
@@ -157,6 +170,14 @@ const FALLBACK := TUBE
 ## of the magazine dip: a thumb pushing a shell in, not the weapon nodding.
 const HELD := 0.72
 
+## The same idea for the hand, and it needs its own number rather than sharing
+## `HELD`: the weapon parks at 0.72 of its dip between shells because it is being
+## held down, but the HAND parks much closer to its work — it never goes back to the
+## fore-end until the action is closed, which is the whole reason a tube reload looks
+## different from six magazine changes. 0.78 against `EACH`'s 1.00 peak makes the
+## per-shell hand beat 0.22, against the weapon's own 0.18.
+const HAND_HELD := 0.78
+
 ## `archetype -> segment kind -> [[phase, dip, hand], ...]`.
 ##
 ## Phase runs 0..1 across the segment's own clock, so **nothing in this table is in
@@ -183,24 +204,36 @@ const TRACKS := {
 			[0.70, 1.00, 0.0],  # THE SLAP. The deepest point, and it is late rather than central
 			[1.00, 0.00, 0.0],  # slide released, back to the eye
 		],
+		# THE HAND COLUMN STAYS ZERO HERE, and it is the one archetype where that is
+		# authored rather than left over. The M1911 is in `gunart.gd`'s `ONE_HANDED`,
+		# so it has no support glove in its mesh at all — `_support.visible` is false
+		# on it. A motion here would be data with no consumer, which is the shape this
+		# project has been bitten by; the pistol's off hand comes back the day the art
+		# gives it one.
 	},
 	BOX: {
 		WHOLE: [
-			[0.00, 0.00, 0.0],
-			[0.16, 0.88, 0.0],  # rocked down and inboard; the old magazine clears the well
-			[0.42, 0.70, 0.0],  # the reach. The weapon is steady precisely because the hand is away
-			[0.62, 1.00, 0.0],  # the fresh magazine seated — deepest, and again late
-			[0.80, 0.62, 0.0],  # the charging hand comes back over the top and the weapon lifts with it
-			[1.00, 0.00, 0.0],
+			[0.00, 0.00, 0.00],
+			# The hand LEADS the weapon out. It is already off the fore-end and onto the
+			# release by the time the muzzle has finished dropping, which is why the
+			# hand column peaks earlier than the dip does all the way down this table.
+			[0.16, 0.88, 0.85],  # rocked down and inboard; the old magazine clears the well
+			[0.42, 0.70, 1.00],  # the reach. The weapon is steady precisely because the hand is away
+			[0.62, 1.00, 0.90],  # the fresh magazine seated — deepest, and again late
+			[0.80, 0.62, 0.35],  # the charging hand comes back over the top and the weapon lifts with it
+			[1.00, 0.00, 0.00],
 		],
 	},
 	BREAK: {
 		WHOLE: [
-			[0.00, 0.00, 0.0],
-			[0.20, 1.00, 0.0],  # broken open in one motion, muzzles down, both hulls out together
-			[0.68, 0.94, 0.0],  # held open — two shells go in together, so there is no second beat
-			[0.86, 0.60, 0.0],  # snapped shut on the wrist, which lifts the weapon before the hands do
-			[1.00, 0.00, 0.0],
+			[0.00, 0.00, 0.00],
+			# Shallower than every other archetype's peak, and that is the gun: the
+			# support hand stays ON the fore-end to hinge the barrels down. It is the
+			# weapon that travels here, not the hand, which is the mirror of the tube.
+			[0.20, 1.00, 0.55],  # broken open in one motion, muzzles down, both hulls out together
+			[0.68, 0.94, 0.80],  # held open — two shells go in together, so there is no second beat
+			[0.86, 0.60, 0.20],  # snapped shut on the wrist, which lifts the weapon before the hands do
+			[1.00, 0.00, 0.00],
 		],
 	},
 	TUBE: {
@@ -209,48 +242,61 @@ const TRACKS := {
 		# beat per round rather than an arc. Four beats because the magazine is four
 		# (`weapons.gd:53`); it is the only unsegmented weapon this track serves.
 		WHOLE: [
-			[0.00, 0.00, 0.0],
-			[0.13, 0.84, 0.0],  # rolled over to the port
-			[0.28, 0.96, 0.0],  # round one
-			[0.42, 0.84, 0.0],
-			[0.54, 0.96, 0.0],  # round two
-			[0.64, 0.84, 0.0],
-			[0.74, 0.96, 0.0],  # round three
-			[0.82, 0.84, 0.0],
-			[0.88, 0.96, 0.0],  # round four, and the beats crowd as the hand learns the reach
-			[1.00, 0.00, 0.0],
+			[0.00, 0.00, 0.00],
+			[0.13, 0.84, 0.70],  # rolled over to the port
+			# The hand shuttles and the weapon only nods. Each round is a full trip out
+			# to the ammunition and back to the port, which is why the hand column
+			# swings 0.72..1.00 four times while the dip moves 0.84..0.96.
+			[0.28, 0.96, 1.00],  # round one
+			[0.42, 0.84, 0.72],
+			[0.54, 0.96, 1.00],  # round two
+			[0.64, 0.84, 0.72],
+			[0.74, 0.96, 1.00],  # round three
+			[0.82, 0.84, 0.72],
+			[0.88, 0.96, 1.00],  # round four, and the beats crowd as the hand learns the reach
+			[1.00, 0.00, 0.00],
 		],
 		OPEN: [
-			[0.00, 0.00, 0.0],  # at the eye
-			[0.34, 1.00, 0.0],  # rolled over and down to the port: the deepest the reload goes
-			[0.68, 0.78, 0.0],  # the first shell in — `begin_reload` credits it in this segment
-			[1.00, HELD, 0.0],  # AND THE WEAPON STAYS DOWN. It has five more to load
+			[0.00, 0.00, 0.00],  # at the eye
+			[0.34, 1.00, 0.60],  # rolled over and down to the port: the deepest the reload goes
+			[0.68, 0.78, 1.00],  # the first shell in — `begin_reload` credits it in this segment
+			# AND THE WEAPON STAYS DOWN. It has five more to load — and the hand stays
+			# NEARER its work than the weapon stays to its dip, which is what `HAND_HELD`
+			# is for. Both ends of this row are seams: `EACH` starts on them.
+			[1.00, HELD, HAND_HELD],
 		],
 		EACH: [
-			[0.00, HELD, 0.0],  # already at the port; nothing has to travel
-			[0.44, 0.90, 0.0],  # one shell thumbed in — a beat, not an arc
-			[1.00, HELD, 0.0],  # back to the working pose, NOT to the eye
+			[0.00, HELD, HAND_HELD],  # already at the port; nothing has to travel
+			# THE HAND IS THE ONE DOING THIS. 0.22 of hand travel against 0.18 of dip,
+			# and the dip is scaled by SHELL_SCALE afterwards while the hand is not — so
+			# on screen this beat is almost entirely the glove.
+			[0.44, 0.90, 1.00],  # one shell thumbed in — a beat, not an arc
+			[1.00, HELD, HAND_HELD],  # back to the working pose, NOT to the eye
 		],
 		CLOSE: [
-			[0.00, HELD, 0.0],
-			[0.26, 0.82, 0.0],  # the fore-end is worked; the weapon sets down as it is racked
-			[0.90, 0.00, 0.0],  # ...and back to the eye
+			[0.00, HELD, HAND_HELD],
+			[0.26, 0.82, 0.55],  # the fore-end is worked; the weapon sets down as it is racked
+			[0.90, 0.00, 0.00],  # ...and back to the eye
 			# THE FLAT TAIL, and it is load-bearing twice over. It makes the return to
 			# rest independent of frame rate and of `reload_scale` — a track that
 			# reaches zero only at phase 1.0 is only ever *sampled* near zero, because
 			# `tick()` ends the segment on the first tick past it. And it is honest:
 			# `CLOSE` credits nothing (`weapon.gd:377-381`), so the last tenth of it is
 			# already over as far as the player's ammunition is concerned.
-			[1.00, 0.00, 0.0],
+			[1.00, 0.00, 0.00],
 		],
 	},
 	EXOTIC: {
 		WHOLE: [
-			[0.00, 0.00, 0.0],
-			[0.28, 1.00, 0.0],  # all the way down and across the body — a showpiece, and slow
-			[0.66, 0.88, 0.0],  # the cell comes out and the fresh one goes in; both hands, no rush
-			[1.00, 0.00, 0.0],  # one long rise, and no second beat: nothing gets charged
+			[0.00, 0.00, 0.00],
+			[0.28, 1.00, 0.75],  # all the way down and across the body — a showpiece, and slow
+			[0.66, 0.88, 1.00],  # the cell comes out and the fresh one goes in; both hands, no rush
+			[1.00, 0.00, 0.00],  # one long rise, and no second beat: nothing gets charged
 		],
+		# Half of this archetype cannot show it: the Ray Gun is `ONE_HANDED` in
+		# `gunart.gd` and has no support glove, so this column drives the Thundergun
+		# alone. Authored for the archetype rather than for the one weapon, because the
+		# row is about how a wonder weapon is worked and not about which mesh exists.
 	},
 }
 

@@ -106,6 +106,11 @@ extends RefCounted
 ## the frame count is unambiguous and stated beside it.
 
 const FRAME_STATS := preload("res://scripts/dev/frame_stats.gd")
+## The reload classifier, for `_reload_reaching`'s "is this gun already reloading"
+## guard. Preloaded rather than reached through the global class name for the reason
+## the rest of this project preloads: a freshly added script is not in the class
+## registry until the editor has seen it, and nothing here opens the editor.
+const RELOAD := preload("res://scripts/data/reload.gd")
 
 ## One seed for every scenario. Arbitrary, fixed, and it must never change
 ## without re-blessing every golden row — which is the point of writing it down.
@@ -332,6 +337,19 @@ static func registry() -> Dictionary:
 		"spawn": {
 			"fn": _spawn, "settle": 0.35,   # 21 frames at 60
 			"why": "the default view, byte-for-byte the frame plain --shot takes",
+		},
+		# THE ONLY MOVING SCENARIO IN THE REGISTRY, and the only one whose subject
+		# cannot be photographed at rest: every other entry here is a static pose held
+		# until it settles. The support hand's whole existence as an animated channel
+		# is a mid-reload fact, so a gate built only out of settled frames is blind to
+		# it by construction — which is exactly how the rig shipped a hand pinned at
+		# identity for a whole stage with 800-odd assertions green.
+		#
+		# 2.5 s of budget against an M14 reload of 2.3 s: the predicate is what ends
+		# the wait, and the budget only has to be longer than the predicate takes.
+		"reload": {
+			"fn": _reload, "settle": 2.5, "until": _reload_reaching,
+			"why": "the support hand out at its reach mid-reload, which no settled frame can show",
 		},
 		# THE ELEVEN THE GATE COULD NOT SEE — see `_gun_view`. Same 0.35 s budget as
 		# `spawn` and for the same reason: identical static pose, and it was measured
@@ -753,6 +771,69 @@ const MELEE_VIEW := "knife"
 static func _gun_up(main: Node3D, key: String) -> bool:
 	var vm: Node3D = main.viewmodel
 	return vm != null and is_instance_valid(vm) and String(vm._shown_key) == key
+
+
+## A magazine reload, caught at the moment the support hand is furthest from the
+## fore-end. The M14 because it is a `BOX` archetype — six of the twelve weapons
+## reload on that track, so it is the motion most of the roster performs.
+##
+## `_start_reload()` and not `Input.action_press("reload")`, unlike `_ads` above, and
+## the difference is real rather than sloppy: ADS is POLLED, so a synthetic press
+## drives the whole transition, while the reload key arrives as an event that a
+## synthetic press in a `--shot` run does not reliably deliver. `_start_reload` is
+## the PLAYER's own entry point and the one the key reaches — one level below the
+## key, and above every part of this that matters: the weapon state machine,
+## `reload.gd`'s classifier and the entire rig all run for real.
+##
+## `mag = 0` is set directly, which is the getter and not the consumer. Firing thirty
+## rounds to reach the same state would put a muzzle flash, a kick and a slide cycle
+## into a frame whose subject is none of those.
+static func _reload(main: Node3D) -> void:
+	_place(main, SPAWN_AT, 0.0)
+	var p: Player = main.player
+	p.give_gun("m14", false)
+	p.current_gun().mag = 0
+
+
+## THE HAND IS OUT. Read off `viewmodel._hand` — the channel `_apply()` poses the
+## glove from — so a satisfied predicate is a glove that is actually out there.
+##
+## 0.95 and not 1.00 because the track is sampled at whatever phase the frame lands
+## on and the peak is a single knot; 0.95 of `SUPPORT_REACH` is 13.965 mm of 14.7 and
+## the frame is unambiguously the work pose. A reload that never starts leaves this
+## at 0.0 forever and the capture aborts rather than photographing a weapon at rest
+## under this scenario's name — which is the failure the knife view taught this file
+## to guard against.
+##
+## **AND IT ARMS THE RELOAD, which no other predicate in this file does.** Starting
+## it in `_reload` does not work and the harness said so rather than lying about it:
+## `give_gun` puts the weapon into a swap that takes frames to finish, `_start_reload`
+## is refused for its whole duration, and the capture aborted with "never arrived"
+## after 5.5 s. The trigger therefore has to be pulled once the weapon is actually in
+## hand, and `_shown_key` is the same arrival test every gun view uses. Guarded on the
+## gun not already reloading so this fires exactly once and cannot restart a reload it
+## is waiting on.
+static func _reload_reaching(main: Node3D) -> bool:
+	var vm: Node3D = main.viewmodel
+	if vm == null or not is_instance_valid(vm):
+		return false
+	var p: Player = main.player
+	if String(vm._shown_key) == "m14" and RELOAD.segment(p.current_gun()) == RELOAD.NONE \
+			and float(vm._hand) <= 0.0:
+		p._start_reload()
+	# BOTH CONDITIONS, AND THE SECOND ONE IS THE WHOLE LESSON OF THIS SCENARIO. The
+	# first draft waited for `_hand >= 0.95` and produced a frame with the glove
+	# nowhere in it: `DIP` is the ancestor's 0.30 of screen height (html:3125), the
+	# `BOX` track is already at 0.88 of it by phase 0.16, and the weapon is simply
+	# below the bottom of the viewport for the whole middle of a magazine reload. A
+	# gate photographing the hand at its peak would have measured an empty corner of
+	# the room and blessed it as the hand's baseline.
+	#
+	# So this catches the OUTBOUND CROSSING instead — the hand already well off the
+	# fore-end while the weapon is still high enough to be on screen — which is both
+	# the only phase where the channel is observable and, not coincidentally, the
+	# phase at which a player actually reads a reload as starting.
+	return float(vm._hand) >= 0.35 and float(vm._dip) <= 0.50
 
 
 static func _gun_view(main: Node3D, key: String) -> void:
