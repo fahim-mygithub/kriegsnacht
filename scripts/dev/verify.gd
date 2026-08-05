@@ -414,7 +414,7 @@ const CHECK_MODULES := {
 ## six decimals, measured either side of the change.
 ##
 ## RAISED ADDITIVELY: 809 + 1. Do not read this as a reconciliation.
-const ASSERTION_FLOOR := 810
+const ASSERTION_FLOOR := 816
 
 var _pass := 0
 var _fail := 0

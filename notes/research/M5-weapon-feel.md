@@ -96,18 +96,25 @@ axis runs along the barrel.
 **Pose.** `scripts/entities/viewmodel.gd` turns three published floats (`state`, `state_t`,
 `state_len`) plus edges into **nine scalar channels** written to exactly three nodes:
 `ViewmodelRoot.transform` (sway + bob), `WeaponMesh.transform` (rest + kick + dip + drop + melee +
-ADS + sight), `Slide.position.z` (written at `:1059`, computed by `_slide_offset()` at
-`:1103-1113`). There is no `AnimationPlayer`, no `Tween`, no clip. `_mesh_pose` (`:1066-1091`) is
-**pure**, so `_measure()` (`:1248-1252`, through the `sweep()` it calls at `:1265-1366`) can sweep
-its extremes — which is the entire proof that the weapon cannot clip a wall (`verify.gd:1900-1905`).
-Measured worst case 0.232 m against `Player.RADIUS` 0.24 (`viewmodel.gd:36-38`).
+ADS + sight), `Slide.position.z` (written at `:1165`, computed by `_slide_offset()` at `:1217`). There is no
+`AnimationPlayer`, no `Tween`, no clip. `_mesh_pose` (`:1180`) is **pure**, so `_measure()` (`:1372`,
+through the `sweep()` it calls at `:1428`) can sweep its extremes — which is the entire proof that
+the weapon cannot clip a wall (`verify.gd:1976-2004`). Measured worst case 0.232 m against
+`Player.RADIUS` 0.24 (`viewmodel.gd:36-38`).
 
-*Citations re-checked and rewritten 2026-08-04 on commit 2fc7422; only `viewmodel.gd:36-38` still
-resolved and it was left alone. The pose and point counts this paragraph used to give — "144 poses
-per weapon over ~1398 corners, 218,016 transformed points" — are also from before the arc
-construction landed and are no longer a single number: the sweep now samples each rotational
-channel at a count solved against that weapon's own `r_max`, so the pose count is per weapon. See
-`viewmodel.gd`'s `_arc` docstring for the solved counts. They were not re-measured here.*
+*Citations rewritten 2026-08-04 and again 2026-08-05, and the second pass is the one to trust. The
+first was measured against a working tree that was carrying another agent's in-flight edits to
+`viewmodel.gd`, so every number it produced was offset against the commit it named and resolved in
+neither that commit nor the one it landed in — a citation repair that made the file worse, recorded
+here because the same trap is what the rest of this section's line numbers keep falling into. The
+figures above are re-derived against `HEAD` and are FUNCTION ANCHORS rather than ranges wherever a
+range was not carrying information: a range rots at both ends and this file has now paid for that
+twice. `viewmodel.gd:36-38` has survived every pass.*
+
+*The pose and point counts this paragraph used to give — "144 poses per weapon over ~1398 corners,
+218,016 transformed points" — predate the arc construction and are no longer a single number: the
+sweep samples each rotational channel at a count solved against that weapon's own `r_max`, so the
+pose count is per weapon. See `viewmodel.gd`'s `_arc` docstring. They have not been re-measured.*
 
 **Fire.** `_unhandled_input` latches `_fire_held` / arms an 0.18 s buffer → `_physics_process`
 calls `_update_view(dt, spd)` **then** `_update_fire(dt)` (:570-571) → a bounded

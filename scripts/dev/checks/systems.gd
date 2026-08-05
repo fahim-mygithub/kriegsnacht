@@ -1662,6 +1662,172 @@ static func _reload_timeline(v: Verify, main: Node3D) -> void:
 	_reload_close_survives_ammo(v, main)
 	_reload_phase_not_seconds(v, main)
 	_reload_returns_once(v, main)
+	_reload_amplitude(v, main)
+	_reload_seams(v, main)
+	_reload_beat(v)
+
+
+## The floor a driven reload's peak has to clear, as a fraction of the rig's OWN
+## full-amplitude excursion. One number has to sit under both families: a magazine
+## reload is authored to 1.00 and a shell reload runs the same tables through
+## `viewmodel.gd`'s `SHELL_SCALE` 0.35, so 0.25 < 0.35 < 0.94 (the shallowest
+## magazine peak actually driven, the China Lake's 0.96 track minus tick sampling)
+## refuses a flat track on either while clearing both by a wide margin.
+const RELOAD_MIN_FRAC := 0.25
+
+## OUR DECISION, and the only absolute metre in this group — which is exactly why it
+## is here. Every other bound below is a FRACTION of the rig's excursion, and a group
+## made only of fractions is scale-invariant in `DIP`: halve the rig's amplitude and
+## every fractional bound halves with it, which is the same shape as the peak clause
+## this package had to repair in `_reload_returns_once`. 0.02 m at the mesh is the
+## point below which the shallowest family on the roster (0.35 of it) travels under
+## 7 mm and stops reading as a reload at all. The CEILING is not ours: it is
+## `DROP_MAX` (`viewmodel.gd:447`), the rig's own cap on how far down the weapon may
+## be taken, applied at `viewmodel.gd:1182`.
+const RELOAD_MIN_TRAVEL_M := 0.02
+
+
+## The metres and radians the rig moves the weapon through at FULL dip, taken from
+## the pose function the renderer's transform is built by.
+##
+## This is the expectation side of every amplitude bound below, and the whole point
+## is that it is a DIFFERENT SOURCE from `reload.gd`: flatten every track in that
+## file to zero and this number does not move, so the bound goes red. `_mesh_pose`
+## is called with every other channel at rest, so what comes back is the dip channel
+## alone and not a pose that happens to include it.
+static func _dip_full(vm: Node3D) -> Array:
+	var rest: Transform3D = vm._mesh_pose(0.0, 0.0, 0.0, 0.0)
+	var deep: Transform3D = vm._mesh_pose(0.0, 1.0, 0.0, 0.0)
+	return [(deep.origin - rest.origin).length(),
+		absf(deep.basis.get_euler().x - rest.basis.get_euler().x)]
+
+
+## THE RELOAD ACTUALLY MOVES THE WEAPON, ON EVERY WEAPON, IN METRES OFF THE MESH.
+##
+## **This check exists because the five above it bound ONE archetype.** Measured, in
+## a sandbox with the restore wrapped so it ran either way: flatten every `WHOLE`
+## track in `reload.gd` to a constant zero — eleven of twelve weapons standing
+## perfectly still through their entire reload — and the suite was still
+## **811 passed, 0 failed**. `_reload_table` bounds the knots from ABOVE and a flat
+## table is inside [0,1]; `_reload_phase_not_seconds` compares two runs against each
+## other and two flat runs agree perfectly; the other three drive the Stakeout only.
+## The package's whole payload was unguarded and this is the check that guards it.
+##
+## **Bounded at both ends and in a unit the tables are not authored in.** The floor
+## and the ceiling both come from `_dip_full` — the rig's constants, `DIP`, `DIP_X`
+## and `DIP_ROLL`, which `viewmodel.gd:320-322` pins to the ancestor's
+## `y += s*cssH*0.30` at `kriegsnacht.html:3125` — so the table under test appears on
+## the MEASURED side only. The ceiling is the same `dip in [0,1]` the four M-VMCLIP
+## assertions sweep (`verify.gd:349`): a driven pose past full amplitude is outside
+## everything that was ever measured for clipping, and unlike `_reload_table`'s
+## version of that bound this one is read off the transform and so also catches the
+## RIG scaling a table that is itself in range.
+##
+## Driven through `player._start_reload()` and `player._update_fire()` — the path the
+## reload key reaches — and read off `_mesh.transform`, which is the transform handed
+## to the renderer, not off `vm._dip`, which is the float behind it.
+##
+## MEASURED healthy: a full excursion of **0.03680 m / 0.5000 rad**, the Stakeout
+## peaking at 0.0129 m — 0.3505 of it, which is `SHELL_SCALE` to four figures and is
+## the closest thing in the suite to a readout of that constant — and the other
+## eleven between the China Lake's 0.0353 (0.959, its 0.96 track less tick sampling)
+## and 0.0368 (1.000). The floor at 0.25 therefore clears the shallower family by 40%
+## and the deeper one by nearly four times.
+##
+## AND THE FOUR CONTROLS, all run with the restore in a `finally`:
+##
+##   floor raised to 2.0        2 red — and this is where the healthy figures above
+##                              come from, printed by the check's own detail string
+##   every WHOLE track flat     2 red (33 knots zeroed, 11 weapons motionless).
+##                              **This case was 811 passed, 0 failed before.**
+##   SHELL_SCALE -> 0.001       2 red, including `_reload_returns_once`, whose old
+##                              peak clause was true at every value of it
+##   SHELL_SCALE -> 1.0         1 red, the ordering below — the only clause in this
+##                              group that can see that direction at all
+static func _reload_amplitude(v: Verify, main: Node3D) -> void:
+	var p: Player = main.player
+	var full: Array = _dip_full(main.viewmodel)
+	var full_m: float = full[0]
+	var full_r: float = full[1]
+
+	var bad := ""
+	var told := ""
+	var deepest_shell := 0.0
+	var shallowest_mag := INF
+	var shell_key := ""
+	var mag_key := ""
+	for key: String in Weapons.TABLE:
+		var spec: Dictionary = Weapons.TABLE[key]
+		var vm := _equip(main, key)
+		var gun: Dictionary = p.current_gun()
+		gun.mag = 0
+		# Deep enough that no weapon's reload ends early on a dry reserve — that path
+		# is `_reload_close_survives_ammo`'s subject and it would shorten the shape here.
+		gun.res = int(spec.mag) * 4
+		p._fire_held = false
+		p._fire_buffer = 0.0
+		vm._dip = 0.0
+		# The swap drop has to be OUT before the rest pose is read, or the baseline is
+		# a weapon still on its way up and every displacement below is measured from a
+		# moving origin. `_equip` steps 12 frames; these are the margin.
+		for i in 20:
+			vm._process(STEP)
+		var rest_o: Vector3 = vm._mesh.transform.origin
+		var rest_p: float = vm._mesh.transform.basis.get_euler().x
+
+		p._start_reload()
+		var peak_m := 0.0
+		var peak_r := 0.0
+		var guard := 0
+		while guard < 2400 and RELOAD.segment(gun) != RELOAD.NONE:
+			p._update_fire(STEP)
+			vm._process(STEP)
+			guard += 1
+			peak_m = maxf(peak_m, (vm._mesh.transform.origin - rest_o).length())
+			peak_r = maxf(peak_r, absf(vm._mesh.transform.basis.get_euler().x - rest_p))
+
+		# 1e-6 rather than 0 on the ceiling: the peak is a max over sampled ticks of the
+		# same arithmetic the reference runs, so it can land exactly on it.
+		if peak_m < RELOAD_MIN_FRAC * full_m or peak_m > full_m + 1e-6 \
+				or peak_r < RELOAD_MIN_FRAC * full_r or peak_r > full_r + 1e-6:
+			bad += "%s(%.4f m, %.4f rad) " % [key, peak_m, peak_r]
+		told += "%s %.4f m %.3f rad; " % [key, peak_m, peak_r]
+
+		if bool(spec.get("shells", false)):
+			if peak_m > deepest_shell:
+				deepest_shell = peak_m
+				shell_key = key
+		elif peak_m < shallowest_mag:
+			shallowest_mag = peak_m
+			mag_key = key
+
+	v.check("every weapon on the roster is moved through its reload by an amount the player can see",
+		bad.is_empty(),
+		"outside [%.4f m, %.4f m] / [%.4f rad, %.4f rad]: %s-- all: %s" % [
+			RELOAD_MIN_FRAC * full_m, full_m, RELOAD_MIN_FRAC * full_r, full_r, bad, told])
+
+	# THE RIG'S OWN AMPLITUDE, and the clause that stops this group being a set of
+	# fractions of a number nothing bounds. See `RELOAD_MIN_TRAVEL_M`.
+	v.check("the rig's full-amplitude reload dip is a real excursion and stays inside its own cap",
+		full_m >= RELOAD_MIN_TRAVEL_M and full_m <= VIEWMODEL.DROP_MAX and full_r > 0.0,
+		"full dip travel %.6f m against [%.3f, DROP_MAX %.5f], roll %.6f rad" % [
+			full_m, RELOAD_MIN_TRAVEL_M, VIEWMODEL.DROP_MAX, full_r])
+
+	# `SHELL_SCALE`'S MEANING, ASSERTED AS AN ORDERING. The constant is read at exactly
+	# one site (`viewmodel.gd:1113`) and nothing else in the suite says what it is FOR:
+	# a shell going into a tube is a thumb, a magazine change is the whole weapon. As a
+	# relation this survives a retune of the number and still fails if somebody sets it
+	# to 1.0 — which the fractional bounds above cannot see, because they move with it.
+	v.check("a shell reload is a shallower motion than every magazine reload",
+		deepest_shell > 0.0 and deepest_shell < shallowest_mag,
+		"deepest shell %s %.4f m against shallowest magazine %s %.4f m" % [
+			shell_key, deepest_shell, mag_key, shallowest_mag])
+
+	# Left lit, this is the pose every later reader of `_mesh.transform` sees — the
+	# same reason `_reload_returns_once` puts it back.
+	main.viewmodel._dip = 0.0
+	p._fire_held = false
+	p._fire_buffer = 0.0
 
 
 ## THE TABLE IS A NORMALISED SHAPE, AND `_measure()` CANNOT TELL YOU THAT.
@@ -1966,10 +2132,16 @@ static func _reload_phase_not_seconds(v: Verify, main: Node3D) -> void:
 ##
 ## BOUNDED AT BOTH ENDS BY THE SAME NUMBER: more than one return is the defect, and
 ## ZERO returns is a weapon that never comes back up — a track whose close was left
-## parked off the eye line would sail past a check that only refused the excess. The
-## peak clause is the third end: `SHELL_SCALE` is the rig's own amplitude ceiling for
-## this family (`viewmodel.gd`), so a reload that never gets halfway to it is not one
-## the player can see, and this cannot pass against an inert dip.
+## parked off the eye line would sail past a check that only refused the excess.
+##
+## **THE PEAK CLAUSE WAS BOTH SIDES OF ONE SOURCE AND IS NOT ANY MORE.** It read
+## `peak > 0.5 * SHELL_SCALE` where `peak` was `sample(...) * SHELL_SCALE` — the
+## constant on both sides, so it was scale-invariant in exactly the quantity it
+## claimed to bound: collapse `SHELL_SCALE` to 1/350th of shipped and the clause is
+## still perfectly true while the reload becomes invisible. It now measures the
+## displacement of `_mesh.transform` in METRES against the rig's full-amplitude
+## excursion (`_dip_full`), which the shell tables do not scale — see
+## `_reload_amplitude`, where the same bound is applied across the whole roster.
 static func _reload_returns_once(v: Verify, main: Node3D) -> void:
 	var p: Player = main.player
 	var vm := _equip(main, "stakeout")
@@ -1979,6 +2151,14 @@ static func _reload_returns_once(v: Verify, main: Node3D) -> void:
 	p._fire_held = false
 	p._fire_buffer = 0.0
 	vm._dip = 0.0
+	# The baseline the metres are measured from, taken after the swap drop is out for
+	# the same reason `_reload_amplitude` waits: a moving origin makes every
+	# displacement below a measurement of the wrong thing.
+	for i in 20:
+		vm._process(STEP)
+	var full: Array = _dip_full(vm)
+	var full_m: float = full[0]
+	var rest_o: Vector3 = vm._mesh.transform.origin
 	p._start_reload()
 	# Exactly zero, not an epsilon. `TRACKS[TUBE][CLOSE]` holds a flat tail at rest
 	# for the last tenth of the closing segment precisely so that the return does not
@@ -1992,21 +2172,148 @@ static func _reload_returns_once(v: Verify, main: Node3D) -> void:
 		vm._process(STEP)
 		guard += 1
 		var d: float = vm._dip
-		peak = maxf(peak, d)
+		peak = maxf(peak, (vm._mesh.transform.origin - rest_o).length())
 		var rest := d <= 0.0
 		if rest and not was_rest:
 			returns += 1
 		was_rest = rest
 	v.check("a six-shell reload brings the weapon back to the eye line exactly once",
-		returns == 1 and peak > 0.5 * VIEWMODEL.SHELL_SCALE and int(gun.mag) == cap,
-		"%d returns over %d ticks, peak dip %.5f against SHELL_SCALE %.3f, tube %d of %d" % [
-			returns, guard, peak, VIEWMODEL.SHELL_SCALE, int(gun.mag), cap])
+		returns == 1 and peak > RELOAD_MIN_FRAC * full_m and int(gun.mag) == cap,
+		"%d returns over %d ticks, peak travel %.5f m against %.5f of a full %.5f, tube %d of %d" % [
+			returns, guard, peak, RELOAD_MIN_FRAC * full_m, full_m, int(gun.mag), cap])
 	p._fire_held = false
 	p._fire_buffer = 0.0
 	# The pose channels go back by hand for the same reason `_animation`'s tail puts
 	# `_sprint` back: this suite steps no frames of its own, so anything these checks
 	# leave lit stays lit for every later reader of `_mesh.transform`.
 	vm._dip = 0.0
+
+
+## THE SEGMENTED RELOAD IS ONE MOTION, AND THE SEAMS ARE WHERE IT COULD STOP BEING.
+##
+## `OPEN` ends at `HELD`, `EACH` starts and ends there, `CLOSE` leaves from there —
+## three separately authored tracks that have to agree at every boundary or the
+## weapon teleports in the middle of a reload it has not finished. Nothing above can
+## see that: `_reload_table` walks each track in isolation and has no concept of what
+## follows it, and `_reload_returns_once` counts returns to REST, which a jump
+## between two non-rest values is not.
+##
+## **THE EXPECTATION IS A RULE AND NOT A VALUE.** Each seam compares the END of one
+## track against the START of the next and requires them equal. It deliberately never
+## compares either against `HELD` — that would put the same constant on both sides
+## and pass any consistent retune, and passing a consistent retune is CORRECT here,
+## because moving the parked height is a decision. What this refuses is one end of a
+## seam moving without the other.
+##
+## The transition list is driven out of the state machine rather than written here,
+## so a Stakeout whose magazine changed size is still fully covered.
+##
+## The second clause is the same claim through the rig, and it needs no authored
+## number either: a continuous motion has no reason to travel further in the tick
+## that happens to cross a boundary than in any tick that does not, so the largest
+## jump AT a seam is compared against the largest jump away from one.
+##
+## MEASURED healthy: **0.001897 at the worst seam against 0.016645 inside a segment**
+## — not zero, and it should not be, because the tick that crosses a boundary still
+## advances phase into the new segment and moves the pose by that much. A margin of
+## 8.8x, which is what makes the comparison usable without a tolerance. With `EACH`'s
+## opening knot pulled off the seam the same two numbers read **0.253897 against
+## 0.031993** and four checks go red, this one among them.
+static func _reload_seams(v: Verify, main: Node3D) -> void:
+	var p: Player = main.player
+	var vm := _equip(main, "stakeout")
+	var gun: Dictionary = p.current_gun()
+	var cap: int = int(Weapons.TABLE["stakeout"].mag)
+	gun.mag = 0
+	p._fire_held = false
+	p._fire_buffer = 0.0
+	vm._dip = 0.0
+
+	var seq: Array[int] = []
+	var seam_jump := 0.0
+	var inner_jump := 0.0
+	var prev_t := INF
+	var prev_dip: float = vm._dip
+	var guard := 0
+	p._start_reload()
+	while guard < 1200 and int(gun.state) == WEAPON.State.RELOAD_SHELL:
+		p._update_fire(STEP)
+		vm._process(STEP)
+		guard += 1
+		# The sawtooth in `state_t` is the re-entry edge — the same one `_tick_slide`
+		# gates the pump stroke on and `_reload_segments` counts segments with.
+		var t: float = gun.state_t
+		var crossed: bool = not seq.is_empty() and t > prev_t
+		if seq.is_empty() or crossed:
+			seq.append(RELOAD.segment(gun))
+		prev_t = t
+		var jump := absf(float(vm._dip) - prev_dip)
+		prev_dip = float(vm._dip)
+		# The first tick leaves rest legitimately, and the last enters it; neither is a
+		# seam between two tracks and both are larger than anything in between.
+		if guard > 1 and int(gun.state) == WEAPON.State.RELOAD_SHELL:
+			if crossed:
+				seam_jump = maxf(seam_jump, jump)
+			else:
+				inner_jump = maxf(inner_jump, jump)
+
+	var script: int = RELOAD.script_for("stakeout")
+	var bad := ""
+	for i in range(1, seq.size()):
+		var a: float = RELOAD.sample(script, seq[i - 1], 1.0).x
+		var b: float = RELOAD.sample(script, seq[i], 0.0).x
+		if not is_equal_approx(a, b):
+			bad += "%s ends %.4f then %s starts %.4f " % [
+				_seg_name(seq[i - 1]), a, _seg_name(seq[i]), b]
+	v.check("every segment of a shell reload starts where the one before it ended",
+		bad.is_empty() and seq.size() == cap + 1,
+		"%d seams over %s; %s" % [maxi(0, seq.size() - 1), _seq_names(seq), bad])
+
+	v.check("the pose does not jump on the tick a shell reload changes segment",
+		seam_jump <= inner_jump and inner_jump > 0.0,
+		"worst jump at a seam %.6f against %.6f inside a segment" % [
+			seam_jump, inner_jump])
+	vm._dip = 0.0
+	p._fire_held = false
+	p._fire_buffer = 0.0
+
+
+## THE PER-SHELL BEAT EXISTS AT ALL, which is the half that was missing.
+##
+## `reload.gd:155-157` states the design in prose — 0.18 of the shape, which through
+## `SHELL_SCALE` is 6.3% of a magazine dip, "a thumb pushing a shell in, not the
+## weapon nodding" — and nothing asserted any of it. Flatten `EACH`'s middle knot to
+## the parked height and five of a Stakeout's six shells produce **no motion at
+## all**, with the weapon hanging dead still between the opening dive and the rack;
+## every other assertion in this file stays green, including the amplitude one, whose
+## peak is set by `OPEN`. That is what this refuses. CONTROL: `EACH`'s 0.90 knot set
+## to `HELD` — one red check, and the suite otherwise 816/1.
+##
+## **ACCEPTANCE ONLY, DELIBERATELY, AND HERE IS THE ARITHMETIC.** The first draft of
+## this check also refused a beat larger than half the opening dive, and that clause
+## COULD NOT FAIL: `_reload_table` bounds every knot at 1.0 and `_reload_seams` pins
+## `EACH`'s ends to the parked height, so the beat is at most `1.0 - HELD` = 0.28
+## against a threshold of 0.50 for any table those two accept. It was removed rather
+## than tightened, because tightening it to fire would have meant a number chosen to
+## sit just above the shipped 0.18 — a gate with a maintenance tax, which this
+## project has already learned gets deleted the first time someone retunes. The
+## measured control that found it: `EACH`'s peak raised 0.90 -> 1.00 left the suite
+## at 817/0, and it should have — that is a legal retune and not a defect.
+##
+## The upper end is therefore held by those two checks and named here so a reader
+## does not have to rediscover why this one only looks in one direction. The detail
+## string carries the beat as a fraction of a magazine dip so the 6.3% the design
+## claims is a number a human can read off a passing run.
+static func _reload_beat(v: Verify) -> void:
+	var script: int = RELOAD.script_for("stakeout")
+	var park: float = RELOAD.sample(script, RELOAD.EACH, 0.0).x
+	var beat := 0.0
+	for i in 201:
+		beat = maxf(beat, RELOAD.sample(script, RELOAD.EACH, float(i) / 200.0).x - park)
+	v.check("a shell going into the tube moves the weapon at all",
+		beat > 0.0,
+		"beat %.4f off a park of %.4f, i.e. %.2f%% of a magazine dip through SHELL_SCALE %.2f" % [
+			beat, park, beat * VIEWMODEL.SHELL_SCALE * 100.0, VIEWMODEL.SHELL_SCALE])
 
 
 ## The arc construction, in three parts: it is CORRECT, it is SOLVED rather than

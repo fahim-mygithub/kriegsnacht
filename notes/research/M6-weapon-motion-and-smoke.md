@@ -1093,13 +1093,16 @@ being fired in a panic.
 **Idle breathing.** *Mechanism corrected 2026-08-02 — the first draft said "folded into
 `_mesh_pose`'s origin the way `bob` already is (`viewmodel.gd:918-920`)", which conflates two
 different mechanisms and would silently void the guarantee if implemented as written.* `bob` is
-**not in `_mesh_pose` at all**: it is a `ViewmodelRoot` write at `viewmodel.gd:1051-1052`, and
-`_measure()` accounts for it by adding a **scalar bound** to the lateral term of each metric
-(`:1271` computes it, `:1359-1360` add it). `_mesh_pose` is `:1066-1091` and contains no bob term.
-*Line references in this paragraph re-checked and rewritten 2026-08-04 on commit 2fc7422; every one
-of them was stale, and none of the stale targets resolved to anything related.* So
+**not in `_mesh_pose` at all**: it is a `ViewmodelRoot` write at `viewmodel.gd:1157-1158`, and
+**`sweep()`** accounts for it by adding a **scalar bound** to the lateral term of each metric
+(`:1434` computes it, `:1556-1557` add it). `_mesh_pose` is `:1180` and contains no bob term.
+*Rewritten 2026-08-04 and again 2026-08-05; the second pass is the one to trust, and it also
+corrects the AGENT of that sentence — the bound is computed and added inside `sweep()`, not inside
+`_measure()`, which since the arc construction landed is a memoiser that calls it. The 2026-08-04
+pass produced numbers that resolved in no commit at all; see the matching note in
+`M5-weapon-feel.md` for what went wrong.* So
 breathing costs **zero swept points only if it is bounded the same way** — `bob` becomes
-`Vector2(BOB_X, BOB_Y).length() + BREATHE_AMP` at `:1271` — and costs **+100% of the sweep** if it is
+`Vector2(BOB_X, BOB_Y).length() + BREATHE_AMP` at `:1434` — and costs **+100% of the sweep** if it is
 written as a channel of `_mesh_pose`. A term added to `_mesh_pose`'s origin without either
 treatment is inside the swept function and covered by **nothing**. The interesting result is
 that **the clip budget is not what bounds it**: a whole-mesh translation costs at most ratio·|delta|,
@@ -1116,11 +1119,15 @@ nobody has looked at a frame.
 Current worst is `max_screen_radius()` = 0.232 m against `Player.RADIUS` 0.240 —
 **8.116 mm** — with the swept figures 0.201249 / 0.057540 / 0.231884 quoted at `viewmodel.gd:169`.
 
-*Superseded 2026-08-04, commit 2fc7422: the record moved to `viewmodel.gd:172` and now reads
-0.201372 / 0.057188 / 0.231964, so the margin is **8.036 mm** and the near-plane clearance
-7.188 mm. The figures above are left as the research-phase record; the per-group slack argument
-below is unaffected, because it is about the ratio between one group's reach and the global worst
-and both moved by well under a tenth of a millimetre.*
+*Superseded. The record is at `viewmodel.gd:176` and reads 0.201372 / 0.057188 / 0.231964, so the
+margin is **8.036 mm** and the near-plane clearance 7.188 mm. **Those three are the only figures in
+this file that have been driven out of the shipped rig rather than cited**: re-measured 2026-08-05
+by forcing the three M-VMCLIP readouts red at six decimals and reading `sweep(true)`'s own output —
+`widest 0.231964`, `worst corner 0.201372`, `nearest 0.057188` — which is what confirms the
+2026-08-04 re-measurement survived that pass's citation errors. The figures above are left as the
+research-phase record; the per-group slack argument below is unaffected, because it is about the
+ratio between one group's reach and the global worst and both moved by well under a tenth of a
+millimetre.*
 
 **The single most important correction in this section: that 8.116 mm is not a global allowance.**
 `max_screen_radius` is a max **over points**, set by one corner — a barrel tip or a stock tip — so a
@@ -1191,7 +1198,7 @@ without the arithmetic is how the same row comes back.
 | A5 | **Pump delay:** the Stakeout's offset is **still zero** at the frame after the shot and non-zero later in the interval. | Restore the immediate `_cycle_slide()` at `viewmodel.gd:609`. |
 | A6 | **Bolt hold-open, driven to the state the *player* reaches.** Fire the M1911 dry through `player`'s real fire loop, then read `vm._slide.position` — not by setting `gun.mag` directly, which is the getter and not the consumer, and which cannot catch `mag` reaching 0 before `_shown_key` has been latched (`_show` only runs when the mesh changes, `viewmodel.gd:824-828`). Then the same on the MP40, asserting **zero**, and on the PM-63, asserting **travel**. | Put `"mp40"` into `BOLT_HOLD`. The MP40 half must fail and the M1911 and PM-63 halves must not. |
 | A7 | **Travel bounded at both ends, with the free run COMPUTED and not pasted.** Assert `floor ≤ TRAVEL[key] ≤ free_run(key)`, where only the floor is hardcoded (with its cartridge and its scale in the comment) and `free_run` is computed from `ART` through GUNART: the minimum over non-slide parts that do **not** already overlap the group at rest, whose y-span and `BASE_HALF + i·LAYER` depth range intersect the group's, of the x-gap between the group's trailing edge and that part's leading edge. *Rewritten 2026-08-02: the first draft pasted a free-run column the document itself flagged as unverified, and that column was measured to the grip **anchor** rather than to any part — Stakeout 16.92 where the grip panel gives 14, China Lake 9.76 where the pistol grip gives 8, PM-63 −4.04 where the strut gives 2.* | Set the M1911 back to 4 (floor half). Set the China Lake to 12 — it must fail on the pistol grip (acceptance half). This turns the three "arithmetic-only collisions" from an unanswered `--shot` request into a standing assertion. |
-| A8a | **Refusal: `max_screen_radius()` is unchanged to six decimals** against the committed 0.231884 (`viewmodel.gd:169`). *Both halves of that pin were stale by the time the assertion landed and were re-checked 2026-08-04 on commit 2fc7422: the committed value is **0.231964** and the record is at `viewmodel.gd:172`. The check that shipped does not pin a literal at all — `checks/systems.gd`'s "the circumscribed sweep bounds the endpoint one from above, and still fits" compares `sweep(true)` against `sweep(false)` and against `Player.RADIUS`, which is why it did not rot with the number.* | A group whose travel is deliberately huge. |
+| A8a | **Refusal: `max_screen_radius()` is unchanged to six decimals** against the committed 0.231884 (`viewmodel.gd:169`). *Both halves of that pin were stale by the time the assertion landed: the committed value is **0.231964** (re-measured out of the rig 2026-08-05, see above) and the record is at `viewmodel.gd:176`. The check that shipped does not pin a literal at all — `checks/systems.gd`'s "the circumscribed sweep bounds the endpoint one from above, and still fits" compares `sweep(true)` against `sweep(false)` and against `Player.RADIUS`, which is why it did not rot with the number.* | A group whose travel is deliberately huge. |
 | A8b | **Acceptance: `vm.swept_travels()` enumerates every name in `GUNART.group_names()` for every weapon**, and every value equals `GUNART.slide_travel(key)`. | Drop one `_collect` call, or revert `:945` to the bare `SLIDE_TRAVEL`. *Split 2026-08-02: the first draft's single A8 asserted a null result, so a group that is **not in `_measure()`'s corner pool at all** — the exact hazard R8 and the file header exist to prevent — changes nothing and passes under its own sabotage. A refusal cannot separate "safe" from "unmeasured"; only the readout can.* |
 | A9 | **The arc sampler is conservative, AND it is the one `_measure()` calls.** Unit half: feed it a known arc against a dense reference; feed it a straight line and require the inflation to degrade to identity; remove the 1/cos and require the arc case to fail. Consumer half (**R12**): `max_screen_radius()` under the interior-sampled sweep is ≥ the endpoint-only value and the gap is ≤ `ratio · r_max · (1 − cos(step/2))`. | Revert the `ads` and `dip` loops to two endpoints — the reported extreme must **drop**. *The first draft's A9 had unit halves only, and its sampler existed solely for an Olympia hinge the document does not recommend — so a sampler that is perfectly correct and never called by `_measure()` passed it. That is the project's own "projectile tunnelling test that passed with the sweep deleted".* |
 | A10 | **Segmented reload cycles once per shell:** drive a real six-shell Stakeout reload and **count group cycles**. Consumer-driven. | Delete the per-shell latch. And separately: gate the latch on the *current* frame's state instead of the previous frame's — it must report **five**, catching the settle-before-emit trap. |
