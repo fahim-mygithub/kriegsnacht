@@ -111,6 +111,54 @@ in the shared file.
 
 ---
 
+## Worktrees, and what actually parallelises
+
+`tools/setup-env.ps1` is the whole setup story. It fixes a fresh clone and a fresh
+worktree identically, because they break identically:
+
+```powershell
+git worktree add ../kn-<topic> -b <topic>
+pwsh tools/setup-env.ps1 -Reference "C:\path\to\your\main\clone"
+```
+
+It copies the plugin from your reference checkout, writes a `.mcp.json` pointing
+at the reference server, generates `.claude/skills/godot-mcp-pro/SKILL.md` from
+your own licensed copy of the vendor's tool documentation, runs the import pass,
+and then runs the suite — because the suite passing is the only thing that proves
+any of it worked. Keep worktree paths **short**: a deep one hits Windows' path
+limit and `git worktree remove` fails halfway.
+
+**Never link the plugin into a worktree.** The first version of that script used a
+directory junction, and `git worktree remove --force` followed it and deleted 79
+files of the licensed product out of the reference checkout — which is gitignored,
+so git could not put it back. It is a copy now, ~1 MB, and the script refuses to
+run if it finds a reparse point there. This applies to anything you are tempted to
+link into a worktree, not just this plugin.
+
+### One editor, many sessions
+
+`addons/godot_mcp/websocket_server.gd:5-7` is explicit: Godot dials **out** to
+ports 6505–6514, and *each Claude Code session gets its own port*. There is no
+project-identity handshake in that file. So:
+
+- **Many Claude sessions against one editor: supported.** That is the design.
+- **Two editors at once: do not.** Both dial the same ports, and no session can
+  tell them apart. Whichever worktree you have open in the editor is the one every
+  MCP tool acts on, regardless of which worktree the agent is editing files in.
+
+The practical split, and it is a clean one:
+
+| Work | Parallel across worktrees? |
+|---|---|
+| `--verify`, `--check-only`, `--sim`, file edits | **Yes.** Each is its own process with its own `--path`. |
+| `--shot`, `--frames`, `tools/frames.ps1` | Yes, but windowed — they steal focus, so serialise in practice. |
+| Anything through the `godot-mcp-pro` MCP tools | **No.** One editor, and it acts on the directory it has open. |
+
+This is also why worktrees are worth the setup at all: CLAUDE.md warns that
+`--verify` is a quiescent-tree tool and hangs on a script caught mid-write. A
+worktree per agent makes each tree quiescent independently, which is the problem
+worktrees actually solve here.
+
 ## How work lands
 
 Both of us have push access. Nothing goes straight to `main`.
