@@ -274,6 +274,36 @@ pwsh tools/frames.ps1 -Spread 5         # re-measure run-to-run variation
 
 ---
 
+## Working alongside another human
+
+The repo has two people with push access. `CONTRIBUTING.md` is the setup guide;
+these are the rules that change how you *work*, not how you install.
+
+- **Nothing goes straight to `main`.** Branch, PR, and CI runs `--verify` as a
+  required check. Assume the other person's branch exists and that `main` moves
+  under you.
+- **`docs/` is binary and unmergeable.** It holds the committed Pages build —
+  `index.wasm`, `index.pck`. **Feature branches never commit it**; it is rebuilt on
+  `main` only, when actually publishing. Two people running `tools/build.ps1` on
+  branches is a hand-resolved binary conflict at every merge. If `git status` shows
+  `docs/` dirty on a branch, `git restore docs/` before committing.
+- **CI covers `--verify` and nothing else.** A runner has no rendering device, so
+  the frame gate cannot run there — the capture half would hang rather than fail.
+  A green PR is *not* a visually checked PR. If the change can reach a pixel, run
+  `pwsh tools/frames.ps1` locally, and say in the PR that you did.
+- **A fresh clone does not run**, and both reasons look like a hang. `project.godot`
+  declares three autoloads into the gitignored `addons/godot_mcp/`, and `.godot/`
+  is gitignored so no `class_name` resolves until an import pass has run. MEASURED:
+  five minutes with no output before it was killed; **9 s import + 8 s verify** once
+  both were addressed. Do not debug this from scratch — `CONTRIBUTING.md` has the
+  recipe and the exact error text.
+- **`.gitattributes` now pins everything to LF.** It landed because the working copy
+  had already split against itself — 186 LF against 180 CRLF, `.gd` sources
+  included — while the index was uniformly LF. Rule 8 above is unchanged and still
+  the reason: never pin the sha of raw file bytes.
+
+---
+
 ## Report format
 
 Your final message is the return value. No preamble.

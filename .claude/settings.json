@@ -1,0 +1,47 @@
+{
+  "$schema": "https://json.schemastore.org/claude-code-settings.json",
+  "permissions": {
+    "allow": [
+      "Bash(git status:*)",
+      "Bash(git diff:*)",
+      "Bash(git log:*)",
+      "Bash(git show:*)",
+      "Bash(git branch:*)",
+      "Bash(git ls-files:*)",
+      "Bash(git rev-list:*)",
+      "Bash(git rev-parse:*)",
+      "Bash(git blame:*)",
+      "Bash(git remote:*)",
+      "Bash(git stash list:*)",
+      "Bash(gh pr view:*)",
+      "Bash(gh pr list:*)",
+      "Bash(gh pr diff:*)",
+      "Bash(gh pr checks:*)",
+      "Bash(gh run list:*)",
+      "Bash(gh run view:*)",
+      "Bash(gh repo view:*)",
+      "Bash(gh api:*)",
+      "Bash(pwsh tools/frames.ps1:*)",
+      "Bash(pwsh tools/balance.ps1:*)",
+      "Bash(pwsh tools/coop.ps1:*)",
+      "Bash(pwsh tools/coop-controls.ps1:*)",
+      "PowerShell(pwsh tools/frames.ps1:*)",
+      "PowerShell(pwsh tools/balance.ps1:*)",
+      "PowerShell(Get-Process:*)",
+      "Read(//**)",
+      "Glob(//**)",
+      "Grep(//**)"
+    ],
+    "ask": [
+      "Bash(pwsh tools/build.ps1:*)",
+      "PowerShell(pwsh tools/build.ps1:*)",
+      "Bash(git push:*)",
+      "Bash(gh pr create:*)",
+      "Bash(gh pr merge:*)"
+    ],
+    "deny": [
+      "Read(./.mcp.json)",
+      "Read(./godot-mcp-pro-v1.15.1/**)"
+    ]
+  }
+}

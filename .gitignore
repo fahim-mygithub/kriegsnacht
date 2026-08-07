@@ -8,11 +8,20 @@ project.godot.buildbak
 # docs/ is the real, published output and stays tracked.
 build/
 
-# Godot MCP Pro is a paid product — not redistributable.
+# Godot MCP Pro is a paid product — not redistributable. `.mcp.json` names
+# whichever path each of us installed the server at, so it is per-machine;
+# `.mcp.json.example` IS tracked and is what a new clone copies from. The pattern
+# below is an exact name and does not match the `.example`, which is why this
+# works without a negation.
 godot-mcp-pro-v1.15.1/
 addons/godot_mcp/
 .mcp.json
 project.godot.perfbak
+
+# Per-developer Claude Code settings: machine paths and personal permission
+# tweaks. `.claude/settings.json` beside it IS tracked and shared — put anything
+# that should apply to both of us there instead, or it silently applies to one.
+.claude/settings.local.json
 
 # Per-run output of the frame gate (tools/frames.ps1). The COMMITTED gate is
 # notes/perf/frames/golden.json plus ref/*.png; current/ is emptied and rewritten

@@ -1,0 +1,94 @@
+# The assertion suite, on every pull request.
+#
+# WHAT THIS GATE CAN AND CANNOT DO. It runs `--verify` and nothing else. The
+# rendered-frame gate (`pwsh tools/frames.ps1`) is structurally impossible here:
+# the capture half awaits `RenderingServer.frame_post_draw`, which under
+# `--headless` never returns because there is no rendering device, so it would
+# hang forever rather than fail. A GitHub runner has no display. CLAUDE.md is
+# explicit that a silently skipped visual gate is how two black frames shipped --
+# so this workflow does not pretend to cover it, and the pull request template
+# asks the human to confirm they ran it locally.
+#
+# MEASURED on a fresh clone while this file was written: import 9 s, verify 8 s,
+# 819 passed / 0 failed.
+name: verify
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+# A second push to the same PR cancels the first. The suite is ~8 s, so this is
+# about queue noise rather than cost.
+concurrency:
+  group: verify-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    # A healthy run is well under a minute. The cap is set against CLAUDE.md
+    # rule 3: a parse error in a script reachable from the main scene does not
+    # fail fast, it hangs for ~414 s before exiting 1. Without this cap a broken
+    # PR burns runner minutes looking like an infrastructure problem. With it,
+    # a timeout IS the diagnosis: something does not parse.
+    timeout-minutes: 10
+
+    env:
+      # Pinned to the version tools/build.ps1 defaults to, so CI and both
+      # Windows dev boxes agree. Bumping Godot means bumping it here in the
+      # same commit, or CI silently tests a different engine than ships.
+      GODOT_VERSION: 4.7-stable
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Fetch Godot ${{ env.GODOT_VERSION }}
+        run: |
+          set -euo pipefail
+          ZIP="Godot_v${GODOT_VERSION}_linux.x86_64.zip"
+          URL="https://github.com/godotengine/godot/releases/download/${GODOT_VERSION}/${ZIP}"
+          curl -sSfL -o godot.zip "$URL"
+          unzip -q godot.zip
+          mv "Godot_v${GODOT_VERSION}_linux.x86_64" godot
+          chmod +x godot
+          ./godot --version
+
+      # WHY THIS STEP EXISTS, and it is the one that is easy to delete by
+      # mistake. `addons/godot_mcp/` is Godot MCP Pro -- a paid product, gitignored
+      # and not redistributable -- but project.godot IS tracked and declares three
+      # autoloads plus an editor plugin pointing into it. A runner has no licence,
+      # so those four lines reference files that do not exist.
+      #
+      # DEMONSTRATED, not assumed: without this step a fresh clone emits three
+      # `Failed to instantiate an autoload` errors, which cascade into every
+      # `class_name` going unresolved, which is a parse error in main.gd, which
+      # hangs. A 5-minute run produced no result at all.
+      #
+      # The match is on the PATH `addons/godot_mcp`, not on the three service
+      # names. A hardcoded list of three is a list that stops being complete the
+      # day MCP Pro ships a fourth service -- the same failure mode CLAUDE.md
+      # notes for a frame runner that carries its own scenario list.
+      #
+      # This edits the runner's throwaway checkout only. Nothing is committed.
+      # tools/build.ps1 does the equivalent locally and restores afterwards.
+      - name: Strip Godot MCP Pro autoloads (not licensed on CI)
+        run: |
+          set -euo pipefail
+          echo "before: $(grep -c 'addons/godot_mcp' project.godot) reference(s)"
+          sed -i '/addons\/godot_mcp/d' project.godot
+          echo "after:  $(grep -c 'addons/godot_mcp' project.godot || true) reference(s)"
+
+      # `.godot/` is gitignored, so a fresh checkout has no global script class
+      # cache and every `class_name` in the project is an unknown identifier.
+      # This pass builds it. It is not optional and it is not a warm-up: without
+      # it the suite does not run at all.
+      - name: Import assets
+        run: ./godot --headless --path . --import
+
+      # main.gd:618 quits 1 when any assertion fails and 0 when none do, so the
+      # exit code alone is the gate -- no output parsing, nothing to drift.
+      - name: Run assertion suite
+        run: ./godot --headless --path . --verify

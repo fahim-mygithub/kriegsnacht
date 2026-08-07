@@ -1,0 +1,63 @@
+# Line endings, and why this file had to exist before a second person cloned.
+#
+# `core.autocrlf` is true on the original machine and there was no
+# `.gitattributes`, which means the byte content of every checkout was decided by
+# the cloner's local git config rather than by the repository. CLAUDE.md rule 8
+# spends a paragraph on the consequence: `tools/build.ps1` gates the export on
+# `--verify`, so a check that pins the sha of raw file bytes is green in one
+# working copy and red in every clone, worktree and CI run.
+#
+# MEASURED before this file landed, with `git ls-files --eol`: all 366 tracked
+# text files were already `i/lf` in the index, but the working copy had split
+# into 186 LF and 180 CRLF -- including the .gd sources themselves, 46 CRLF
+# against 14 LF -- plus docs/index.html with mixed endings inside one file. That
+# was ONE machine disagreeing with itself. A second machine makes it a coin flip.
+#
+# Because the index is already LF throughout, this file is index-neutral: adding
+# it produces no content diff. It only makes checkout deterministic, and it makes
+# the Windows dev boxes agree with the Linux runner in .github/workflows/verify.yml.
+#
+# `eol=lf` rather than a bare `text=auto` is deliberate. `text=auto` alone would
+# hand each working copy its platform's native ending and leave a byte pin still
+# unstable across the Windows/Linux boundary that CI has now introduced. Nothing
+# here needs CRLF: `tools/gen/extract.js:436` already folds \r\n to \n, PowerShell
+# 7 reads LF scripts, and Godot is indifferent.
+* text=auto eol=lf
+
+# Explicitly binary. These are already detected as binary by content, so this
+# block changes nothing today -- it is here so that a future .png or .pck cannot
+# be caught by the `text=auto` rule above and silently corrupted by an EOL pass.
+# The web export in docs/ is the one that would hurt: a mangled .wasm or .pck
+# ships a broken game to Pages and the assertion suite never sees it.
+*.png   binary
+*.jpg   binary
+*.jpeg  binary
+*.webp  binary
+*.wasm  binary
+*.pck   binary
+*.zip   binary
+*.exe   binary
+*.dll   binary
+*.so    binary
+*.dylib binary
+*.ogg   binary
+*.wav   binary
+*.mp3   binary
+*.ttf   binary
+*.otf   binary
+*.pyc   binary
+
+# The frame gate's committed reference images. Marked binary above by extension;
+# called out here because `notes/perf/frames/ref/*.png` is the human half of the
+# visual gate and a diff of it is meaningless -- the machine half is the numbers
+# in golden.json, which IS a text diff and must stay one.
+notes/perf/frames/ref/*.png binary
+
+# Godot's generated sidecars. Text, and they must stay text: .import files carry
+# the import parameters the project depends on, and a merge conflict in one needs
+# to be readable rather than resolved by picking a side blindly.
+*.import  text eol=lf
+*.uid     text eol=lf
+*.tscn    text eol=lf
+*.gd      text eol=lf
+*.godot   text eol=lf
