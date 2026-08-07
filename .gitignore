@@ -23,6 +23,12 @@ project.godot.perfbak
 # that should apply to both of us there instead, or it silently applies to one.
 .claude/settings.local.json
 
+# Godot MCP Pro's own tool documentation, copied out of the paid plugin by
+# tools/setup-env.ps1 from each machine's licensed install. This repo is public
+# and that file ships with the product, so it is regenerated per machine rather
+# than committed. Every OTHER skill under .claude/skills/ IS tracked and shared.
+.claude/skills/godot-mcp-pro/
+
 # Per-run output of the frame gate (tools/frames.ps1). The COMMITTED gate is
 # notes/perf/frames/golden.json plus ref/*.png; current/ is emptied and rewritten
 # on every run, and a tracked copy would put eight PNGs in every diff.
